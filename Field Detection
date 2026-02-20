@@ -1,0 +1,230 @@
+# -*- coding: utf-8 -*-
+"""
+Field Builder FPF - Versão Final Consolidada (2026)
+Autor: Miguel Cardoso
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from pyproj import Transformer
+from dataclasses import dataclass
+import re
+
+# =====================================================
+# CONFIGURAÇÃO BASE
+# =====================================================
+
+# Caminho ajustado para a estrutura FPF/FPF detectada
+BASE_PATH = Path(
+    r"C:\Users\MiguelCardoso\OneDrive - VANESP IBERICA TRANSITARIOS LDA\Ambiente de Trabalho\MBDAF\MOD11\FPF"
+)
+
+# Possibilidades de nomes de colunas nos CSVs para evitar erros de 'KeyError'
+LAT_COL_POSSIBILIDADES = ["Latitude", "lat", "LATITUDE", "Lat", "latitude"]
+LON_COL_POSSIBILIDADES = ["Longitude", "lon", "LONGITUDE", "Lon", "longitude"]
+
+# =====================================================
+# UTILITÁRIO MENU
+# =====================================================
+
+def choose_option(options, message):
+    print(f"\n{message}")
+    for i, opt in enumerate(options):
+        print(f"{i+1} - {opt}")
+
+    while True:
+        try:
+            choice = int(input("Escolha o número: "))
+            if 1 <= choice <= len(options):
+                return options[choice - 1]
+            print("Opção inválida.")
+        except ValueError:
+            print("Por favor, introduza apenas números.")
+
+# =====================================================
+# SETUP DE PATHS
+# =====================================================
+
+def setup_paths():
+    if not BASE_PATH.exists():
+        raise FileNotFoundError(f"Caminho base não encontrado: {BASE_PATH}")
+
+    pattern = re.compile(r"^([uU]\d+)_(\d{4})$")
+    selections_years = []
+
+    for folder in BASE_PATH.iterdir():
+        if folder.is_dir():
+            match = pattern.match(folder.name)
+            if match:
+                selecao, ano = match.groups()
+                selections_years.append((selecao.upper(), ano))
+
+    if not selections_years:
+        raise ValueError(f"Nenhuma pasta de seleção encontrada em: {BASE_PATH}")
+
+    selecao = choose_option(sorted(set(s for s, _ in selections_years)), "Selecione a Seleção:")
+    ano = choose_option(sorted(ano for s, ano in selections_years if s == selecao), "Selecione o Ano:")
+
+    pasta_base = BASE_PATH / f"{selecao}_{ano}"
+
+    # Busca flexível para lidar com "Ação" ou "Acao"
+    acoes_folders = list(pasta_base.glob("Aç*_*")) + list(pasta_base.glob("Ac*_*"))
+    dict_acoes = {}
+    for f in acoes_folders:
+        if f.is_dir():
+            num_match = re.search(r'(\d+)', f.name)
+            if num_match:
+                dict_acoes[num_match.group(1)] = f
+
+    if not dict_acoes:
+        raise ValueError(f"Nenhuma pasta de 'Ação' encontrada em {pasta_base}")
+
+    nums = sorted(dict_acoes.keys(), key=lambda x: int(x))
+    num_acao = choose_option(nums, "Selecione o número da Ação:")
+    pasta_acao = dict_acoes[num_acao]
+
+    tipos = [t for t in ["Jogos", "Treinos"] if (pasta_acao / t).exists()]
+    if not tipos:
+        raise ValueError("Não existem pastas de 'Jogos' ou 'Treinos'.")
+
+    tipo = choose_option(tipos, "Selecione o tipo:")
+    pasta_tipo = pasta_acao / tipo
+
+    # Filtragem de sessões (ignora ficheiros ocultos e a pasta de campo global se existir)
+    sessoes = [
+        f for f in pasta_tipo.iterdir() 
+        if f.is_dir() and not f.name.startswith('.') and f.name.lower() != "campo"
+    ]
+
+    if not sessoes:
+        raise ValueError(f"Nenhuma sessão encontrada em {pasta_tipo}")
+
+    nomes_sessoes = ["Processar Todas"] + [s.name for s in sessoes]
+    escolha = choose_option(nomes_sessoes, "Selecione a sessão:")
+
+    return sessoes if escolha == "Processar Todas" else [pasta_tipo / escolha]
+
+# =====================================================
+# FUNÇÕES GEOMÉTRICAS
+# =====================================================
+
+def read_corner_mean(file_path):
+    """Lê CSV com detecção automática de separador e limpeza de decimais."""
+    # sep=None com engine='python' detecta se é vírgula ou ponto e vírgula
+    df = pd.read_csv(file_path, sep=None, engine='python')
+    
+    # Busca flexível de colunas (ignora espaços extras)
+    lat_col = next((c for c in df.columns if c.strip() in LAT_COL_POSSIBILIDADES), None)
+    lon_col = next((c for c in df.columns if c.strip() in LON_COL_POSSIBILIDADES), None)
+    
+    if lat_col is None or lon_col is None:
+        raise KeyError(f"Colunas de coordenadas não encontradas em {file_path.name}")
+
+    # Tratamento para casos onde o CSV usa vírgula como decimal (ex: 38,123)
+    for col in [lat_col, lon_col]:
+        if df[col].dtype == object:
+            df[col] = df[col].astype(str).str.replace(',', '.').astype(float)
+            
+    return df[lat_col].mean(), df[lon_col].mean()
+
+def convert_to_utm(lat, lon):
+    zone = int((lon + 180) / 6) + 1
+    epsg = 32600 + zone if lat >= 0 else 32700 + zone
+    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    x, y = transformer.transform(lon, lat)
+    return x, y, epsg
+
+def rotation_matrix(theta):
+    return np.array([
+        [np.cos(theta), -np.sin(theta)],
+        [np.sin(theta),  np.cos(theta)]
+    ])
+
+@dataclass
+class FieldModel:
+    session_name: str
+    origin: np.ndarray
+    rotation: np.ndarray
+    length: float
+    width: float
+    epsg: int
+
+    def transform_point_wgs84(self, lat, lon):
+        transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{self.epsg}", always_xy=True)
+        x, y = transformer.transform(lon, lat)
+        point = np.array([x, y]) - self.origin
+        return self.rotation @ point
+
+# =====================================================
+# PROCESSAMENTO DO CAMPO
+# =====================================================
+
+def process_session_folder(session_path: Path):
+    campo_path = session_path / "Campo"
+    if not campo_path.exists():
+        print(f"   [AVISO] Pasta 'Campo' não encontrada em {session_path.name}")
+        return None
+
+    # Procura ficheiros BL, BR, TL, TR no nome
+    corner_files = {}
+    for key in ["BL", "BR", "TL", "TR"]:
+        found = list(campo_path.glob(f"*{key}*.csv"))
+        corner_files[key] = found[0] if found else None
+
+    if None in corner_files.values():
+        faltam = [k for k, v in corner_files.items() if v is None]
+        print(f"   [ERRO] Faltam ficheiros de cantos: {faltam}")
+        return None
+
+    try:
+        corners_wgs = {key: read_corner_mean(path) for key, path in corner_files.items()}
+        
+        corners_utm = {}
+        epsg_used = None
+        for key, (lat, lon) in corners_wgs.items():
+            x, y, epsg = convert_to_utm(lat, lon)
+            corners_utm[key] = np.array([x, y])
+            epsg_used = epsg
+
+        # Definir sistema local: Origem no Bottom-Left (BL)
+        origin = corners_utm["BL"]
+        vec_length = corners_utm["BR"] - origin
+        theta = np.arctan2(vec_length[1], vec_length[0])
+        R = rotation_matrix(-theta)
+
+        # Cálculo das dimensões reais transformadas
+        p_br = R @ (corners_utm["BR"] - origin)
+        p_tl = R @ (corners_utm["TL"] - origin)
+        
+        length = p_br[0]
+        width = p_tl[1]
+
+        return FieldModel(session_path.name, origin, R, length, width, epsg_used)
+    except Exception as e:
+        print(f"   [ERRO NO PROCESSAMENTO]: {e}")
+        return None
+
+# =====================================================
+# EXECUÇÃO PRINCIPAL
+# =====================================================
+
+if __name__ == "__main__":
+    try:
+        session_paths = setup_paths()
+
+        print("\n" + "=" * 65)
+        print(f"{'SESSÃO':<35} | {'DIMENSÕES':<15} | {'EPSG'}")
+        print("-" * 65)
+
+        for session_path in session_paths:
+            model = process_session_folder(session_path)
+            if model:
+                dims = f"{model.length:.1f}x{model.width:.1f}m"
+                print(f"{model.session_name[:35]:<35} | {dims:<15} | {model.epsg}")
+
+        print("=" * 65)
+        print("\nProcessamento concluído com sucesso.")
+
+    except Exception as e:
+        print(f"\n[ERRO FATAL]: {e}")
