@@ -3,6 +3,8 @@ O campo tem de estar dentro da pasta do jogo ou treino.
 Podemos treinar num sitio e jogar noutro.
 Acho que faz sentido as medições do campo estarem dentro da sessão, seja Jogo ou Treino.
 
+O script apenas corre se respeitarem esta estrutura.
+
 Estrutura:
 
 FPF/
