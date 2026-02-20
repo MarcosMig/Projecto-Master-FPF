@@ -1,6 +1,8 @@
 # Projecto-Master-FPF
 Plataforma Analise Posicional Multi Seleção
 
+## Deteção de Campo e Rotação ##
+
 O script respeita integralmente a lógica de georreferenciação seguida de rotação para um plano local horizontal (cartesiano).
 
 A estrutura que construímos segue este fluxo técnico rigoroso:
