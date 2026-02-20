@@ -1,0 +1,25 @@
+# Projecto-Master-FPF
+Plataforma Analise Posicional Multi Seleção
+
+O script respeita integralmente a lógica de georreferenciação seguida de rotação para um plano local horizontal (cartesiano).
+
+A estrutura que construímos segue este fluxo técnico rigoroso:
+
+1. Localização Geoespacial (WGS84 para UTM)
+O script começa por ler as coordenadas brutas de GPS (Latitude e Longitude) dos ficheiros de cantos.Projeção: Ele utiliza a biblioteca pyproj para converter essas coordenadas do sistema esférico ($WGS84$ - $EPSG:4326$) para um sistema de coordenadas métricas planas ($UTM$).Cálculo Automático de Zona: A função convert_to_utm calcula a zona UTM correta com base na longitude e o hemisfério (Norte/Sul) para garantir que as distâncias em metros sejam precisas.
+
+2. Translação para a Origem Local
+Uma vez em metros ($UTM$), o campo ainda está "solto" no mapa mundial com valores de coordenadas muito altos (Easting/Northing).Ponto Zero: O script define o canto BL (Bottom-Left) como a origem $(0,0)$.Subtração de Vetores: Todos os outros pontos são subtraídos pela coordenada do BL, "movendo" virtualmente o campo para o centro do gráfico.
+
+3. Rotação para o Plano Horizontal
+Esta é a parte crucial para a tua análise tática. Os campos de futebol raramente estão perfeitamente alinhados com o Norte geográfico.
+Cálculo do Ângulo ($\theta$): O script calcula o ângulo entre o vetor BL -> BR e o eixo X horizontal utilizando np.arctan2.Matriz de 
+Rotação: É aplicada uma matriz de rotação inversa ($-theta$) a todos os pontos.
+Resultado: Isto força a linha de fundo (a baliza onde começas a medir) a ficar perfeitamente deitada sobre o eixo X.
+
+Resumo da Transformação Final
+Após correres o script, passas a ter:
+
+Eixo X: Representa o comprimento do campo ($0$ a $\approx 105m$).
+Eixo Y: Representa a largura do campo ($0$ a $\approx 68m$).
+Z: Ignorado (plano horizontal $2D$), o que simplifica imenso o cálculo de distâncias percorridas e mapas de calor.
