@@ -1,0 +1,170 @@
+"""
+Created on Sun Feb 22 20:08:37 2026
+
+@author: marcos 
+"""
+
+# -*- coding: utf-8 -*-
+"""
+FPF UTM Engine v9.2 - Pipeline Final Otimizado
+Objetivo: Converter Raw Data para SYNC, ordenar fases cronologicamente e limpar temporários.
+Autor: Miguel Cardoso
+"""
+
+import pandas as pd
+import numpy as np
+from pathlib import Path
+from pyproj import Transformer
+from scipy.signal import savgol_filter
+import re
+import shutil
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# --- CONFIGURAÇÃO ---
+BASE_PATH = Path(r"D:\MBDAF\MOD11\FPF")
+COL_LAT, COL_LON, COL_TIME, COL_FASE = "Lat", "Lon", "Time", "Fase"
+
+def choose_option(options, msg):
+    print(f"\n{msg}")
+    for i, opt in enumerate(options): print(f"{i+1} - {opt}")
+    while True:
+        try:
+            c = int(input("Escolha: "))
+            if 1 <= c <= len(options): return options[c-1]
+        except: pass
+
+def run_final_optimized_pipeline():
+    try:
+        # --- NAVEGAÇÃO DE PASTAS ---
+        folders = [f for f in BASE_PATH.iterdir() if f.is_dir() and re.match(r"^([uU]\d+)_(\d{4})$", f.name)]
+        sel_ano = choose_option([f.name for f in folders], "Época:")
+        p_base = BASE_PATH / sel_ano
+        acoes = list(p_base.glob("Ac*_*")) + list(p_base.glob("Aç*_*"))
+        n_ac = choose_option([re.search(r'(\d+)', f.name).group(1) for f in acoes], "Ação:")
+        p_acao = [f for f in acoes if f"_{n_ac}" in f.name][0]
+        tipo = choose_option(["Jogos", "Treinos"], "Tipo:")
+        sess_list = [f for f in (p_acao/tipo).iterdir() if f.is_dir() and f.name.lower() != "campo"]
+        esc_sess = choose_option([s.name for s in sess_list], "Sessão:")
+        
+        session_path = p_acao / tipo / esc_sess
+
+        # 1. CALIBRAÇÃO DE CAMPO
+        campo_path = session_path / "Campo"
+        pts_utm, epsg_used = {}, 32629
+        
+        if not campo_path.exists():
+            print("[ERRO] Pasta 'Campo' não encontrada.")
+            return
+
+        for key in ["BL", "BR", "TL", "TR"]:
+            f = list(campo_path.glob(f"*{key}*.csv"))
+            if f:
+                df_c = pd.read_csv(f[0], sep=None, engine='python')
+                lat, lon = df_c[COL_LAT].mean(), df_c[COL_LON].mean()
+                transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg_used}", always_xy=True)
+                x, y = transformer.transform(lon, lat)
+                pts_utm[key] = np.array([x, y])
+        
+        dist_comprimento = np.linalg.norm(pts_utm["BR"] - pts_utm["BL"])
+        dist_largura = np.linalg.norm(pts_utm["TL"] - pts_utm["BL"])
+        origin = pts_utm["BL"]
+        v_base = pts_utm["BR"] - origin
+        angulo_rad = np.arctan2(v_base[1], v_base[0])
+        R = np.array([[np.cos(-angulo_rad), -np.sin(-angulo_rad)], 
+                      [np.sin(-angulo_rad), np.cos(-angulo_rad)]])
+
+        # 2. PROCESSAMENTO TEMPORÁRIO
+        temp_dir = session_path / "Temp_Processing"
+        temp_dir.mkdir(exist_ok=True)
+
+        all_files = [f for f in session_path.glob("*.csv") if "campo" not in f.name.lower()]
+        def get_atleta_id(fname):
+            match = re.search(r"Player-(\d+)", fname)
+            return match.group(1) if match else fname.split('-')[0]
+
+        ids_atletas = sorted(list(set([get_atleta_id(f.stem) for f in all_files])))
+        
+        for aid in ids_atletas:
+            atleta_data = []
+            files_atleta = [f for f in all_files if f"Player-{aid}" in f.name or f.name.startswith(aid)]
+            for pf in files_atleta:
+                try:
+                    df = pd.read_csv(pf, sep=None, engine='python')
+                    df.columns = [c.strip().replace('"', '') for c in df.columns]
+                    fase_n = "Warm-Up"
+                    if "Primeira" in pf.name: fase_n = "1P"
+                    elif "Segunda" in pf.name: fase_n = "2P"
+
+                    if not df.empty and COL_LAT in df.columns:
+                        trans = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg_used}", always_xy=True)
+                        def transform_row(r):
+                            ux, uy = trans.transform(r[COL_LON], r[COL_LAT])
+                            p_loc = R @ (np.array([ux, uy]) - origin)
+                            return pd.Series([p_loc[0], p_loc[1]])
+                        df[['X_UTM', 'Y_UTM']] = df.apply(transform_row, axis=1)
+                        if len(df) > 11:
+                            df['X_UTM'] = savgol_filter(df['X_UTM'].interpolate(), 11, 2)
+                            df['Y_UTM'] = savgol_filter(df['Y_UTM'].interpolate(), 11, 2)
+                        df[COL_FASE], df['Atleta_ID'] = fase_n, aid
+                        atleta_data.append(df[[COL_TIME, 'Atleta_ID', COL_FASE, COL_LAT, COL_LON, 'X_UTM', 'Y_UTM']])
+                except: continue
+            if atleta_data:
+                pd.concat(atleta_data).sort_values(by=COL_TIME).to_csv(temp_dir / f"T_{aid}.csv", sep=';', index=False)
+
+        # 3. SINCRONIZAÇÃO E SUMÁRIO CRONOLÓGICO
+        player_files = list(temp_dir.glob("*.csv"))
+        fases_dict, all_unique_times = {}, set()
+
+        for f in player_files:
+            df_temp = pd.read_csv(f, usecols=[COL_TIME, COL_FASE], sep=';')
+            all_unique_times.update(df_temp[COL_TIME].dropna().tolist())
+            for fs in df_temp[COL_FASE].unique():
+                if pd.isna(fs): continue
+                t_fase = df_temp[df_temp[COL_FASE] == fs][COL_TIME]
+                if fs not in fases_dict: fases_dict[fs] = [t_fase.min(), t_fase.max()]
+                else:
+                    fases_dict[fs][0] = min(fases_dict[fs][0], t_fase.min())
+                    fases_dict[fs][1] = max(fases_dict[fs][1], t_fase.max())
+
+        # Ordenar cronologicamente para o relatório
+        # Ordem desejada: Warm-Up -> 1P -> 2P
+        ordem_fases = {"Warm-Up": 0, "1P": 1, "2P": 2}
+        fases_ordenadas = sorted(fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
+
+        master_df = pd.DataFrame({COL_TIME: sorted(list(all_unique_times))})
+        output_sync_dir = session_path / "Output_UTM_Sincronizado"
+        output_sync_dir.mkdir(exist_ok=True)
+
+        for f in player_files:
+            df_atl = pd.read_csv(f, sep=';')
+            df_sync = pd.merge(master_df, df_atl, on=COL_TIME, how='left')
+            df_sync['Atleta_ID'] = df_atl['Atleta_ID'].iloc[0]
+            for fase, (t_s, t_e) in fases_dict.items():
+                df_sync.loc[(df_sync[COL_TIME] >= t_s) & (df_sync[COL_TIME] <= t_e), COL_FASE] = fase
+            df_sync.to_csv(output_sync_dir / f"Player_{df_atl['Atleta_ID'].iloc[0]}_SYNC.csv", sep=';', index=False, encoding='utf-8-sig')
+
+        # 4. LIMPEZA E RELATÓRIOS
+        shutil.rmtree(temp_dir)
+        
+        print(f"\n" + "="*60)
+        print(f"RELATÓRIO 1: GEOMETRIA DO CAMPO")
+        print(f"Comprimento (X): {dist_comprimento:.2f} metros")
+        print(f"Largura (Y):     {dist_largura:.2f} metros")
+        print(f"Rotação Aplicada: {np.degrees(angulo_rad):.2f} graus")
+        print("="*60)
+        
+        print(f"RELATÓRIO 2: SUMÁRIO DE FASES (ORDEM CRONOLÓGICA)")
+        for fase, tempos in fases_ordenadas:
+            print(f" > {fase:10}: Início: {tempos[0]} | Fim: {tempos[1]}")
+        print("="*60)
+        
+        print(f"\n[PROCESSO FINALIZADO]")
+        print(f"Ficheiros SYNC Mestre: {output_sync_dir.name}")
+
+    except Exception as e:
+        print(f"\n[ERRO]: {e}")
+
+if __name__ == "__main__":
+    run_final_optimized_pipeline()
