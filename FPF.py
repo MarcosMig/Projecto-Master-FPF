@@ -141,10 +141,11 @@ if f_campo and f_atleta:
 
         # 4. SUBMISSÃO FINAL
         pode_submeter = is_geo_valid and quorum_ok
-        if st.button("Validar e submeter Base de Dados", type="primary", use_container_width=True, disabled=not pode_submeter):
-            st.success("Tudo em conformidade. Dados prontos para integração.")
+        if st.button("Validar e Submeter.", type="primary", use_container_width=True, disabled=not pode_submeter):
+            st.success("Tudo em conformidade. Dados Submetidos.")
 
     else:
         st.warning("⚠️ Aguardando os 4 cantos do campo (BL, BR, TL, TR).")
 else:
+
     st.info("👋 Por Favor, carregar os dados no menu lateral para iniciar.")
