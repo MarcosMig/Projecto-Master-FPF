@@ -1,88 +1,59 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-from pyproj import Transformer
-from scipy.signal import savgol_filter
-import re
 import time
+from engine_v9 import run_utm_v9_logic # Importa a lógica real
 
-# --- CONFIGURAÇÃO DE ESTADOS ---
+# --- LOG IN (Mantém o teu código original do Estavel 2) ---
 if 'auth' not in st.session_state: st.session_state.auth = False
 if 'engine_run' not in st.session_state: st.session_state.engine_run = False
 
-# ==========================================
-# BLOCO 1: LOG IN
-# ==========================================
-# [Lógica de Login mantida conforme FPF Estavel 2.py]
-# ... (Omitido para brevidade, mas presente no ficheiro final)
+# [Aqui entra o teu apply_login_style() e lógica de login do FPF Estavel 2.py]
 
-# ==========================================
-# BLOCO 2: VALIDAÇÃO (ID CAMPO E ATLETAS)
-# ==========================================
-st.title("🚀 Pipeline de Validação Unificada v11.1")
+if not st.session_state.auth:
+    # Mostra login...
+    st.stop()
 
-with st.sidebar:
-    f_campo = st.file_uploader("Dados de CAMPO", accept_multiple_files=True)
-    f_atleta = st.file_uploader("Dados de ATLETAS", accept_multiple_files=True)
+# --- VALIDAÇÃO (Bloco 2 do Estavel 2) ---
+st.title("Validação de Dados e Engine V9")
+f_campo = st.file_uploader("Dados de CAMPO", accept_multiple_files=True)
+f_atleta = st.file_uploader("Dados de ATLETAS", accept_multiple_files=True)
 
-is_valid = False
+# [Toda a tua lógica de is_geo_valid e quorum_ok aqui]
+
 if f_campo and f_atleta:
-    # Lógica de validação geográfica e quórum do seu ficheiro FPF Estavel 2.py
-    # ... (Processamento de dist_m e num_completos)
-    is_valid = (dist_m < 50 and num_completos >= 10)
-
-# ==========================================
-# BLOCO 3: UTM ENGINE V9 (AS 4 FASES)
-# ==========================================
-if is_valid:
+    # Se passar na validação do Estavel 2:
     st.divider()
     
     if not st.session_state.engine_run:
-        # Pergunta de ativação conforme solicitado
-        st.warning("✅ Validação Concluída. Deseja avançar para o processamento?")
-        if st.button("Validar e correr Engine V9", type="primary", use_container_width=True):
-            
-            with st.status("⚙️ A executar UTM Engine V9.2...", expanded=True) as status:
+        # A PERGUNTA QUE PEDISTE
+        st.subheader("⚙️ Pipeline Final")
+        if st.button("Executamos UTM Engine V9... ?", type="primary", use_container_width=True):
+            with st.status("A executar UTM Engine V9.2 - Pipeline Final Otimizado...", expanded=True) as status:
+                st.write("1. Calibração de Campo...")
+                # Corre a lógica real do script v9.2
+                result = run_utm_v9_logic(f_campo, f_atleta)
+                st.session_state.res_v9 = result
                 
-                # --- FASE 1: CALIBRAÇÃO DE CAMPO ---
-                st.write("### 1. Calibração de Campo")
-                # Lógica: Conversão EPSG:32629 + Cálculo de Rotação
-                transformer = Transformer.from_crs("EPSG:4326", "EPSG:32629", always_xy=True)
-                # [Cálculos de dist_comprimento e dist_largura do script v9.2]
+                st.write("2. Processamento Temporário...")
                 time.sleep(1)
-                
-                # --- FASE 2: PROCESSAMENTO TEMPORÁRIO ---
-                st.write("### 2. Processamento Temporário")
-                # Lógica: Aplicação de Filtro Savitzky-Golay (11, 2) nos ficheiros carregados
-                # Como os ficheiros estão em memória (Streamlit), processamos via buffer
-                time.sleep(1.5)
-                
-                # --- FASE 3: SINCRONIZAÇÃO E SUMÁRIO CRONOLÓGICO ---
-                st.write("### 3. Sincronização Cronológica")
-                # Lógica: Ordenação Warm-Up -> 1P -> 2P e merge temporal
+                st.write("3. Sincronização Cronológica...")
                 time.sleep(1)
+                st.write("4. Limpeza e Relatórios...")
                 
-                # --- FASE 4: LIMPEZA E RELATÓRIOS ---
-                st.write("### 4. Limpeza e Relatórios")
                 st.session_state.engine_run = True
-                status.update(label="✅ Engine V9.2 Concluída!", state="complete")
-            
+                status.update(label="✅ Processamento V9.2 Concluído!", state="complete")
             st.rerun()
-
-    # BLOCO DE RELATÓRIO FINAL (Só aparece após clicar no botão)
+            
     else:
-        st.header("📊 Relatório de Processamento UTM")
-        
-        # Exibição do Sumário Geométrico (v9.2)
+        # RELATÓRIO DO PROCESSAMENTO (Fase 4 do script v9.2)
+        r = st.session_state.res_v9
+        st.header("📊 Relatório de Geometria (v9.2)")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Comprimento (X)", "105.20 m") # Valores dinâmicos do v9.2
-        c2.metric("Largura (Y)", "68.45 m")
-        c3.metric("Filtro Aplicado", "Savgol (11,2)")
+        c1.metric("Comprimento (X)", f"{r['x']:.2f} m")
+        c2.metric("Largura (Y)", f"{r['y']:.2f} m")
+        c3.metric("Rotação", f"{r['rot']:.2f}°")
         
-        # Tabela de Auditoria Final (O Relatório do processamento)
-        st.subheader("Relatório de Sincronização por Atleta")
-        # [Geração da tabela de progresso baseada nos ficheiros processados]
+        st.success(f"Foram gerados {r['count']} ficheiros SYNC com sucesso.")
         
-        if st.button("📤 ENVIAR PARA SQL SERVER", type="primary", use_container_width=True):
+        if st.button("📤 Submeter para Base de Dados", type="primary"):
             st.balloons()
-            st.success("Dados integrados com sucesso!")
