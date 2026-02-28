@@ -1,10 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Sat Feb 28 17:59:58 2026
-
-@author: marco
-"""
-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,7 +12,8 @@ st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
 if 'auth' not in st.session_state: st.session_state.auth = False
 
 
-# --- LOGIN (CARD CENTRADO + st.secrets) ---
+
+# --- LOGIN (CENTRADO + st.secrets) ---
 def _apply_login_style():
     st.markdown("""
     <style>
@@ -27,20 +21,12 @@ def _apply_login_style():
       header, footer {visibility: hidden;}
       [data-testid="stSidebar"] {display: none;}
 
-      .login-wrapper{
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 2rem 1rem;
-      }
+      /* Card visual */
       .login-card{
-        width: 100%;
-        max-width: 420px;
         background: #1a1c23;
         border: 1px solid #30363d;
         border-radius: 14px;
-        padding: 36px;
+        padding: 34px 34px 26px 34px;
         box-shadow: 0px 10px 28px rgba(0,0,0,0.55);
       }
       .login-title{
@@ -50,10 +36,12 @@ def _apply_login_style():
         font-weight: 800;
         margin: 0 0 1.25rem 0;
       }
+      /* Inputs */
       .stTextInput > div > div > input {
         background: #0e1117;
         border: 1px solid #30363d;
       }
+      /* Botão */
       .stButton > button{
         width: 100%;
         background: #E30613 !important;
@@ -68,15 +56,14 @@ def _apply_login_style():
     """, unsafe_allow_html=True)
 
 def _get_auth_from_secrets():
-    """Lê credenciais de st.secrets.
-    Espera:
-      [auth]
-      username = "..."
-      password = "..."
+    """Espera em st.secrets:
+    [auth]
+    username = "..."
+    password = "..."
     """
     try:
         auth = st.secrets["auth"]
-        return auth["username"], auth["password"]
+        return auth.get("username"), auth.get("password")
     except Exception:
         return None, None
 
@@ -86,24 +73,27 @@ if "auth" not in st.session_state:
 if not st.session_state.auth:
     _apply_login_style()
 
-    st.markdown('<div class="login-wrapper"><div class="login-card">', unsafe_allow_html=True)
-    st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
+    # Centrar com colunas (robusto no Streamlit)
+    left, mid, right = st.columns([1, 1.2, 1])
+    with mid:
+        st.markdown('<div class="login-card">', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
 
-    u = st.text_input("Utilizador", key="user_val")
-    p = st.text_input("Password", type="password", key="pass_val")
+        u = st.text_input("Utilizador", key="user_val")
+        p = st.text_input("Password", type="password", key="pass_val")
 
-    secrets_user, secrets_pass = _get_auth_from_secrets()
-    if secrets_user is None:
-        st.warning("⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud.")
+        secrets_user, secrets_pass = _get_auth_from_secrets()
+        if not secrets_user:
+            st.warning("⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud.")
 
-    if st.button("Entrar"):
-        if secrets_user is not None and u == secrets_user and p == secrets_pass:
-            st.session_state.auth = True
-            st.rerun()
-        else:
-            st.error("Credenciais inválidas")
+        if st.button("Entrar"):
+            if secrets_user and u == secrets_user and p == secrets_pass:
+                st.session_state.auth = True
+                st.rerun()
+            else:
+                st.error("Credenciais inválidas")
 
-    st.markdown("</div></div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
 # --- INTERFACE SINGLE PAGE ---
