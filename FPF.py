@@ -13,6 +13,7 @@ from pyproj import Geod
 from pathlib import Path
 import json
 import tempfile
+import requests
 GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance (metros reais)
 from streamlit_folium import st_folium
 import re
@@ -107,13 +108,6 @@ if not st.session_state.auth:
 st.title("🚀 Pipeline de Validação + Normalização (UTM/Rotação)")
 
 with st.sidebar:
-    st.header("📤 Upload de Ficheiros")
-    st.caption("Campo: 4 CSVs com BL, BR, TL, TR no nome do ficheiro.")
-    f_campo = st.file_uploader("Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"])
-    st.caption("Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome.")
-    f_atleta = st.file_uploader("Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"])
-
-    st.divider()
     st.header("🧾 Dados da Sessão")
     data_sessao = st.date_input("Data")
     selecao = st.text_input("Seleção (ex.: U19)")
@@ -129,22 +123,27 @@ with st.sidebar:
             adversario_b = st.text_input("Equipa B (ex.: Espanha)")
 
     st.divider()
-    st.header("🏟️ Local")
-    estadio = st.text_input("Nome do Estádio")
-    cidade = st.text_input("Cidade")
-    pais = st.text_input("País")
+    st.header("📤 Upload de Ficheiros")
+    st.caption("Campo: 4 CSVs com BL, BR, TL, TR no nome do ficheiro.")
+    f_campo = st.file_uploader("Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"])
+    st.caption("Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome.")
+    f_atleta = st.file_uploader("Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"])
 
     st.divider()
-    st.header("⚙️ Opções")
-    epsg_used = st.selectbox("EPSG UTM (Portugal continental tipicamente 32629)", options=[32629, 32628, 32630], index=0)
-    raio_validacao_m = st.number_input("Raio máx. para validação Campo↔Atleta (m)", min_value=10, max_value=500, value=50, step=10)
-    amostra_geo_n = st.number_input("Amostra (linhas) por atleta para geo-check", min_value=50, max_value=2000, value=500, step=50)
-    min_pct_atletas_ok = st.slider("% mínimo atletas dentro do raio", min_value=0.5, max_value=1.0, value=0.8, step=0.05)
-    aplicar_suavizacao = st.checkbox("Suavização Savitzky–Golay (X/Y)", value=True)
-    janela_savgol = st.number_input("Janela SavGol (ímpar)", min_value=5, max_value=101, value=11, step=2)
-    poly_savgol = st.number_input("Ordem polinómio SavGol", min_value=1, max_value=5, value=2, step=1)
+    st.header("🏟️ Estádio")
+    estadio = st.text_input("Nome do Estádio")
 
 st.divider()
+
+
+# Defaults (menu de opções removido)
+epsg_used = 32629
+raio_validacao_m = 50
+amostra_geo_n = 500
+min_pct_atletas_ok = 0.80
+aplicar_suavizacao = True
+janela_savgol = 11
+poly_savgol = 2
 
 # -------------------------------
 # Helpers (Streamlit-friendly)
@@ -223,6 +222,27 @@ def _calibrar_campo(f_campo_files, epsg: int):
     ], dtype=float)
 
     return pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_comprimento, dist_largura
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def _reverse_geocode_city_country(lat: float, lon: float):
+    """Reverse geocode via OpenStreetMap Nominatim.
+    Nota: depende de acesso à internet no ambiente Streamlit Cloud.
+    """
+    try:
+        url = "https://nominatim.openstreetmap.org/reverse"
+        params = {"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 10, "addressdetails": 1}
+        headers = {"User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        if r.status_code != 200:
+            return None, None
+        data = r.json()
+        addr = data.get("address", {}) if isinstance(data, dict) else {}
+        city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("municipality") or addr.get("county")
+        country = addr.get("country")
+        return city, country
+    except Exception:
+        return None, None
+
 
 def _geo_validacao_por_atleta(f_atleta_files, centroid_lat, centroid_lon, raio_m, amostra_n, min_pct_ok):
     ok, fora, erros = [], [], []
@@ -370,6 +390,9 @@ if not f_campo or not f_atleta:
 
 try:
     pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo(f_campo, int(epsg_used))
+
+# Local (Cidade/País) derivado das coordenadas do campo (centro)
+cidade, pais = _reverse_geocode_city_country(clat, clon)
 except Exception as e:
     st.error(f"❌ Erro na calibração do campo: {e}")
     st.stop()
