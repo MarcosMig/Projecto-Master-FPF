@@ -38,19 +38,16 @@ def _apply_login_style():
         border-radius: 14px;
         padding: 34px 34px 26px 34px;
         box-shadow: 0px 10px 28px rgba(0,0,0,0.55);
-      }
       .login-title{
         text-align: center;
         color: #ffffff;
         font-size: 2rem;
         font-weight: 800;
         margin: 0 0 1.25rem 0;
-      }
       /* Inputs */
       .stTextInput > div > div > input {
         background: #0e1117;
         border: 1px solid #30363d;
-      }
       /* Botão */
       .stButton > button{
         width: 100%;
@@ -60,7 +57,6 @@ def _apply_login_style():
         border: 0;
         height: 3.1em;
         border-radius: 10px;
-      }
       .stButton > button:hover{ filter: brightness(0.95); }
     </style>
     """, unsafe_allow_html=True)
@@ -475,20 +471,20 @@ if btn:
             # Build report
             rot_deg = float(np.degrees(angulo_rad))
             report_lines = []
-report_lines.append("FPF Performance Hub — Relatório de Validação e Normalização")
-report_lines.append("="*70)
-report_lines.append("Dados da Sessão")
-report_lines.append(f"  Data: {data_sessao.strftime('%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}")
-report_lines.append(f"  Seleção: {selecao} | Género: {genero} | Contexto: {contexto}")
-if contexto == "Jogo":
-    vs_txt = " vs ".join([t for t in [adversario_a.strip(), adversario_b.strip()] if t])
-    if vs_txt:
-        report_lines.append(f"  Jogo: {vs_txt}")
-loc_txt = "—"
-if estadio or cidade or pais:
-    parts = [p for p in [estadio.strip(), cidade.strip(), pais.strip()] if p]
-    loc_txt = ", ".join(parts)
-report_lines.append(f"  Local: {loc_txt}")
+            report_lines.append("FPF Performance Hub — Relatório de Validação e Normalização")
+            report_lines.append("="*70)
+            report_lines.append("Dados da Sessão")
+            report_lines.append(f"  Data: {data_sessao.strftime('%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}")
+            report_lines.append(f"  Seleção: {selecao} | Género: {genero} | Contexto: {contexto}")
+            if contexto == "Jogo":
+                vs_txt = " vs ".join([t for t in [adversario_a.strip(), adversario_b.strip()] if t])
+                if vs_txt:
+                    report_lines.append(f"  Jogo: {vs_txt}")
+            loc_txt = "—"
+            if estadio or cidade or pais:
+                parts = [p for p in [estadio.strip(), cidade.strip(), pais.strip()] if p]
+                loc_txt = ", ".join(parts)
+            report_lines.append(f"  Local: {loc_txt}")
             report_lines.append(f"EPSG (UTM): {epsg_used}")
             report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
             report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
@@ -513,7 +509,6 @@ report_lines.append(f"  Local: {loc_txt}")
                 for aid, fn, msg in issues[:25]:
                     report_lines.append(f"  - {aid} | {fn} | {msg}")
             report_txt = "\n".join(report_lines)
-            }
 
     st.success("✅ Processamento concluído. Relatório disponível abaixo.")
 
