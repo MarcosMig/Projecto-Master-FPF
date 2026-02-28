@@ -1,3 +1,10 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Feb 28 17:59:58 2026
+
+@author: marco
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -5,21 +12,98 @@ import folium
 from pyproj import Geod
 GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance (metros reais)
 from streamlit_folium import st_folium
-from geopy.geocoders import Nominatim
 import re
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
 if 'auth' not in st.session_state: st.session_state.auth = False
 
-# --- LOGIN ---
+
+# --- LOGIN (CARD CENTRADO + st.secrets) ---
+def _apply_login_style():
+    st.markdown("""
+    <style>
+      .stApp { background-color: #0e1117; }
+      header, footer {visibility: hidden;}
+      [data-testid="stSidebar"] {display: none;}
+
+      .login-wrapper{
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem 1rem;
+      }
+      .login-card{
+        width: 100%;
+        max-width: 420px;
+        background: #1a1c23;
+        border: 1px solid #30363d;
+        border-radius: 14px;
+        padding: 36px;
+        box-shadow: 0px 10px 28px rgba(0,0,0,0.55);
+      }
+      .login-title{
+        text-align: center;
+        color: #ffffff;
+        font-size: 2rem;
+        font-weight: 800;
+        margin: 0 0 1.25rem 0;
+      }
+      .stTextInput > div > div > input {
+        background: #0e1117;
+        border: 1px solid #30363d;
+      }
+      .stButton > button{
+        width: 100%;
+        background: #E30613 !important;
+        color: #fff !important;
+        font-weight: 800;
+        border: 0;
+        height: 3.1em;
+        border-radius: 10px;
+      }
+      .stButton > button:hover{ filter: brightness(0.95); }
+    </style>
+    """, unsafe_allow_html=True)
+
+def _get_auth_from_secrets():
+    """Lê credenciais de st.secrets.
+    Espera:
+      [auth]
+      username = "..."
+      password = "..."
+    """
+    try:
+        auth = st.secrets["auth"]
+        return auth["username"], auth["password"]
+    except Exception:
+        return None, None
+
+if "auth" not in st.session_state:
+    st.session_state.auth = False
+
 if not st.session_state.auth:
-    st.title("⚽ FPF Performance Hub - Login")
-    u, p = st.text_input("Utilizador"), st.text_input("Password", type="password")
+    _apply_login_style()
+
+    st.markdown('<div class="login-wrapper"><div class="login-card">', unsafe_allow_html=True)
+    st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
+
+    u = st.text_input("Utilizador", key="user_val")
+    p = st.text_input("Password", type="password", key="pass_val")
+
+    secrets_user, secrets_pass = _get_auth_from_secrets()
+    if secrets_user is None:
+        st.warning("⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud.")
+
     if st.button("Entrar"):
-        if u == "miguel.cardoso" and p == "fpf2026":
+        if secrets_user is not None and u == secrets_user and p == secrets_pass:
             st.session_state.auth = True
             st.rerun()
+        else:
+            st.error("Credenciais inválidas")
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
     st.stop()
 
 # --- INTERFACE SINGLE PAGE ---
@@ -43,41 +127,93 @@ if f_campo and f_atleta:
     if len(pts_gps) == 4:
         # Coordenadas Reais do Campo
         clat, clon = np.mean([p[0] for p in pts_gps.values()]), np.mean([p[1] for p in pts_gps.values()])
-        
+
         
         # 2. VALIDAÇÃO CRUZADA (GEO-FENCING APERTADO - 50m)
+
+        
         atleta_file = f_atleta[0]
 
+
+        
         # Garantir ponteiro no início (Streamlit upload)
+
+        
         try:
+
+        
             atleta_file.seek(0)
+
+        
         except Exception:
+
+        
             pass
 
+
+        
         # Amostra robusta: até 500 linhas; mediana (robusto a arranque/outliers)
+
+        
         sample_atl = pd.read_csv(atleta_file, sep=None, engine='python', nrows=500)
+
+        
         sample_atl.columns = [c.strip().replace('"', '') for c in sample_atl.columns]
 
+
+        
         if "Lat" not in sample_atl.columns or "Lon" not in sample_atl.columns:
+
+        
             st.error("❌ CSV do atleta não contém colunas 'Lat' e 'Lon'.")
+
+        
             st.stop()
 
+
+        
         sub = sample_atl[["Lat", "Lon"]].dropna()
+
+        
         if sub.empty:
+
+        
             st.error("❌ Sem amostras Lat/Lon válidas no CSV do atleta (NaNs).")
+
+        
             st.stop()
 
+
+        
         alat = float(sub["Lat"].median())
+
+        
         alon = float(sub["Lon"].median())
 
+
+        
         # Distância geodésica WGS84 (metros reais)
+
+        
         _, _, dist_metros = GEOD.inv(alon, alat, clon, clat)
+
+        
         is_geo_valid = dist_metros < 50  # LIMITE DE 50 METROS
 
+
+        
         # Reset do ponteiro para não afetar leituras futuras
+
+        
         try:
+
+        
             atleta_file.seek(0)
+
+        
         except Exception:
+
+        
             pass
 
         # --- EXIBIÇÃO ---
