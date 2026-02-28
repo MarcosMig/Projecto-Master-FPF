@@ -58,7 +58,7 @@ if not st.session_state.auth:
             st.session_state.auth = True
             st.rerun()
         else:
-            st.errorr("Credenciais Inválidas") #
+            st.error("Credenciais Inválidas") #
     st.stop()
 
 # --- INTERFACE SINGLE PAGE ---
@@ -83,45 +83,50 @@ if f_campo and f_atleta:
         # Coordenadas Reais do Campo
         clat, clon = np.mean([p[0] for p in pts_gps.values()]), np.mean([p[1] for p in pts_gps.values()])
         
-        # 2. VALIDAÇÃO CRUZADA (GEO-FENCING APERTADO - 50m)
-        sample_atl = pd.read_csv(f_atleta[0], sep=None, engine='python', nrows=1)
-        sample_atl.columns = [c.strip().replace('"', '') for c in sample_atl.columns]
-                # Amostra mais robusta (evita outliers do primeiro registo): usa até 500 linhas e mediana
-        try:
-            atleta_file.seek(0)
-        except Exception:
-            pass
-        sample_atl = pd.read_csv(atleta_file, nrows=500)
-        sample_atl.columns = [c.strip() for c in sample_atl.columns]
+        
+# 2. VALIDAÇÃO CRUZADA (GEO-FENCING APERTADO - 50m)
+atleta_file = f_atleta[0]
 
-        if "Lat" not in sample_atl.columns or "Lon" not in sample_atl.columns:
-            st.errorr("❌ CSV do atleta não contém colunas 'Lat' e 'Lon'.")
-            st.stop()
+# Garantir que o ponteiro do ficheiro está no início (upload stream)
+try:
+    atleta_file.seek(0)
+except Exception:
+    pass
 
-        sub = sample_atl[["Lat", "Lon"]].dropna()
-        if sub.empty:
-            st.errorr("❌ Sem amostras Lat/Lon válidas no CSV do atleta (NaNs).")
-            st.stop()
+# Amostra robusta: usa até 500 linhas e mediana (evita outliers do primeiro registo)
+sample_atl = pd.read_csv(atleta_file, sep=None, engine='python', nrows=500)
+sample_atl.columns = [c.strip().replace('"', '') for c in sample_atl.columns]
 
-        alat = float(sub["Lat"].median())
-        alon = float(sub["Lon"].median())
+if "Lat" not in sample_atl.columns or "Lon" not in sample_atl.columns:
+    st.error("❌ CSV do atleta não contém colunas 'Lat' e 'Lon'.")
+    st.stop()
 
-        # Distância geodésica (m) entre atleta e centro do campo (WGS84)
-        _, _, dist_metros = GEOD.inv(alon, alat, clon, clat)
+sub = sample_atl[["Lat", "Lon"]].dropna()
+if sub.empty:
+    st.error("❌ Sem amostras Lat/Lon válidas no CSV do atleta (NaNs).")
+    st.stop()
 
-        # Validação: atleta deve estar dentro de 50 m do centro
-        is_geo_valid = dist_metros < 50
-        try:
-            atleta_file.seek(0)
-        except Exception:
-            pass
+alat = float(sub["Lat"].median())
+alon = float(sub["Lon"].median())
+
+# Distância geodésica (m) entre atleta e centro do campo (WGS84)
+_, _, dist_metros = GEOD.inv(alon, alat, clon, clat)
+
+# Validação: atleta deve estar dentro de 50 m do centro
+is_geo_valid = dist_metros < 50
+
+# Reset para não afetar leituras posteriores do mesmo ficheiro
+try:
+    atleta_file.seek(0)
+except Exception:
+    pass
 
         # --- EXIBIÇÃO ---
         st.header("📍 Identificação do Campo")
         if is_geo_valid:
             st.success(f"✅ LOCALIZAÇÃO VALIDADA: Atletas e Campo na mesma localizaçã. Atletas a {dist_metros:.1f}m do centro do campo.")
         else:
-            st.errorr(f"❌ ERRO CRÍTICO DE LOCALIZAÇÃO: Os atletas estão a {dist_metros:.1f}m do campo. Limite máximo: 50m.")
+            st.error(f"❌ ERRO CRÍTICO DE LOCALIZAÇÃO: Os atletas estão a {dist_metros:.1f}m do campo. Limite máximo: 50m.")
 
         m = folium.Map(location=[clat, clon], zoom_start=18)
         folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri World Imagery', name='Esri (Satélite)').add_to(m)
@@ -175,3 +180,4 @@ if f_campo and f_atleta:
         st.warning("⚠️ Aguardando os 4 cantos do campo (BL, BR, TL, TR).")
 else:
     st.info("👋 Por Favor, carregar os dados no menu lateral para iniciar.")
+
