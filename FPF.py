@@ -97,172 +97,434 @@ if not st.session_state.auth:
     st.stop()
 
 # --- INTERFACE SINGLE PAGE ---
-st.title("🚀 Pipeline de Validação Unificada v11.1")
+# --- INTERFACE SINGLE PAGE ---
+st.title("🚀 Pipeline de Validação + Normalização (UTM/Rotação)")
 
 with st.sidebar:
     st.header("📤 Upload de Ficheiros")
-    f_campo = st.file_uploader("Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True)
-    f_atleta = st.file_uploader("Dados de ATLETAS (CSVs)", accept_multiple_files=True)
+    st.caption("Campo: 4 CSVs com BL, BR, TL, TR no nome do ficheiro.")
+    f_campo = st.file_uploader("Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"])
+    st.caption("Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome.")
+    f_atleta = st.file_uploader("Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"])
 
-if f_campo and f_atleta:
-    # 1. PROCESSAMENTO DE CAMPO
+    st.divider()
+    st.header("⚙️ Opções")
+    epsg_used = st.selectbox("EPSG UTM (Portugal continental tipicamente 32629)", options=[32629, 32628, 32630], index=0)
+    raio_validacao_m = st.number_input("Raio máx. para validação Campo↔Atleta (m)", min_value=10, max_value=500, value=50, step=10)
+    amostra_geo_n = st.number_input("Amostra (linhas) por atleta para geo-check", min_value=50, max_value=2000, value=500, step=50)
+    min_pct_atletas_ok = st.slider("% mínimo atletas dentro do raio", min_value=0.5, max_value=1.0, value=0.8, step=0.05)
+    aplicar_suavizacao = st.checkbox("Suavização Savitzky–Golay (X/Y)", value=True)
+    janela_savgol = st.number_input("Janela SavGol (ímpar)", min_value=5, max_value=101, value=11, step=2)
+    poly_savgol = st.number_input("Ordem polinómio SavGol", min_value=1, max_value=5, value=2, step=1)
+
+st.divider()
+
+# -------------------------------
+# Helpers (Streamlit-friendly)
+# -------------------------------
+from pyproj import Transformer
+from scipy.signal import savgol_filter
+import math
+import io
+
+COL_LAT, COL_LON, COL_TIME, COL_FASE = "Lat", "Lon", "Time", "Fase"
+
+def _clean_cols(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = [c.strip().replace('"', '') for c in df.columns]
+    return df
+
+def _get_atleta_id(fname: str) -> str:
+    m = re.search(r"Player-(\d+)", fname, flags=re.I)
+    return m.group(1) if m else (fname.split('-')[0] if '-' in fname else fname)
+
+def _infer_fase(fname: str) -> str:
+    n = fname.upper()
+    if "WARM" in n or "WUP" in n:
+        return "Warm-Up"
+    if "1P" in n or "PRIMEIRA" in n or "FIRST" in n:
+        return "1P"
+    if "2P" in n or "SEGUNDA" in n or "SECOND" in n:
+        return "2P"
+    return "Extra"
+
+def _read_csv_upload(upload, nrows=None) -> pd.DataFrame:
+    # Streamlit uploaded file behaves like a file-like object
+    try:
+        upload.seek(0)
+    except Exception:
+        pass
+    df = pd.read_csv(upload, sep=None, engine="python", nrows=nrows)
+    try:
+        upload.seek(0)
+    except Exception:
+        pass
+    return _clean_cols(df)
+
+def _calibrar_campo(f_campo_files, epsg: int):
     pts_gps = {}
-    for f in f_campo:
-        df_c = pd.read_csv(f, sep=None, engine='python')
-        df_c.columns = [c.strip().replace('"', '') for c in df_c.columns]
+    for f in f_campo_files:
+        df_c = _read_csv_upload(f)
+        if COL_LAT not in df_c.columns or COL_LON not in df_c.columns:
+            continue
         for key in ["BL", "BR", "TL", "TR"]:
             if key in f.name.upper():
-                pts_gps[key] = [df_c["Lat"].mean(), df_c["Lon"].mean()]
+                pts_gps[key] = [df_c[COL_LAT].mean(), df_c[COL_LON].mean()]
 
-    if len(pts_gps) == 4:
-        # Coordenadas Reais do Campo
-        clat, clon = np.mean([p[0] for p in pts_gps.values()]), np.mean([p[1] for p in pts_gps.values()])
+    if len(pts_gps) != 4:
+        missing = [k for k in ["BL","BR","TL","TR"] if k not in pts_gps]
+        raise ValueError(f"Campo incompleto. Em falta: {', '.join(missing)}")
 
-        
-        # 2. VALIDAÇÃO CRUZADA (GEO-FENCING APERTADO - 50m)
+    clat = float(np.mean([p[0] for p in pts_gps.values()]))
+    clon = float(np.mean([p[1] for p in pts_gps.values()]))
 
-        
-        atleta_file = f_atleta[0]
+    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    pts_utm = {}
+    for key, (lat, lon) in pts_gps.items():
+        x, y = transformer.transform(lon, lat)
+        pts_utm[key] = np.array([x, y], dtype=float)
 
+    dist_comprimento = float(np.linalg.norm(pts_utm["BR"] - pts_utm["BL"]))
+    dist_largura = float(np.linalg.norm(pts_utm["TL"] - pts_utm["BL"]))
 
-        
-        # Garantir ponteiro no início (Streamlit upload)
+    origin = pts_utm["BL"]
+    v_base = pts_utm["BR"] - origin
+    angulo_rad = float(np.arctan2(v_base[1], v_base[0]))
 
-        
+    R = np.array([
+        [np.cos(-angulo_rad), -np.sin(-angulo_rad)],
+        [np.sin(-angulo_rad),  np.cos(-angulo_rad)]
+    ], dtype=float)
+
+    return pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_comprimento, dist_largura
+
+def _geo_validacao_por_atleta(f_atleta_files, centroid_lat, centroid_lon, raio_m, amostra_n, min_pct_ok):
+    ok, fora, erros = [], [], []
+    for f in f_atleta_files:
+        aid = _get_atleta_id(f.name)
         try:
+            df = _read_csv_upload(f, nrows=int(amostra_n))
+            if COL_LAT not in df.columns or COL_LON not in df.columns:
+                erros.append((aid, "Sem colunas Lat/Lon"))
+                continue
+            sub = df[[COL_LAT, COL_LON]].dropna()
+            if sub.empty:
+                erros.append((aid, "Sem amostras Lat/Lon válidas"))
+                continue
+            lat_med = float(sub[COL_LAT].median())
+            lon_med = float(sub[COL_LON].median())
+            _, _, dist_m = GEOD.inv(lon_med, lat_med, centroid_lon, centroid_lat)
+            if dist_m <= raio_m:
+                ok.append((aid, dist_m))
+            else:
+                fora.append((aid, dist_m))
+        except Exception as e:
+            erros.append((aid, str(e)))
 
-        
-            atleta_file.seek(0)
+    total = len(set([_get_atleta_id(f.name) for f in f_atleta_files]))
+    pct_ok = (len({a for a,_ in ok}) / max(1,total))
+    passed = pct_ok >= min_pct_ok
+    return passed, pct_ok, ok, fora, erros
 
-        
-        except Exception:
+def _processar_atletas_para_temp(f_atleta_files, epsg, origin, R, aplicar_suav, janela, poly, temp_dir: Path):
+    trans = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
 
-        
-            pass
+    # group uploads by athlete id
+    groups = {}
+    for f in f_atleta_files:
+        aid = _get_atleta_id(f.name)
+        groups.setdefault(aid, []).append(f)
 
+    temp_files = []
+    audit = {}  # aid -> list of fases
+    issues = []
 
-        
-        # Amostra robusta: até 500 linhas; mediana (robusto a arranque/outliers)
+    for aid, files in groups.items():
+        atleta_data = []
+        audit[aid] = []
+        for uf in files:
+            try:
+                df = _read_csv_upload(uf)
+                fase_n = _infer_fase(uf.name)
+                audit[aid].append(fase_n)
 
-        
-        sample_atl = pd.read_csv(atleta_file, sep=None, engine='python', nrows=500)
+                if df.empty:
+                    continue
+                if COL_TIME not in df.columns:
+                    issues.append((aid, uf.name, "Sem coluna Time"))
+                    continue
+                if COL_LAT not in df.columns or COL_LON not in df.columns:
+                    issues.append((aid, uf.name, "Sem colunas Lat/Lon"))
+                    continue
 
-        
-        sample_atl.columns = [c.strip().replace('"', '') for c in sample_atl.columns]
+                # Transform
+                lon = df[COL_LON].astype(float)
+                lat = df[COL_LAT].astype(float)
+                ux, uy = trans.transform(lon.values, lat.values)
+                p = np.vstack([ux, uy]).T
+                p_loc = (R @ (p - origin).T).T  # rotate around BL
 
+                df["X_UTM"] = p_loc[:,0]
+                df["Y_UTM"] = p_loc[:,1]
 
-        
-        if "Lat" not in sample_atl.columns or "Lon" not in sample_atl.columns:
+                # optional smoothing (requires enough points)
+                if aplicar_suav and len(df) >= int(janela) and int(janela) % 2 == 1:
+                    x = pd.Series(df["X_UTM"]).interpolate()
+                    y = pd.Series(df["Y_UTM"]).interpolate()
+                    try:
+                        df["X_UTM"] = savgol_filter(x, int(janela), int(poly))
+                        df["Y_UTM"] = savgol_filter(y, int(janela), int(poly))
+                    except Exception:
+                        # fallback: keep unsmoothed
+                        pass
 
-        
-            st.error("❌ CSV do atleta não contém colunas 'Lat' e 'Lon'.")
+                df[COL_FASE] = fase_n
+                df["Atleta_ID"] = aid
+                atleta_data.append(df[[COL_TIME, "Atleta_ID", COL_FASE, COL_LAT, COL_LON, "X_UTM", "Y_UTM"]])
+            except Exception as e:
+                issues.append((aid, uf.name, f"Erro a processar: {e}"))
 
-        
-            st.stop()
+        if atleta_data:
+            out = pd.concat(atleta_data, ignore_index=True)
+            out = out.sort_values(by=COL_TIME)
+            out_path = temp_dir / f"T_{aid}.csv"
+            out.to_csv(out_path, sep=";", index=False)
+            temp_files.append(out_path)
 
+    return temp_files, audit, issues
 
-        
-        sub = sample_atl[["Lat", "Lon"]].dropna()
+def _sincronizar(temp_files, out_dir: Path):
+    fases_dict = {}
+    all_unique_times = set()
 
-        
-        if sub.empty:
+    # Pass 1: collect times and phase windows
+    for f in temp_files:
+        df = pd.read_csv(f, sep=";", usecols=[COL_TIME, COL_FASE])
+        df = df.dropna(subset=[COL_TIME])
+        all_unique_times.update(df[COL_TIME].tolist())
+        for fs in df[COL_FASE].dropna().unique():
+            t_fase = df.loc[df[COL_FASE] == fs, COL_TIME]
+            t_s, t_e = t_fase.min(), t_fase.max()
+            if fs not in fases_dict:
+                fases_dict[fs] = [t_s, t_e]
+            else:
+                fases_dict[fs][0] = min(fases_dict[fs][0], t_s)
+                fases_dict[fs][1] = max(fases_dict[fs][1], t_e)
 
-        
-            st.error("❌ Sem amostras Lat/Lon válidas no CSV do atleta (NaNs).")
+    master_df = pd.DataFrame({COL_TIME: sorted(list(all_unique_times))})
 
-        
-            st.stop()
+    out_files = []
+    for f in temp_files:
+        df_atl = pd.read_csv(f, sep=";")
+        df_sync = pd.merge(master_df, df_atl, on=COL_TIME, how="left")
+        aid = str(df_atl["Atleta_ID"].iloc[0]) if "Atleta_ID" in df_atl.columns else f.stem.replace("T_","")
+        df_sync["Atleta_ID"] = aid
 
+        # fill phase windows
+        for fase, (t_s, t_e) in fases_dict.items():
+            mask = (df_sync[COL_TIME] >= t_s) & (df_sync[COL_TIME] <= t_e)
+            df_sync.loc[mask, COL_FASE] = fase
 
-        
-        alat = float(sub["Lat"].median())
+        out_path = out_dir / f"Player_{aid}_SYNC.csv"
+        df_sync.to_csv(out_path, sep=";", index=False, encoding="utf-8-sig")
+        out_files.append(out_path)
 
-        
-        alon = float(sub["Lon"].median())
+    # Order phases for reporting
+    ordem_fases = {"Warm-Up": 0, "1P": 1, "2P": 2}
+    fases_ordenadas = sorted(fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
 
+    return out_files, fases_ordenadas, fases_dict, len(master_df)
 
-        
-        # Distância geodésica WGS84 (metros reais)
+def _zip_results(out_dir: Path, manifest: dict, report_txt: str, zip_path: Path):
+    # Write manifest + report into out_dir
+    (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "relatorio.txt").write_text(report_txt, encoding="utf-8")
 
-        
-        _, _, dist_metros = GEOD.inv(alon, alat, clon, clat)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for p in sorted(out_dir.rglob("*")):
+            if p.is_file():
+                z.write(p, arcname=p.relative_to(out_dir))
 
-        
-        is_geo_valid = dist_metros < 50  # LIMITE DE 50 METROS
+# -------------------------------
+# Main flow
+# -------------------------------
+if not f_campo or not f_atleta:
+    st.info("👋 Carrega os ficheiros na barra lateral para iniciar.")
+    st.stop()
 
+try:
+    pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo(f_campo, int(epsg_used))
+except Exception as e:
+    st.error(f"❌ Erro na calibração do campo: {e}")
+    st.stop()
 
-        
-        # Reset do ponteiro para não afetar leituras futuras
+# Geo-validation (multi-atleta)
+passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
+    f_atleta, clat, clon, float(raio_validacao_m), int(amostra_geo_n), float(min_pct_atletas_ok)
+)
 
-        
-        try:
+st.header("📍 Validação de Localização (Campo ↔ Atletas)")
+c1, c2, c3 = st.columns(3)
+c1.metric("% atletas OK", f"{pct_ok*100:.0f}%")
+c2.metric("Raio (m)", f"{int(raio_validacao_m)}")
+c3.metric("Amostra/atleta", f"{int(amostra_geo_n)}")
 
-        
-            atleta_file.seek(0)
-
-        
-        except Exception:
-
-        
-            pass
-
-        # --- EXIBIÇÃO ---
-        st.header("📍 Identificação do Local")
-        if is_geo_valid:
-            st.success(f"✅ LOCALIZAÇÃO VALIDADA: Atletas e Campo na mesma localizaçã. Atletas a {dist_metros:.1f}m do centro do campo.")
-        else:
-            st.error(f"❌ ERRO CRÍTICO DE LOCALIZAÇÃO: Os atletas estão a {dist_metros:.1f}m do campo. Limite máximo: 50m.")
-
-        m = folium.Map(location=[clat, clon], zoom_start=18)
-        folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri World Imagery', name='Esri (Satélite)').add_to(m)
-        for k, v in pts_gps.items():
-            folium.Marker(v, popup=f"Canto {k}", icon=folium.Icon(color='red' if is_geo_valid else 'black')).add_to(m)
-        st_folium(m, width=1100, height=450, key="mapa_v11_1")
-
-        st.divider()
-
-        # 3. AUDITORIA DE ATLETAS
-        st.header("👥 Auditoria de Atletas")
-        audit_data = {}
-        for f in f_atleta:
-            match = re.search(r"Player-(\d+)", f.name)
-            aid = match.group(0) if match else "Player-?"
-            n = f.name.upper()
-            fase = "Warm-Up" if "WARM" in n else "1P" if any(x in n for x in ["1P", "PRIMEIRA"]) else "2P" if any(x in n for x in ["2P", "SEGUNDA"]) else "Extra"
-            if aid not in audit_data: audit_data[aid] = []
-            audit_data[aid].append(fase)
-
-        rows = []
-        completos = 0
-        for aid in sorted(audit_data.keys(), key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0):
-            f_list = audit_data[aid]
-            is_ok = all(x in f_list for x in ["Warm-Up", "1P", "2P"])
-            if is_ok: completos += 1
-            rows.append({
-                "ID Atleta": aid,
-                "Ficheiros": len(f_list),
-                "Estado": "✅ OK" if is_ok else "❌ INCOMPLETO",
-                "Fases": ", ".join(set(f_list))
-            })
-        
-        st.table(pd.DataFrame(rows))
-        
-        # Verificação de Quórum
-        quorum_ok = completos >= 10
-        if quorum_ok:
-            st.success(f"✅ Quórum Atingido: {completos} atletas validados.")
-        else:
-            st.warning(f"⚠️ Quórum Insuficiente: Precisamos de 10 atletas completos. Tens apenas {completos}.")
-
-        st.divider()
-
-        # 4. SUBMISSÃO FINAL
-        pode_submeter = is_geo_valid and quorum_ok
-        if st.button("🚀 VALIDAR TUDO E GRAVAR NO SQL", type="primary", use_container_width=True, disabled=not pode_submeter):
-            st.balloons()
-            st.success("Tudo em conformidade. Dados prontos para integração SQL.")
-
-    else:
-        st.warning("⚠️ Aguardando os 4 cantos do campo (BL, BR, TL, TR).")
+if passed_geo:
+    st.success("✅ Validação geográfica aprovada.")
 else:
-    st.info("👋 Por Favor, carregar os dados no menu lateral para iniciar.")
+    st.error("❌ Validação geográfica falhou (percentagem insuficiente dentro do raio).")
+
+with st.expander("Detalhes geo-check"):
+    if ok_list:
+        st.write("**Dentro do raio (exemplos):**", ", ".join([f"{a} ({d:.0f} m)" for a, d in ok_list[:10]]))
+    if fora_list:
+        st.write("**Fora do raio (exemplos):**", ", ".join([f"{a} ({d:.0f} m)" for a, d in fora_list[:10]]))
+    if geo_errors:
+        st.write("**Erros (exemplos):**", ", ".join([f"{a}: {m}" for a, m in geo_errors[:10]]))
+
+# Map
+m = folium.Map(location=[clat, clon], zoom_start=18)
+folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri World Imagery', name='Esri (Satélite)').add_to(m)
+for k, v in pts_gps.items():
+    folium.Marker(v, popup=f"Canto {k}").add_to(m)
+st_folium(m, width=1100, height=450, key="mapa_pipeline")
+
+st.divider()
+
+# Audit by athlete phases
+st.header("👥 Auditoria de Atletas (ficheiros submetidos)")
+audit_data = {}
+for f in f_atleta:
+    aid = _get_atleta_id(f.name)
+    audit_data.setdefault(aid, [])
+    audit_data[aid].append(_infer_fase(f.name))
+
+rows = []
+completos = 0
+for aid in sorted(audit_data.keys(), key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0):
+    fases = audit_data[aid]
+    is_ok = all(x in fases for x in ["Warm-Up", "1P", "2P"])
+    if is_ok:
+        completos += 1
+    rows.append({
+        "ID Atleta": aid,
+        "Ficheiros": len(fases),
+        "Estado": "✅ OK" if is_ok else "❌ INCOMPLETO",
+        "Fases": ", ".join(sorted(set(fases)))
+    })
+st.table(pd.DataFrame(rows))
+st.write(f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_data)}")
+
+st.divider()
+
+# Normalization + export
+st.header("🧭 Normalização (UTM + rotação) e Exportação")
+
+if not passed_geo:
+    st.warning("A exportação está desativada porque a validação geográfica falhou. Ajusta o raio/% mínimo ou verifica os ficheiros.")
+    st.stop()
+
+btn = st.button("⚙️ Processar, Sincronizar e Gerar ZIP", type="primary", use_container_width=True)
+
+if btn:
+    with st.spinner("A processar..."):
+        with tempfile.TemporaryDirectory() as td:
+            td_path = Path(td)
+            temp_dir = td_path / "Temp_Processing"
+            out_dir = td_path / "Output_UTM_Sincronizado"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            temp_files, audit_proc, issues = _processar_atletas_para_temp(
+                f_atleta, int(epsg_used), origin, R,
+                aplicar_suavizacao, int(janela_savgol), int(poly_savgol),
+                temp_dir
+            )
+
+            if not temp_files:
+                st.error("❌ Não foi possível gerar ficheiros temporários (verifica colunas Time/Lat/Lon e nomes).")
+                st.stop()
+
+            out_files, fases_ordenadas, fases_dict, n_master = _sincronizar(temp_files, out_dir)
+
+            # Build report
+            rot_deg = float(np.degrees(angulo_rad))
+            report_lines = []
+            report_lines.append("FPF Performance Hub — Relatório de Validação e Normalização")
+            report_lines.append("="*70)
+            report_lines.append(f"EPSG (UTM): {epsg_used}")
+            report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
+            report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
+            report_lines.append(f"Rotação aplicada:    {rot_deg:.2f}° (alinhamento BL→BR com eixo X)")
+            report_lines.append("-"*70)
+            report_lines.append("Validação geográfica")
+            report_lines.append(f"  Raio: {raio_validacao_m:.0f} m | Amostra: {amostra_geo_n} linhas/atleta | % OK: {pct_ok*100:.0f}% (mínimo {min_pct_atletas_ok*100:.0f}%)")
+            report_lines.append(f"  Dentro do raio: {len({a for a,_ in ok_list})} atletas | Fora: {len({a for a,_ in fora_list})} atletas | Erros: {len(geo_errors)}")
+            report_lines.append("-"*70)
+            report_lines.append("Auditoria de atletas (submissão)")
+            report_lines.append(f"  Atletas totais: {len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}")
+            report_lines.append("-"*70)
+            report_lines.append("Sincronização")
+            report_lines.append(f"  Timestamps mestre: {n_master}")
+            report_lines.append(f"  Ficheiros gerados: {len(out_files)}")
+            report_lines.append("  Fases (ordem cronológica):")
+            for fase, (t_s, t_e) in fases_ordenadas:
+                report_lines.append(f"    - {fase:8} | início: {t_s} | fim: {t_e}")
+            if issues:
+                report_lines.append("-"*70)
+                report_lines.append("Avisos/Problemas (exemplos):")
+                for aid, fn, msg in issues[:25]:
+                    report_lines.append(f"  - {aid} | {fn} | {msg}")
+            report_txt = "\n".join(report_lines)
+
+            manifest = {
+                "epsg": int(epsg_used),
+                "field": {
+                    "corners_gps": pts_gps,
+                    "centroid_gps": {"lat": clat, "lon": clon},
+                    "length_m": dist_x,
+                    "width_m": dist_y,
+                    "rotation_deg": rot_deg
+                },
+                "geo_validation": {
+                    "radius_m": float(raio_validacao_m),
+                    "sample_rows_per_athlete": int(amostra_geo_n),
+                    "min_pct_ok": float(min_pct_atletas_ok),
+                    "pct_ok": float(pct_ok),
+                    "passed": bool(passed_geo)
+                },
+                "smoothing": {
+                    "enabled": bool(aplicar_suavizacao),
+                    "window": int(janela_savgol),
+                    "polyorder": int(poly_savgol)
+                },
+                "outputs": {
+                    "files": [p.name for p in out_files],
+                    "n_files": len(out_files),
+                    "master_timestamps": n_master
+                }
+            }
+
+            zip_path = td_path / "FPF_export.zip"
+            _zip_results(out_dir, manifest, report_txt, zip_path)
+
+            zip_bytes = zip_path.read_bytes()
+
+    st.success("✅ Processamento concluído. Faz download do ZIP e do relatório abaixo.")
+
+    st.download_button(
+        "⬇️ Download ZIP (SYNC + manifest + relatório)",
+        data=zip_bytes,
+        file_name="FPF_export_SYNC.zip",
+        mime="application/zip",
+        use_container_width=True
+    )
+
+    st.subheader("📄 Relatório (pré-visualização)")
+    st.code(report_txt, language="text")
+    st.download_button(
+        "⬇️ Download Relatório (.txt)",
+        data=report_txt.encode("utf-8"),
+        file_name="relatorio_FPF.txt",
+        mime="text/plain",
+        use_container_width=True
+    )
