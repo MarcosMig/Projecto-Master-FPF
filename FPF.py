@@ -1,12 +1,18 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Feb 28 19:38:12 2026
+
+@author: marco
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
 from pyproj import Geod
 from pathlib import Path
-import tempfile
 import json
-import zipfile
+import tempfile
 GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance (metros reais)
 from streamlit_folium import st_folium
 import re
@@ -111,28 +117,28 @@ with st.sidebar:
     st.caption("Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome.")
     f_atleta = st.file_uploader("Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"])
 
+    st.divider()
+    st.header("🧾 Dados da Sessão")
+    data_sessao = st.date_input("Data")
+    selecao = st.text_input("Seleção (ex.: U19)")
+    genero = st.selectbox("Género", options=["M", "F"], index=0)
+    contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0)
+    adversario_a = ""
+    adversario_b = ""
+    if contexto == "Jogo":
+        col_a, col_b = st.columns(2)
+        with col_a:
+            adversario_a = st.text_input("Equipa A (ex.: Portugal)")
+        with col_b:
+            adversario_b = st.text_input("Equipa B (ex.: Espanha)")
 
-st.divider()
-st.header("🧾 Dados da Sessão")
-data_sessao = st.date_input("Data")
-selecao = st.text_input("Seleção (ex.: U19)")
-genero = st.selectbox("Género", options=["M", "F"], index=0)
-contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0)
-adversario_a = ""
-adversario_b = ""
-if contexto == "Jogo":
-    col_a, col_b = st.columns(2)
-    with col_a:
-        adversario_a = st.text_input("Equipa A (ex.: Portugal)")
-    with col_b:
-        adversario_b = st.text_input("Equipa B (ex.: Espanha)")
+    st.divider()
+    st.header("🏟️ Local")
+    estadio = st.text_input("Nome do Estádio")
+    cidade = st.text_input("Cidade")
+    pais = st.text_input("País")
 
-st.divider()
-st.header("🏟️ Local")
-estadio = st.text_input("Nome do Estádio")
-cidade = st.text_input("Cidade")
-pais = st.text_input("País")
-
+    st.divider()
     st.header("⚙️ Opções")
     epsg_used = st.selectbox("EPSG UTM (Portugal continental tipicamente 32629)", options=[32629, 32628, 32630], index=0)
     raio_validacao_m = st.number_input("Raio máx. para validação Campo↔Atleta (m)", min_value=10, max_value=500, value=50, step=10)
@@ -377,7 +383,6 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
     f_atleta, clat, clon, float(raio_validacao_m), int(amostra_geo_n), float(min_pct_atletas_ok)
 )
 
-
 st.header("📍 Validação de Localização (Campo ↔ Atletas)")
 
 loc_txt = "—"
@@ -470,8 +475,20 @@ if btn:
             # Build report
             rot_deg = float(np.degrees(angulo_rad))
             report_lines = []
-            report_lines.append("FPF Performance Hub — Relatório de Validação e Normalização")
-            report_lines.append("="*70)
+report_lines.append("FPF Performance Hub — Relatório de Validação e Normalização")
+report_lines.append("="*70)
+report_lines.append("Dados da Sessão")
+report_lines.append(f"  Data: {data_sessao.strftime('%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}")
+report_lines.append(f"  Seleção: {selecao} | Género: {genero} | Contexto: {contexto}")
+if contexto == "Jogo":
+    vs_txt = " vs ".join([t for t in [adversario_a.strip(), adversario_b.strip()] if t])
+    if vs_txt:
+        report_lines.append(f"  Jogo: {vs_txt}")
+loc_txt = "—"
+if estadio or cidade or pais:
+    parts = [p for p in [estadio.strip(), cidade.strip(), pais.strip()] if p]
+    loc_txt = ", ".join(parts)
+report_lines.append(f"  Local: {loc_txt}")
             report_lines.append(f"EPSG (UTM): {epsg_used}")
             report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
             report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
