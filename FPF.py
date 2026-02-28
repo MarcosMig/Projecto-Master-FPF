@@ -3,6 +3,10 @@ import pandas as pd
 import numpy as np
 import folium
 from pyproj import Geod
+from pathlib import Path
+import json
+import zipfile
+import tempfile
 GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance (metros reais)
 from streamlit_folium import st_folium
 import re
