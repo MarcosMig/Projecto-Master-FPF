@@ -12,7 +12,7 @@ from streamlit_folium import st_folium
 import re
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
+st.set_page_config(page_title="Validação de Dados", layout="wide")
 if 'auth' not in st.session_state: st.session_state.auth = False
 
 
@@ -81,7 +81,7 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title"> FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
@@ -102,7 +102,7 @@ if not st.session_state.auth:
 
 # --- INTERFACE SINGLE PAGE ---
 # --- INTERFACE SINGLE PAGE ---
-st.title("🚀 Pipeline de Validação + Normalização (UTM/Rotação)")
+st.title("Validação e Normalização de Dados")
 
 with st.sidebar:
     st.header("📤 Upload de Ficheiros")
@@ -352,7 +352,7 @@ def _zip_results(out_dir: Path, manifest: dict, report_txt: str, zip_path: Path)
 # Main flow
 # -------------------------------
 if not f_campo or not f_atleta:
-    st.info("👋 Carrega os ficheiros na barra lateral para iniciar.")
+    st.info("Por Favor carregar os ficheiros na barra lateral para iniciar.")
     st.stop()
 
 try:
@@ -395,7 +395,7 @@ st_folium(m, width=1100, height=450, key="mapa_pipeline")
 st.divider()
 
 # Audit by athlete phases
-st.header("👥 Auditoria de Atletas (ficheiros submetidos)")
+st.header("Auditoria de Atletas")
 audit_data = {}
 for f in f_atleta:
     aid = _get_atleta_id(f.name)
@@ -421,7 +421,7 @@ st.write(f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_d
 st.divider()
 
 # Normalization + export
-st.header("🧭 Normalização (UTM + rotação) e Exportação")
+st.header("Normalização e Exportação")
 
 if not passed_geo:
     st.warning("A exportação está desativada porque a validação geográfica falhou. Ajusta o raio/% mínimo ou verifica os ficheiros.")
@@ -513,17 +513,17 @@ if btn:
 
             zip_bytes = zip_path.read_bytes()
 
-    st.success("✅ Processamento concluído. Faz download do ZIP e do relatório abaixo.")
+    st.success("✅ Processamento concluído. Faz download dos dados e do relatório abaixo.")
 
     st.download_button(
-        "⬇️ Download ZIP (SYNC + manifest + relatório)",
+        "⬇️ Download ZIP",
         data=zip_bytes,
         file_name="FPF_export_SYNC.zip",
         mime="application/zip",
         use_container_width=True
     )
 
-    st.subheader("📄 Relatório (pré-visualização)")
+    st.subheader("📄 Relatório")
     st.code(report_txt, language="text")
     st.download_button(
         "⬇️ Download Relatório (.txt)",
