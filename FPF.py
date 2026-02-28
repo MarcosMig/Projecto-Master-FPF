@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
+GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance
+
 from streamlit_folium import st_folium
 import re
 
@@ -55,7 +57,7 @@ if not st.session_state.auth:
             st.session_state.auth = True
             st.rerun()
         else:
-            st.error("Credenciais Inválidas") #
+            st.errorr("Credenciais Inválidas") #
     st.stop()
 
 # --- INTERFACE SINGLE PAGE ---
@@ -83,21 +85,45 @@ if f_campo and f_atleta:
         # 2. VALIDAÇÃO CRUZADA (GEO-FENCING APERTADO - 50m)
         sample_atl = pd.read_csv(f_atleta[0], sep=None, engine='python', nrows=1)
         sample_atl.columns = [c.strip().replace('"', '') for c in sample_atl.columns]
-        alat, alon = sample_atl["Lat"].iloc[0], sample_atl["Lon"].iloc[0]
-        
-        # Cálculo da distância em metros (aproximação Haversine simplificada)
-        dist_metros = np.sqrt((clat - alat)**2 + (clon - alon)**2) * 111320
-        is_geo_valid = dist_metros < 50 # LIMITE DE 50 METROS
+                # Amostra mais robusta (evita outliers do primeiro registo): usa até 500 linhas e mediana
+        try:
+            atleta_file.seek(0)
+        except Exception:
+            pass
+        sample_atl = pd.read_csv(atleta_file, nrows=500)
+        sample_atl.columns = [c.strip() for c in sample_atl.columns]
+
+        if "Lat" not in sample_atl.columns or "Lon" not in sample_atl.columns:
+            st.errorr("❌ CSV do atleta não contém colunas 'Lat' e 'Lon'.")
+            st.stop()
+
+        sub = sample_atl[["Lat", "Lon"]].dropna()
+        if sub.empty:
+            st.errorr("❌ Sem amostras Lat/Lon válidas no CSV do atleta (NaNs).")
+            st.stop()
+
+        alat = float(sub["Lat"].median())
+        alon = float(sub["Lon"].median())
+
+        # Distância geodésica (m) entre atleta e centro do campo (WGS84)
+        _, _, dist_metros = GEOD.inv(alon, alat, clon, clat)
+
+        # Validação: atleta deve estar dentro de 50 m do centro
+        is_geo_valid = dist_metros < 50
+        try:
+            atleta_file.seek(0)
+        except Exception:
+            pass
 
         # --- EXIBIÇÃO ---
         st.header("📍 Identificação do Campo")
         if is_geo_valid:
             st.success(f"✅ LOCALIZAÇÃO VALIDADA: Atletas e Campo na mesma localizaçã. Atletas a {dist_metros:.1f}m do centro do campo.")
         else:
-            st.error(f"❌ ERRO CRÍTICO DE LOCALIZAÇÃO: Os atletas estão a {dist_metros:.1f}m do campo. Limite máximo: 50m.")
+            st.errorr(f"❌ ERRO CRÍTICO DE LOCALIZAÇÃO: Os atletas estão a {dist_metros:.1f}m do campo. Limite máximo: 50m.")
 
         m = folium.Map(location=[clat, clon], zoom_start=18)
-        folium.TileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', attr='Google', name='Google Satellite').add_to(m)
+        folium.TileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', attr='Esri World Imagery', name='Esri (Satélite)').add_to(m)
         for k, v in pts_gps.items():
             folium.Marker(v, popup=f"Canto {k}", icon=folium.Icon(color='red' if is_geo_valid else 'black')).add_to(m)
         st_folium(m, width=1100, height=450, key="mapa_v11_1")
@@ -141,11 +167,11 @@ if f_campo and f_atleta:
 
         # 4. SUBMISSÃO FINAL
         pode_submeter = is_geo_valid and quorum_ok
-        if st.button("Validar e Submeter.", type="primary", use_container_width=True, disabled=not pode_submeter):
-            st.success("Tudo em conformidade. Dados Submetidos.")
+        if st.button("Validar e submeter Base de Dados", type="primary", use_container_width=True, disabled=not pode_submeter):
+            st.success("Tudo em conformidade. Dados prontos para integração.")
 
     else:
         st.warning("⚠️ Aguardando os 4 cantos do campo (BL, BR, TL, TR).")
 else:
-
     st.info("👋 Por Favor, carregar os dados no menu lateral para iniciar.")
+
