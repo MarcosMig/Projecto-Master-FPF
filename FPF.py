@@ -109,6 +109,7 @@ st.title("🚀 Pipeline de Validação + Normalização (UTM/Rotação)")
 
 with st.sidebar:
     st.header("🧾 Dados da Sessão")
+    estadio = st.text_input("Estádio")
     data_sessao = st.date_input("Data")
     selecao = st.text_input("Seleção (ex.: U19)")
     genero = st.selectbox("Género", options=["M", "F"], index=0)
@@ -126,12 +127,8 @@ with st.sidebar:
     st.header("📤 Upload de Ficheiros")
     st.caption("Campo: 4 CSVs com BL, BR, TL, TR no nome do ficheiro.")
     f_campo = st.file_uploader("Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"])
-    st.caption("Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome.")
+    st.caption("Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro.")
     f_atleta = st.file_uploader("Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"])
-
-    st.divider()
-    st.header("🏟️ Estádio")
-    estadio = st.text_input("Nome do Estádio")
 
 st.divider()
 
@@ -405,8 +402,8 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
 st.header("📍 Validação de Localização (Campo ↔ Atletas)")
 
 loc_txt = "—"
-if estadio or cidade or pais:
-    parts = [p for p in [estadio.strip(), cidade.strip(), pais.strip()] if p]
+parts = [p for p in [estadio.strip() if estadio else "", cidade, pais] if p]
+if parts:
     loc_txt = ", ".join(parts)
 
 c1, c2 = st.columns([1, 2])
@@ -507,7 +504,8 @@ if btn:
             if estadio or cidade or pais:
                 parts = [p for p in [estadio.strip(), cidade.strip(), pais.strip()] if p]
                 loc_txt = ", ".join(parts)
-            report_lines.append(f"  Local: {loc_txt}")
+            report_lines.append(f"  Estádio: {estadio or '—'}")
+            report_lines.append(f"  Localização: {", ".join([p for p in [cidade, pais] if p]) or '—'}")
             report_lines.append(f"EPSG (UTM): {epsg_used}")
             report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
             report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
