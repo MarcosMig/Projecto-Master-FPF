@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
+from pyproj import Geod
 GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance
 
 from streamlit_folium import st_folium
@@ -174,4 +175,3 @@ if f_campo and f_atleta:
         st.warning("⚠️ Aguardando os 4 cantos do campo (BL, BR, TL, TR).")
 else:
     st.info("👋 Por Favor, carregar os dados no menu lateral para iniciar.")
-
