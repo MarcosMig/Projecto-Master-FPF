@@ -4,15 +4,15 @@ import numpy as np
 import folium
 from pyproj import Geod
 from pathlib import Path
+import tempfile
 import json
 import zipfile
-import tempfile
 GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance (metros reais)
 from streamlit_folium import st_folium
 import re
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Validação de Dados", layout="wide")
+st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
 if 'auth' not in st.session_state: st.session_state.auth = False
 
 
@@ -81,7 +81,7 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title"> FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
@@ -102,7 +102,7 @@ if not st.session_state.auth:
 
 # --- INTERFACE SINGLE PAGE ---
 # --- INTERFACE SINGLE PAGE ---
-st.title("Validação e Normalização de Dados")
+st.title("🚀 Pipeline de Validação + Normalização (UTM/Rotação)")
 
 with st.sidebar:
     st.header("📤 Upload de Ficheiros")
@@ -111,7 +111,28 @@ with st.sidebar:
     st.caption("Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome.")
     f_atleta = st.file_uploader("Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"])
 
-    st.divider()
+
+st.divider()
+st.header("🧾 Dados da Sessão")
+data_sessao = st.date_input("Data")
+selecao = st.text_input("Seleção (ex.: U19)")
+genero = st.selectbox("Género", options=["M", "F"], index=0)
+contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0)
+adversario_a = ""
+adversario_b = ""
+if contexto == "Jogo":
+    col_a, col_b = st.columns(2)
+    with col_a:
+        adversario_a = st.text_input("Equipa A (ex.: Portugal)")
+    with col_b:
+        adversario_b = st.text_input("Equipa B (ex.: Espanha)")
+
+st.divider()
+st.header("🏟️ Local")
+estadio = st.text_input("Nome do Estádio")
+cidade = st.text_input("Cidade")
+pais = st.text_input("País")
+
     st.header("⚙️ Opções")
     epsg_used = st.selectbox("EPSG UTM (Portugal continental tipicamente 32629)", options=[32629, 32628, 32630], index=0)
     raio_validacao_m = st.number_input("Raio máx. para validação Campo↔Atleta (m)", min_value=10, max_value=500, value=50, step=10)
@@ -338,21 +359,11 @@ def _sincronizar(temp_files, out_dir: Path):
 
     return out_files, fases_ordenadas, fases_dict, len(master_df)
 
-def _zip_results(out_dir: Path, manifest: dict, report_txt: str, zip_path: Path):
-    # Write manifest + report into out_dir
-    (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    (out_dir / "relatorio.txt").write_text(report_txt, encoding="utf-8")
-
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as z:
-        for p in sorted(out_dir.rglob("*")):
-            if p.is_file():
-                z.write(p, arcname=p.relative_to(out_dir))
-
 # -------------------------------
 # Main flow
 # -------------------------------
 if not f_campo or not f_atleta:
-    st.info("Por Favor carregar os ficheiros na barra lateral para iniciar.")
+    st.info("👋 Carrega os ficheiros na barra lateral para iniciar.")
     st.stop()
 
 try:
@@ -366,11 +377,17 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
     f_atleta, clat, clon, float(raio_validacao_m), int(amostra_geo_n), float(min_pct_atletas_ok)
 )
 
+
 st.header("📍 Validação de Localização (Campo ↔ Atletas)")
-c1, c2, c3 = st.columns(3)
+
+loc_txt = "—"
+if estadio or cidade or pais:
+    parts = [p for p in [estadio.strip(), cidade.strip(), pais.strip()] if p]
+    loc_txt = ", ".join(parts)
+
+c1, c2 = st.columns([1, 2])
 c1.metric("% atletas OK", f"{pct_ok*100:.0f}%")
-c2.metric("Raio (m)", f"{int(raio_validacao_m)}")
-c3.metric("Amostra/atleta", f"{int(amostra_geo_n)}")
+c2.markdown(f"**Local:** {loc_txt}")
 
 if passed_geo:
     st.success("✅ Validação geográfica aprovada.")
@@ -395,7 +412,7 @@ st_folium(m, width=1100, height=450, key="mapa_pipeline")
 st.divider()
 
 # Audit by athlete phases
-st.header("Auditoria de Atletas")
+st.header("👥 Auditoria de Atletas (ficheiros submetidos)")
 audit_data = {}
 for f in f_atleta:
     aid = _get_atleta_id(f.name)
@@ -421,13 +438,13 @@ st.write(f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_d
 st.divider()
 
 # Normalization + export
-st.header("Normalização e Exportação")
+st.header("🧭 Normalização (UTM + rotação) e Exportação")
 
 if not passed_geo:
     st.warning("A exportação está desativada porque a validação geográfica falhou. Ajusta o raio/% mínimo ou verifica os ficheiros.")
     st.stop()
 
-btn = st.button("⚙️ Processar, Sincronizar e Gerar ZIP", type="primary", use_container_width=True)
+btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True)
 
 if btn:
     with st.spinner("A processar..."):
@@ -479,51 +496,11 @@ if btn:
                 for aid, fn, msg in issues[:25]:
                     report_lines.append(f"  - {aid} | {fn} | {msg}")
             report_txt = "\n".join(report_lines)
-
-            manifest = {
-                "epsg": int(epsg_used),
-                "field": {
-                    "corners_gps": pts_gps,
-                    "centroid_gps": {"lat": clat, "lon": clon},
-                    "length_m": dist_x,
-                    "width_m": dist_y,
-                    "rotation_deg": rot_deg
-                },
-                "geo_validation": {
-                    "radius_m": float(raio_validacao_m),
-                    "sample_rows_per_athlete": int(amostra_geo_n),
-                    "min_pct_ok": float(min_pct_atletas_ok),
-                    "pct_ok": float(pct_ok),
-                    "passed": bool(passed_geo)
-                },
-                "smoothing": {
-                    "enabled": bool(aplicar_suavizacao),
-                    "window": int(janela_savgol),
-                    "polyorder": int(poly_savgol)
-                },
-                "outputs": {
-                    "files": [p.name for p in out_files],
-                    "n_files": len(out_files),
-                    "master_timestamps": n_master
-                }
             }
 
-            zip_path = td_path / "FPF_export.zip"
-            _zip_results(out_dir, manifest, report_txt, zip_path)
+    st.success("✅ Processamento concluído. Relatório disponível abaixo.")
 
-            zip_bytes = zip_path.read_bytes()
-
-    st.success("✅ Processamento concluído. Faz download dos dados e do relatório abaixo.")
-
-    st.download_button(
-        "⬇️ Download ZIP",
-        data=zip_bytes,
-        file_name="FPF_export_SYNC.zip",
-        mime="application/zip",
-        use_container_width=True
-    )
-
-    st.subheader("📄 Relatório")
+    st.subheader("📄 Relatório (pré-visualização)")
     st.code(report_txt, language="text")
     st.download_button(
         "⬇️ Download Relatório (.txt)",
