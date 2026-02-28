@@ -3,66 +3,27 @@ import pandas as pd
 import numpy as np
 import folium
 from pyproj import Geod
-GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance
-
+GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance (metros reais)
 from streamlit_folium import st_folium
+from geopy.geocoders import Nominatim
 import re
 
-# --- 1. CONFIGURAÇÃO DE UI (LOG IN CENTRALIZADO) ---
-st.set_page_config(page_title="FPF Performance Hub", layout="centered")
+# --- CONFIGURAÇÃO ---
+st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
+if 'auth' not in st.session_state: st.session_state.auth = False
 
-def apply_login_style():
-    st.markdown("""
-        <style>
-        .stApp { background-color: #0e1117; }
-        /* Caixa de Login Compacta e Centralizada */
-        .main .block-container {
-            max-width: 400px !important;
-            background-color: #1a1c23 !important;
-            padding: 40px !important;
-            border-radius: 12px;
-            border: 1px solid #30363d;
-            margin: auto;
-            margin-top: 15vh;
-            box-shadow: 0px 8px 24px rgba(0,0,0,0.5);
-        }
-        header, footer {visibility: hidden;}
-        [data-testid="stSidebar"] {display: none;}
-        /* Botão ENTRAR Vermelho FPF */
-        .stButton>button {
-            width: 100%;
-            background-color: #E30613 !important;
-            color: white !important;
-            font-weight: bold;
-            border: none;
-            height: 3.2em;
-        }
-        h2 { text-align: center; color: white; margin-bottom: 25px; }
-        </style>
-    """, unsafe_allow_html=True)
-
-# --- 2. FASE 1: LOG IN (Utilizando a tua lógica funcional) ---
-if 'auth' not in st.session_state:
-    st.session_state.auth = False
-
+# --- LOGIN ---
 if not st.session_state.auth:
-    apply_login_style()
-    st.markdown("## FPF Performance Hub")
-    
-    # Adicionadas chaves (key) para os inputs não perderem o valor
-    user_input = st.text_input("Utilizador", key="user_val")
-    pass_input = st.text_input("Password", type="password", key="pass_val")
-    
-    if st.button("ENTRAR"):
-        if user_input == "miguel.cardoso" and pass_input == "fpf2026":
+    st.title("⚽ FPF Performance Hub - Login")
+    u, p = st.text_input("Utilizador"), st.text_input("Password", type="password")
+    if st.button("Entrar"):
+        if u == "miguel.cardoso" and p == "fpf2026":
             st.session_state.auth = True
             st.rerun()
-        else:
-            st.error("Credenciais Inválidas") #
     st.stop()
 
 # --- INTERFACE SINGLE PAGE ---
-st.title("Validação de Dados")
+st.title("🚀 Pipeline de Validação Unificada v11.1")
 
 with st.sidebar:
     st.header("📤 Upload de Ficheiros")
@@ -84,45 +45,43 @@ if f_campo and f_atleta:
         clat, clon = np.mean([p[0] for p in pts_gps.values()]), np.mean([p[1] for p in pts_gps.values()])
         
         
-# 2. VALIDAÇÃO CRUZADA (GEO-FENCING APERTADO - 50m)
-atleta_file = f_atleta[0]
+        # 2. VALIDAÇÃO CRUZADA (GEO-FENCING APERTADO - 50m)
+        atleta_file = f_atleta[0]
 
-# Garantir que o ponteiro do ficheiro está no início (upload stream)
-try:
-    atleta_file.seek(0)
-except Exception:
-    pass
+        # Garantir ponteiro no início (Streamlit upload)
+        try:
+            atleta_file.seek(0)
+        except Exception:
+            pass
 
-# Amostra robusta: usa até 500 linhas e mediana (evita outliers do primeiro registo)
-sample_atl = pd.read_csv(atleta_file, sep=None, engine='python', nrows=500)
-sample_atl.columns = [c.strip().replace('"', '') for c in sample_atl.columns]
+        # Amostra robusta: até 500 linhas; mediana (robusto a arranque/outliers)
+        sample_atl = pd.read_csv(atleta_file, sep=None, engine='python', nrows=500)
+        sample_atl.columns = [c.strip().replace('"', '') for c in sample_atl.columns]
 
-if "Lat" not in sample_atl.columns or "Lon" not in sample_atl.columns:
-    st.error("❌ CSV do atleta não contém colunas 'Lat' e 'Lon'.")
-    st.stop()
+        if "Lat" not in sample_atl.columns or "Lon" not in sample_atl.columns:
+            st.error("❌ CSV do atleta não contém colunas 'Lat' e 'Lon'.")
+            st.stop()
 
-sub = sample_atl[["Lat", "Lon"]].dropna()
-if sub.empty:
-    st.error("❌ Sem amostras Lat/Lon válidas no CSV do atleta (NaNs).")
-    st.stop()
+        sub = sample_atl[["Lat", "Lon"]].dropna()
+        if sub.empty:
+            st.error("❌ Sem amostras Lat/Lon válidas no CSV do atleta (NaNs).")
+            st.stop()
 
-alat = float(sub["Lat"].median())
-alon = float(sub["Lon"].median())
+        alat = float(sub["Lat"].median())
+        alon = float(sub["Lon"].median())
 
-# Distância geodésica (m) entre atleta e centro do campo (WGS84)
-_, _, dist_metros = GEOD.inv(alon, alat, clon, clat)
+        # Distância geodésica WGS84 (metros reais)
+        _, _, dist_metros = GEOD.inv(alon, alat, clon, clat)
+        is_geo_valid = dist_metros < 50  # LIMITE DE 50 METROS
 
-# Validação: atleta deve estar dentro de 50 m do centro
-is_geo_valid = dist_metros < 50
-
-# Reset para não afetar leituras posteriores do mesmo ficheiro
-try:
-    atleta_file.seek(0)
-except Exception:
-    pass
+        # Reset do ponteiro para não afetar leituras futuras
+        try:
+            atleta_file.seek(0)
+        except Exception:
+            pass
 
         # --- EXIBIÇÃO ---
-        st.header("📍 Identificação do Campo")
+        st.header("📍 Identificação do Local")
         if is_geo_valid:
             st.success(f"✅ LOCALIZAÇÃO VALIDADA: Atletas e Campo na mesma localizaçã. Atletas a {dist_metros:.1f}m do centro do campo.")
         else:
@@ -137,7 +96,7 @@ except Exception:
         st.divider()
 
         # 3. AUDITORIA DE ATLETAS
-        st.header("Auditoria de Atletas")
+        st.header("👥 Auditoria de Atletas")
         audit_data = {}
         for f in f_atleta:
             match = re.search(r"Player-(\d+)", f.name)
@@ -173,11 +132,11 @@ except Exception:
 
         # 4. SUBMISSÃO FINAL
         pode_submeter = is_geo_valid and quorum_ok
-        if st.button("Validar e submeter Base de Dados", type="primary", use_container_width=True, disabled=not pode_submeter):
-            st.success("Tudo em conformidade. Dados prontos para integração.")
+        if st.button("🚀 VALIDAR TUDO E GRAVAR NO SQL", type="primary", use_container_width=True, disabled=not pode_submeter):
+            st.balloons()
+            st.success("Tudo em conformidade. Dados prontos para integração SQL.")
 
     else:
         st.warning("⚠️ Aguardando os 4 cantos do campo (BL, BR, TL, TR).")
 else:
     st.info("👋 Por Favor, carregar os dados no menu lateral para iniciar.")
-
