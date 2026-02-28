@@ -391,8 +391,8 @@ if not f_campo or not f_atleta:
 try:
     pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo(f_campo, int(epsg_used))
 
-# Local (Cidade/País) derivado das coordenadas do campo (centro)
-cidade, pais = _reverse_geocode_city_country(clat, clon)
+    # Local (Cidade/País) derivado das coordenadas do campo (centro)
+    cidade, pais = _reverse_geocode_city_country(clat, clon)
 except Exception as e:
     st.error(f"❌ Erro na calibração do campo: {e}")
     st.stop()
