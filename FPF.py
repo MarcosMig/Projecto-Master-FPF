@@ -994,31 +994,26 @@ if btn:
 
 
 # ---------- UI (fora do if btn) ----------
-if report_txt:
-    st.subheader("Métricas Individuais")
-    st.caption(
-        f"Thresholds fixos: HSR ≥ {HSR_MPS:.1f} m/s | Sprint ≥ {SPRINT_MPS:.1f} m/s | "
-        f"Acc ≥ {ACC_THR:.1f} m/s² | Dec ≤ {DEC_THR:.1f} m/s²"
-    )
+if df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
 
-    if df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
-        st.dataframe(df_metrics, use_container_width=True, hide_index=True)
-        st.download_button(
-            "⬇️ Download Métricas (.csv)",
-            data=df_metrics.to_csv(index=False).encode("utf-8"),
-            file_name="metricas_individuais_FPF.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
+    # Define a coluna de corte
+    col_inicio = None
+    if "ID_atleta" in df_metrics.columns:
+        col_inicio = "ID_atleta"
+    elif "Atleta_ID" in df_metrics.columns:
+        col_inicio = "Atleta_ID"
+
+    if col_inicio:
+        df_display = df_metrics.loc[:, col_inicio:]
     else:
-        st.warning("Sem métricas para mostrar (verifica se os SYNC foram gerados corretamente).")
+        df_display = df_metrics  # fallback seguro
 
-    st.subheader("Relatório")
-    st.code(report_txt, language="text")
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
+
     st.download_button(
-        "⬇️ Download Relatório (.txt)",
-        data=report_txt.encode("utf-8"),
-        file_name="relatorio_FPF.txt",
-        mime="text/plain",
+        "⬇️ Download Métricas (.csv)",
+        data=df_display.to_csv(index=False).encode("utf-8"),
+        file_name="metricas_individuais_FPF.csv",
+        mime="text/csv",
         use_container_width=True,
     )
