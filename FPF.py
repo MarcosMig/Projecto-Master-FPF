@@ -685,23 +685,12 @@ st.markdown(f"**% Atletas OK:** {pct_ok*100:.0f}%")
 
 st.markdown("---")
 
-if passed_geo:
-    st.success("Validação Geográfica: APROVADA")
-else:
-    st.error("Validação Geográfica: REPROVADA")
 
 if passed_geo:
     st.success("✅ Validação geográfica aprovada.")
 else:
     st.error("❌ Validação geográfica falhou (percentagem insuficiente dentro do raio).")
 
-with st.expander("Detalhes geo-check"):
-    if ok_list:
-        st.write("**Dentro do raio (exemplos):**", ", ".join([f"{a} ({d:.0f} m)" for a, d in ok_list[:10]]))
-    if fora_list:
-        st.write("**Fora do raio (exemplos):**", ", ".join([f"{a} ({d:.0f} m)" for a, d in fora_list[:10]]))
-    if geo_errors:
-        st.write("**Erros (exemplos):**", ", ".join([f"{a}: {m}" for a, m in geo_errors[:10]]))
 
 # Map
 m = folium.Map(location=[clat, clon], zoom_start=18)
