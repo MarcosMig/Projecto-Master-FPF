@@ -36,16 +36,13 @@ def _apply_login_style():
   header, footer {visibility: hidden;}
   [data-testid="stSidebar"] {display: none;}
 
-  /* Remove container visual do Streamlit */
-.block-container {
-    padding-top: 0rem !important;
-}
-
-.main .block-container {
+  /* Container geral transparente */
+  .main .block-container {
     background: transparent !important;
     box-shadow: none !important;
     border: none !important;
-}
+    padding-top: 2rem !important;
+  }
 
   .login-card{
     background: #1a1c23;
