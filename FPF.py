@@ -95,7 +95,7 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
@@ -117,7 +117,7 @@ if not st.session_state.auth:
 
 
 # --- INTERFACE SINGLE PAGE ---
-st.title("🚀 Pipeline de Validação + Normalização (UTM/Rotação)")
+st.title("Validação de Dados")
 
 with st.sidebar:
     st.header("🧾 Dados da Sessão")
@@ -979,4 +979,5 @@ if report_txt:
         file_name="relatorio_FPF.txt",
         mime="text/plain",
         use_container_width=True,
+
     )
