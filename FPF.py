@@ -37,7 +37,11 @@ def _apply_login_style():
   [data-testid="stSidebar"] {display: none;}
 
   /* Evita espaçamento extra acima do card */
-  .block-container { padding-top: 2rem !important; }
+   .main .block-container {
+    background: transparent !important;
+    box-shadow: none !important;
+    border: none !important;
+}
 
   .login-card{
     background: #1a1c23;
@@ -1021,3 +1025,4 @@ if report_txt:
         use_container_width=True,
 
     )
+
