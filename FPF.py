@@ -665,16 +665,27 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
     f_atleta, clat, clon, float(raio_validacao_m), int(amostra_geo_n), float(min_pct_atletas_ok)
 )
 
-st.header("📍 Validação de Localização (Campo ↔ Atletas)")
+st.header("Validação de Localização (Campo ↔ Atletas)")
 
-loc_txt = "—"
-parts = [p for p in [estadio.strip() if estadio else "", cidade, pais] if p]
-if parts:
-    loc_txt = ", ".join(parts)
+# ----- Campo -----
+campo_local = "—"
+campo_parts = [p for p in [estadio.strip() if estadio else "", cidade, pais] if p]
+if campo_parts:
+    campo_local = ", ".join(campo_parts)
 
-c1, c2 = st.columns([1, 2])
-c1.metric("% atletas OK", f"{pct_ok*100:.0f}%")
-c2.markdown(f"**Local:** {loc_txt}")
+# ----- Atletas (centro médio) -----
+atletas_local = f"{clat:.6f}, {clon:.6f}"
+
+st.markdown(f"**Campo, Local:** {campo_local}")
+st.markdown(f"**Atletas, Local:** {atletas_local}")
+st.markdown(f"**% Atletas OK:** {pct_ok*100:.0f}%")
+
+st.markdown("---")
+
+if passed_geo:
+    st.success("Validação Geográfica: APROVADA")
+else:
+    st.error("Validação Geográfica: REPROVADA")
 
 if passed_geo:
     st.success("✅ Validação geográfica aprovada.")
