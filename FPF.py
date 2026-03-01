@@ -33,46 +33,50 @@ if "auth" not in st.session_state:
 def _apply_login_style():
     st.markdown(
         """
-    <style>
-      .stApp { background-color: #0e1117; }
-      header, footer {visibility: hidden;}
-      [data-testid="stSidebar"] {display: none;}
+def _apply_login_style():
+    css = """
+<style>
+  .stApp { background-color: #0e1117; }
+  header, footer {visibility: hidden;}
+  [data-testid="stSidebar"] {display: none;}
 
-      /* Card visual */
-      .login-card{
-        background: #1a1c23;
-        border: 1px solid #30363d;
-        border-radius: 14px;
-        padding: 34px 34px 26px 34px;
-        box-shadow: 0px 10px 28px rgba(0,0,0,0.55);
-      }
+  .login-card{
+    background: #1a1c23;
+    border: 1px solid #30363d;
+    border-radius: 14px;
+    padding: 34px 34px 26px 34px;
+    box-shadow: 0px 10px 28px rgba(0,0,0,0.55);
+  }
 
-      .login-title{
-        text-align: center;
-        color: #ffffff;
-        font-size: 2rem;
-        font-weight: 800;
-        margin: 0 0 1.25rem 0;
-      }
+  .login-title{
+    text-align: center;
+    color: #ffffff;
+    font-size: 2rem;
+    font-weight: 800;
+    margin: 0 0 1.25rem 0;
+  }
 
-      /* Inputs */
-      .stTextInput > div > div > input {
-        background: #0e1117;
-        border: 1px solid #30363d;
-      }
+  .stTextInput > div > div > input {
+    background: #0e1117;
+    border: 1px solid #30363d;
+  }
 
-      /* Botão */
-      .stButton > button{
-        width: 100%;
-        background: #E30613 !important;
-        color: #fff !important;
-        font-weight: 800;
-        border: 0;
-        height: 3.1em;
-        border-radius: 10px;
-      }
-      .stButton > button:hover{ filter: brightness(0.95); }
-    </style>
+  .stButton > button{
+    width: 100%;
+    background: #E30613 !important;
+    color: #fff !important;
+    font-weight: 800;
+    border: 0;
+    height: 3.1em;
+    border-radius: 10px;
+  }
+
+  .stButton > button:hover{
+    filter: brightness(0.95);
+  }
+</style>
+"""
+    st.markdown(css, unsafe_allow_html=True)
     """,
         unsafe_allow_html=True,
     )
