@@ -95,7 +95,7 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
@@ -117,7 +117,7 @@ if not st.session_state.auth:
 
 
 # --- INTERFACE SINGLE PAGE ---
-st.title("Validação de Dados")
+st.title("🚀 Pipeline de Validação + Normalização (UTM/Rotação)")
 
 with st.sidebar:
     st.header("🧾 Dados da Sessão")
@@ -673,8 +673,11 @@ campo_parts = [p for p in [estadio.strip() if estadio else "", cidade, pais] if 
 if campo_parts:
     campo_local = ", ".join(campo_parts)
 
-# ----- Atletas (centro médio) -----
-atletas_local = f"{clat:.6f}, {clon:.6f}"
+# ----- Atletas (centro médio → Cidade/País) -----
+cidade_atl, pais_atl = _reverse_geocode_city_country(clat, clon)
+
+atletas_parts = [p for p in [cidade_atl, pais_atl] if p]
+atletas_local = ", ".join(atletas_parts) if atletas_parts else "—"
 
 st.markdown(f"**Campo, Local:** {campo_local}")
 st.markdown(f"**Atletas, Local:** {atletas_local}")
@@ -979,5 +982,4 @@ if report_txt:
         file_name="relatorio_FPF.txt",
         mime="text/plain",
         use_container_width=True,
-
     )
