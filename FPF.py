@@ -2,7 +2,7 @@
 """
 FPF UTM Engine v11.1 (fix indent + report + metrics)
 Autor: Marcos (base) + ajustes de estabilidade/indentação
-
+"""
 
 import streamlit as st
 import pandas as pd
@@ -15,7 +15,6 @@ import hashlib
 import uuid
 import requests
 import re
-import math
 import io
 
 from streamlit_folium import st_folium
@@ -30,9 +29,6 @@ if "auth" not in st.session_state:
 
 
 # --- LOGIN (CENTRADO + st.secrets) ---
-def _apply_login_style():
-    st.markdown(
-        """
 def _apply_login_style():
     css = """
 <style>
@@ -77,13 +73,11 @@ def _apply_login_style():
 </style>
 """
     st.markdown(css, unsafe_allow_html=True)
-    """,
-        unsafe_allow_html=True,
-    )
 
 
 def _get_auth_from_secrets():
-    """Espera em st.secrets:
+    """
+    Espera em st.secrets:
     [auth]
     username = "..."
     password = "..."
@@ -101,19 +95,14 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="login-title">⚽ FPF Performance Hub</div>',
-            unsafe_allow_html=True,
-        )
+        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
 
         secrets_user, secrets_pass = _get_auth_from_secrets()
         if not secrets_user:
-            st.warning(
-                "⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud."
-            )
+            st.warning("⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud.")
 
         if st.button("Entrar"):
             if secrets_user and u == secrets_user and p == secrets_pass:
@@ -123,6 +112,7 @@ if not st.session_state.auth:
                 st.error("Credenciais inválidas")
 
         st.markdown("</div>", unsafe_allow_html=True)
+
     st.stop()
 
 
