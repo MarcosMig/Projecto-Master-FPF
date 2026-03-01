@@ -36,6 +36,9 @@ def _apply_login_style():
   header, footer {visibility: hidden;}
   [data-testid="stSidebar"] {display: none;}
 
+  /* Evita espaçamento extra acima do card */
+  .block-container { padding-top: 2rem !important; }
+
   .login-card{
     background: #1a1c23;
     border: 1px solid #30363d;
@@ -52,12 +55,15 @@ def _apply_login_style():
     margin: 0 0 1.25rem 0;
   }
 
-  .stTextInput > div > div > input {
-    background: #0e1117;
-    border: 1px solid #30363d;
+  /* ✅ Estiliza só inputs dentro do card */
+  .login-card .stTextInput input{
+    background: #0e1117 !important;
+    border: 1px solid #30363d !important;
+    border-radius: 10px !important;
   }
 
-  .stButton > button{
+  /* ✅ Estiliza só o botão dentro do card */
+  .login-card .stButton > button{
     width: 100%;
     background: #E30613 !important;
     color: #fff !important;
@@ -67,13 +73,12 @@ def _apply_login_style():
     border-radius: 10px;
   }
 
-  .stButton > button:hover{
+  .login-card .stButton > button:hover{
     filter: brightness(0.95);
   }
 </style>
 """
     st.markdown(css, unsafe_allow_html=True)
-
 
 def _get_auth_from_secrets():
     """
@@ -95,7 +100,7 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
@@ -1014,5 +1019,4 @@ if report_txt:
         file_name="relatorio_FPF.txt",
         mime="text/plain",
         use_container_width=True,
-
     )
