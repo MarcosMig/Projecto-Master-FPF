@@ -668,10 +668,7 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
 # ----- Campo -----
-campo_local = "—"
-campo_parts = [p for p in [estadio.strip() if estadio else "", cidade, pais] if p]
-if campo_parts:
-    campo_local = ", ".join(campo_parts)
+campo_local = ", ".join([p for p in [cidade, pais] if p]) or "—"
 
 # ----- Atletas (centro médio → Cidade/País) -----
 cidade_atl, pais_atl = _reverse_geocode_city_country(clat, clon)
