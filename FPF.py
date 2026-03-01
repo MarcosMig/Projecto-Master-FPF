@@ -95,7 +95,7 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
@@ -520,6 +520,43 @@ def _geo_validacao_por_atleta(
     passed = pct_ok >= min_pct_ok
     return passed, pct_ok, ok, fora, erros
 
+def _get_atletas_centroid_latlon(f_atleta_files, amostra_n=500):
+    per_atleta = {}
+
+    for f in f_atleta_files:
+        aid = _get_atleta_id(f.name)
+        try:
+            df = _read_csv_upload(f, nrows=int(amostra_n))
+            if COL_LAT not in df.columns or COL_LON not in df.columns:
+                continue
+
+            sub = df[[COL_LAT, COL_LON]].dropna()
+            if sub.empty:
+                continue
+
+            lat_med = float(pd.to_numeric(sub[COL_LAT], errors="coerce").dropna().median())
+            lon_med = float(pd.to_numeric(sub[COL_LON], errors="coerce").dropna().median())
+
+            if np.isfinite(lat_med) and np.isfinite(lon_med):
+                per_atleta.setdefault(aid, []).append((lat_med, lon_med))
+
+        except Exception:
+            continue
+
+    if not per_atleta:
+        return None, None
+
+    atleta_meds = []
+    for vals in per_atleta.values():
+        lats = [v[0] for v in vals]
+        lons = [v[1] for v in vals]
+        atleta_meds.append((float(np.median(lats)), float(np.median(lons))))
+
+    lat_c = float(np.median([x[0] for x in atleta_meds]))
+    lon_c = float(np.median([x[1] for x in atleta_meds]))
+
+    return lat_c, lon_c
+
 
 def _processar_atletas_para_temp(
     f_atleta_files, epsg, origin, R, aplicar_suav, janela, poly, temp_dir: Path
@@ -667,11 +704,20 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
 
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
+# Campo
+cidade_campo, pais_campo = _reverse_geocode_city_country(clat, clon)
+
+# Atletas (centro estimado)
+alat, alon = _get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
+
+cidade_atl, pais_atl = None, None
+if alat is not None and alon is not None:
+    cidade_atl, pais_atl = _reverse_geocode_city_country(alat, alon)
 # ----- Campo -----
-campo_local = ", ".join([p for p in [cidade, pais] if p]) or "—"
+campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
 # ----- Atletas (centro médio → Cidade/País) -----
-cidade_atl, pais_atl = _reverse_geocode_city_country(clat, clon)
+atletas_local = ", ".join([p for p in [cidade_atl, pais_atl] if p]) or "—"
 
 atletas_parts = [p for p in [cidade_atl, pais_atl] if p]
 atletas_local = ", ".join(atletas_parts) if atletas_parts else "—"
@@ -968,5 +1014,4 @@ if report_txt:
         file_name="relatorio_FPF.txt",
         mime="text/plain",
         use_container_width=True,
-
     )
