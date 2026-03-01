@@ -5,6 +5,13 @@ Created on Sat Feb 28 19:38:12 2026
 @author: marco
 """
 
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Feb 28 19:38:12 2026
+
+@author: marco
+"""
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -13,6 +20,8 @@ from pyproj import Geod
 from pathlib import Path
 import json
 import tempfile
+import hashlib
+import uuid
 import requests
 GEOD = Geod(ellps='WGS84')  # WGS84 geodesic distance (metros reais)
 from streamlit_folium import st_folium
@@ -84,7 +93,7 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
@@ -149,6 +158,194 @@ from pyproj import Transformer
 from scipy.signal import savgol_filter
 import math
 import io
+
+# -------------------------------
+# Métricas Individuais (GPS-only)
+# -------------------------------
+HSR_MPS = 5.5      # High-Speed Running (m/s) ~19.8 km/h
+SPRINT_MPS = 7.0   # Sprint (m/s) ~25.2 km/h
+ACC_THR = 2.5      # m/s^2
+DEC_THR = -3.0     # m/s^2
+SPRINT_BOUT_MIN_S = 1.0  # duração mínima do bout de sprint (s)
+ENGINE_VERSION = "v12-metrics"
+
+def _time_to_seconds(series: pd.Series) -> pd.Series:
+    """Converte Time para segundos (float). Suporta numérico (s/ms) ou datetime-like string."""
+    s = series.copy()
+    s_num = pd.to_numeric(s, errors="coerce")
+    if s_num.notna().mean() > 0.8:
+        med = float(s_num.dropna().median()) if s_num.notna().any() else 0.0
+        if med > 1e12:  # epoch ms
+            return s_num / 1000.0
+        if med > 1e9:   # epoch s
+            return s_num.astype(float)
+        return s_num.astype(float)
+    dt = pd.to_datetime(s, errors="coerce", utc=True)
+    if dt.notna().any():
+        t0 = dt.dropna().iloc[0]
+        return (dt - t0).dt.total_seconds()
+    return pd.Series([np.nan]*len(s), index=s.index, dtype="float64")
+
+def _count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
+    """Conta episódios consecutivos onde mask==True com duração >= min_dur_s."""
+    if len(t) == 0:
+        return 0
+    bouts = 0
+    in_bout = False
+    t_start = None
+    for i in range(len(t)):
+        if mask[i] and not in_bout:
+            in_bout = True
+            t_start = t[i]
+        if (not mask[i]) and in_bout:
+            dur = t[i-1] - t_start if t_start is not None else 0.0
+            if dur >= min_dur_s:
+                bouts += 1
+            in_bout = False
+            t_start = None
+    if in_bout and t_start is not None:
+        dur = t[-1] - t_start
+        if dur >= min_dur_s:
+            bouts += 1
+    return bouts
+
+def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
+    """Calcula métricas para um atleta numa fase (df filtrado)."""
+    if df.empty:
+        return {
+            "duracao_min": 0.0, "dist_m": 0.0, "m_min": np.nan,
+            "peak_1m_m_min": np.nan, "vmax_mps": np.nan,
+            "hsr_dist_m": 0.0, "hsr_pct": np.nan,
+            "sprint_dist_m": 0.0, "n_sprints": 0,
+            "n_acc_2_5": 0, "n_dec_3_0": 0,
+            "n_points": 0, "pct_time_valid": 0.0, "n_gaps_gt2s": 0
+        }
+
+    t_sec = _time_to_seconds(df[COL_TIME])
+    x = pd.to_numeric(df["X_UTM"], errors="coerce")
+    y = pd.to_numeric(df["Y_UTM"], errors="coerce")
+
+    valid = t_sec.notna() & x.notna() & y.notna()
+    dfv = pd.DataFrame({"t": t_sec[valid], "x": x[valid], "y": y[valid]}).sort_values("t")
+
+    if len(dfv) < 2:
+        return {
+            "duracao_min": 0.0, "dist_m": 0.0, "m_min": np.nan,
+            "peak_1m_m_min": np.nan, "vmax_mps": np.nan,
+            "hsr_dist_m": 0.0, "hsr_pct": np.nan,
+            "sprint_dist_m": 0.0, "n_sprints": 0,
+            "n_acc_2_5": 0, "n_dec_3_0": 0,
+            "n_points": int(len(dfv)), "pct_time_valid": float(valid.mean()*100.0),
+            "n_gaps_gt2s": 0
+        }
+
+    t = dfv["t"].to_numpy(dtype=float)
+    dx = np.diff(dfv["x"].to_numpy(dtype=float))
+    dy = np.diff(dfv["y"].to_numpy(dtype=float))
+    dt = np.diff(t)
+
+    good = dt > 0
+    n_gaps = int(np.sum(dt[good] > 2.0)) if np.any(good) else 0
+
+    dx, dy, dt = dx[good], dy[good], dt[good]
+    if len(dt) == 0:
+        return {
+            "duracao_min": 0.0, "dist_m": 0.0, "m_min": np.nan,
+            "peak_1m_m_min": np.nan, "vmax_mps": np.nan,
+            "hsr_dist_m": 0.0, "hsr_pct": np.nan,
+            "sprint_dist_m": 0.0, "n_sprints": 0,
+            "n_acc_2_5": 0, "n_dec_3_0": 0,
+            "n_points": int(len(dfv)), "pct_time_valid": float(valid.mean()*100.0),
+            "n_gaps_gt2s": n_gaps
+        }
+
+    dist_step = np.hypot(dx, dy)
+    dist_total = float(np.nansum(dist_step))
+    dur_s = float(np.nansum(dt))
+    dur_min = dur_s / 60.0 if dur_s > 0 else 0.0
+    m_min = (dist_total / dur_min) if dur_min > 0 else np.nan
+
+    v = dist_step / dt
+    vmax = float(np.nanmax(v)) if len(v) else np.nan
+
+    dv = np.diff(v)
+    dt2 = dt[1:]
+    acc = np.where(dt2 > 0, dv / dt2, np.nan)
+
+    hsr_dist = float(np.nansum(dist_step[v >= HSR_MPS]))
+    sprint_dist = float(np.nansum(dist_step[v >= SPRINT_MPS]))
+    hsr_pct = (hsr_dist / dist_total * 100.0) if dist_total > 0 else np.nan
+
+    n_acc = int(np.nansum(acc >= ACC_THR))
+    n_dec = int(np.nansum(acc <= DEC_THR))
+
+    dist_cum = np.concatenate([[0.0], np.cumsum(dist_step)])
+    # t_cum alinhado com dist_cum (1+len(dist_step)); usamos o t original pós-filter
+    t_cum = np.concatenate([[t[0]], t[1:][good]])
+    peak_1m = np.nan
+    if len(t_cum) == len(dist_cum) and len(t_cum) > 1:
+        best = 0.0
+        j = 0
+        for i in range(len(t_cum)):
+            while j < len(t_cum) and t_cum[j] - t_cum[i] <= 60.0:
+                j += 1
+            if j-1 >= i:
+                dj = dist_cum[j-1] - dist_cum[i]
+                if dj > best:
+                    best = dj
+        peak_1m = float(best)
+
+    t_mid = t[1:][good]
+    sprint_mask = v >= SPRINT_MPS
+    n_sprints = _count_bouts(t_mid, sprint_mask, SPRINT_BOUT_MIN_S)
+
+    return {
+        "duracao_min": dur_min,
+        "dist_m": dist_total,
+        "m_min": m_min,
+        "peak_1m_m_min": peak_1m,
+        "vmax_mps": vmax,
+        "hsr_dist_m": hsr_dist,
+        "hsr_pct": hsr_pct,
+        "sprint_dist_m": sprint_dist,
+        "n_sprints": n_sprints,
+        "n_acc_2_5": n_acc,
+        "n_dec_3_0": n_dec,
+        "n_points": int(len(dfv)),
+        "pct_time_valid": float(valid.mean()*100.0),
+        "n_gaps_gt2s": n_gaps
+    }
+
+def _hash_session(data_sessao, selecao, genero, contexto, estadio, f_campo_files, f_atleta_files) -> str:
+    """Fingerprint determinístico (para deduplicação futura)."""
+    h = hashlib.sha1()
+    h.update(str(data_sessao).encode("utf-8"))
+    h.update(str(selecao).encode("utf-8"))
+    h.update(str(genero).encode("utf-8"))
+    h.update(str(contexto).encode("utf-8"))
+    h.update(str(estadio).encode("utf-8"))
+
+    def _feed_files(files):
+        for uf in sorted(files, key=lambda x: x.name):
+            h.update(uf.name.encode("utf-8"))
+            try:
+                h.update(str(getattr(uf, "size", "")).encode("utf-8"))
+            except Exception:
+                pass
+            try:
+                uf.seek(0)
+                chunk = uf.read(8192)
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8", errors="ignore")
+                h.update(chunk or b"")
+                uf.seek(0)
+            except Exception:
+                pass
+
+    _feed_files(f_campo_files)
+    _feed_files(f_atleta_files)
+    return h.hexdigest()
+
 
 COL_LAT, COL_LON, COL_TIME, COL_FASE = "Lat", "Lon", "Time", "Fase"
 
@@ -488,6 +685,55 @@ if btn:
 
             out_files, fases_ordenadas, fases_dict, n_master = _sincronizar(temp_files, out_dir)
 
+# Session identifiers (auditoria/dedup)
+session_uuid = uuid.uuid4()
+session_id_hex = session_uuid.hex
+session_fingerprint = _hash_session(data_sessao, selecao, genero, contexto, estadio, f_campo, f_atleta)
+
+# Métricas individuais a partir dos SYNC (por fase + Total)
+metrics_rows = []
+for pth in out_files:
+    df_sync = pd.read_csv(pth, sep=";")
+    aid = str(df_sync["Atleta_ID"].dropna().iloc[0]) if "Atleta_ID" in df_sync.columns and df_sync["Atleta_ID"].dropna().any() else Path(pth).stem
+    fases = [f for f in df_sync.get(COL_FASE, pd.Series(dtype=str)).dropna().unique().tolist() if f]
+    for fase in sorted(fases):
+        met = _compute_metrics_for_df(df_sync[df_sync[COL_FASE] == fase])
+        metrics_rows.append({
+            "session_id_hex": session_id_hex,
+            "session_fingerprint": session_fingerprint,
+            "data": data_sessao,
+            "selecao": selecao,
+            "genero": genero,
+            "contexto": contexto,
+            "jogo": (" vs ".join([t for t in [adversario_a.strip(), adversario_b.strip()] if t]) if contexto == "Jogo" else ""),
+            "estadio": estadio,
+            "cidade": cidade,
+            "pais": pais,
+            "atleta_id": aid,
+            "fase": fase,
+            **met,
+            "engine_version": ENGINE_VERSION
+        })
+    met_t = _compute_metrics_for_df(df_sync)
+    metrics_rows.append({
+        "session_id_hex": session_id_hex,
+        "session_fingerprint": session_fingerprint,
+        "data": data_sessao,
+        "selecao": selecao,
+        "genero": genero,
+        "contexto": contexto,
+        "jogo": (" vs ".join([t for t in [adversario_a.strip(), adversario_b.strip()] if t]) if contexto == "Jogo" else ""),
+        "estadio": estadio,
+        "cidade": cidade,
+        "pais": pais,
+        "atleta_id": aid,
+        "fase": "Total",
+        **met_t,
+        "engine_version": ENGINE_VERSION
+    })
+
+df_metrics = pd.DataFrame(metrics_rows)
+
             # Build report
             rot_deg = float(np.degrees(angulo_rad))
             report_lines = []
@@ -505,7 +751,8 @@ if btn:
                 parts = [p for p in [estadio.strip(), cidade.strip(), pais.strip()] if p]
                 loc_txt = ", ".join(parts)
             report_lines.append(f"  Estádio: {estadio or '—'}")
-            report_lines.append(f"  Localização: {", ".join([p for p in [cidade, pais] if p]) or '—'}")
+            loc_part = ", ".join([p for p in [cidade, pais] if p]) or "—"
+            report_lines.append(f"  Localização: {loc_part}")
             report_lines.append(f"EPSG (UTM): {epsg_used}")
             report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
             report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
@@ -529,9 +776,52 @@ if btn:
                 report_lines.append("Avisos/Problemas (exemplos):")
                 for aid, fn, msg in issues[:25]:
                     report_lines.append(f"  - {aid} | {fn} | {msg}")
+report_lines.append("-"*70)
+report_lines.append("Métricas Individuais (GPS-only) — thresholds fixos")
+report_lines.append(f"  HSR ≥ {HSR_MPS:.1f} m/s | Sprint ≥ {SPRINT_MPS:.1f} m/s | Acc ≥ {ACC_THR:.1f} m/s² | Dec ≤ {DEC_THR:.1f} m/s²")
+report_lines.append(f"  Session ID (hex): {session_id_hex}")
+report_lines.append(f"  Session fingerprint (sha1): {session_fingerprint}")
+
+if 'df_metrics' in locals() and not df_metrics.empty:
+    try:
+        df_total = df_metrics[df_metrics["fase"] == "Total"].copy()
+        df_total = df_total.dropna(subset=["m_min"])
+        report_lines.append("  Top 3 (Total) — m/min:")
+        top = df_total.sort_values("m_min", ascending=False).head(3)
+        for _, r in top.iterrows():
+            report_lines.append(f"    - Atleta {r['atleta_id']}: {r['m_min']:.1f} m/min | Dist {r['dist_m']:.0f} m | Dur {r['duracao_min']:.1f} min")
+    except Exception:
+        pass
+    try:
+        df_total2 = df_metrics[df_metrics["fase"] == "Total"].copy()
+        df_total2 = df_total2.dropna(subset=["peak_1m_m_min"])
+        report_lines.append("  Top 3 (Total) — Peak 1' (m/min):")
+        top2 = df_total2.sort_values("peak_1m_m_min", ascending=False).head(3)
+        for _, r in top2.iterrows():
+            report_lines.append(f"    - Atleta {r['atleta_id']}: {r['peak_1m_m_min']:.0f} m/min | Vmax {r['vmax_mps']:.2f} m/s")
+    except Exception:
+        pass
+else:
+    report_lines.append("  (Sem métricas calculadas)")
+
             report_txt = "\n".join(report_lines)
 
     st.success("✅ Processamento concluído. Relatório disponível abaixo.")
+
+st.subheader("📊 Métricas Individuais (pré-visualização)")
+st.caption(f"Thresholds fixos: HSR ≥ {HSR_MPS:.1f} m/s | Sprint ≥ {SPRINT_MPS:.1f} m/s | Acc ≥ {ACC_THR:.1f} m/s² | Dec ≤ {DEC_THR:.1f} m/s²")
+if 'df_metrics' in locals() and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
+    st.dataframe(df_metrics, use_container_width=True, hide_index=True)
+    st.download_button(
+        "⬇️ Download Métricas (.csv)",
+        data=df_metrics.to_csv(index=False).encode("utf-8"),
+        file_name="metricas_individuais_FPF.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
+else:
+    st.warning("Sem métricas para mostrar (verifica se os SYNC foram gerados corretamente).")
+
 
     st.subheader("📄 Relatório (pré-visualização)")
     st.code(report_txt, language="text")
@@ -542,4 +832,3 @@ if btn:
         mime="text/plain",
         use_container_width=True
     )
-
