@@ -36,11 +36,21 @@ def _apply_login_style():
   header, footer {visibility: hidden;}
   [data-testid="stSidebar"] {display: none;}
 
-  .main .block-container {
+  /* Remove container visual do Streamlit */
+.block-container {
+    padding-top: 0rem !important;
+}
+
+.main .block-container {
     background: transparent !important;
     box-shadow: none !important;
     border: none !important;
-  }
+}
+
+/* Remove o primeiro elemento automático do Streamlit */
+.main .block-container > div:first-child {
+    display: none !important;
+}
 
   .login-card{
     background: #1a1c23;
