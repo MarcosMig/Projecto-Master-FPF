@@ -47,25 +47,12 @@ def _apply_login_style():
     border: none !important;
 }
 
-/* Remove o primeiro elemento automático do Streamlit */
-.main .block-container > div:first-child {
-    display: none !important;
-}
-
   .login-card{
     background: #1a1c23;
     border: 1px solid #30363d;
     border-radius: 14px;
     padding: 34px 34px 26px 34px;
     box-shadow: 0px 10px 28px rgba(0,0,0,0.55);
-  }
-
-  /* ✅ remove o retângulo fantasma */
-  .login-card > div:first-child{
-    display: none !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    height: 0 !important;
   }
 
   .login-title{
