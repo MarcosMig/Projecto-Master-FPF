@@ -36,12 +36,11 @@ def _apply_login_style():
   header, footer {visibility: hidden;}
   [data-testid="stSidebar"] {display: none;}
 
-  /* Evita espaçamento extra acima do card */
-   .main .block-container {
+  .main .block-container {
     background: transparent !important;
     box-shadow: none !important;
     border: none !important;
-}
+  }
 
   .login-card{
     background: #1a1c23;
@@ -49,6 +48,14 @@ def _apply_login_style():
     border-radius: 14px;
     padding: 34px 34px 26px 34px;
     box-shadow: 0px 10px 28px rgba(0,0,0,0.55);
+  }
+
+  /* ✅ remove o retângulo fantasma */
+  .login-card > div:first-child{
+    display: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    height: 0 !important;
   }
 
   .login-title{
@@ -59,14 +66,12 @@ def _apply_login_style():
     margin: 0 0 1.25rem 0;
   }
 
-  /* ✅ Estiliza só inputs dentro do card */
   .login-card .stTextInput input{
     background: #0e1117 !important;
     border: 1px solid #30363d !important;
     border-radius: 10px !important;
   }
 
-  /* ✅ Estiliza só o botão dentro do card */
   .login-card .stButton > button{
     width: 100%;
     background: #E30613 !important;
@@ -104,7 +109,7 @@ if not st.session_state.auth:
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
         st.markdown('<div class="login-card">', unsafe_allow_html=True)
-        st.markdown('<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-title">⚽ FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
@@ -1023,6 +1028,4 @@ if report_txt:
         file_name="relatorio_FPF.txt",
         mime="text/plain",
         use_container_width=True,
-
     )
-
