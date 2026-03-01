@@ -117,7 +117,7 @@ if not st.session_state.auth:
 
 
 # --- INTERFACE SINGLE PAGE ---
-st.title("🚀 Pipeline de Validação + Normalização (UTM/Rotação)")
+st.title("Validação de Dados")
 
 with st.sidebar:
     st.header("🧾 Dados da Sessão")
@@ -703,7 +703,7 @@ st_folium(m, width=1100, height=450, key="mapa_pipeline")
 st.divider()
 
 # Audit by athlete phases
-st.header("👥 Auditoria de Atletas (ficheiros submetidos)")
+st.header("Auditoria de Atletas")
 audit_data = {}
 for f in f_atleta:
     aid = _get_atleta_id(f.name)
@@ -734,7 +734,7 @@ st.write(f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_d
 st.divider()
 
 # Normalization + export
-st.header("🧭 Normalização (UTM + rotação) e Exportação")
+st.header("Normalização | Calculo Métricas")
 
 if not passed_geo:
     st.warning(
@@ -942,7 +942,7 @@ if btn:
 
 # ---------- UI (fora do if btn) ----------
 if report_txt:
-    st.subheader("📊 Métricas Individuais (pré-visualização)")
+    st.subheader("Métricas Individuais")
     st.caption(
         f"Thresholds fixos: HSR ≥ {HSR_MPS:.1f} m/s | Sprint ≥ {SPRINT_MPS:.1f} m/s | "
         f"Acc ≥ {ACC_THR:.1f} m/s² | Dec ≤ {DEC_THR:.1f} m/s²"
@@ -960,7 +960,7 @@ if report_txt:
     else:
         st.warning("Sem métricas para mostrar (verifica se os SYNC foram gerados corretamente).")
 
-    st.subheader("📄 Relatório (pré-visualização)")
+    st.subheader("Relatório")
     st.code(report_txt, language="text")
     st.download_button(
         "⬇️ Download Relatório (.txt)",
