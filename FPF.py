@@ -996,17 +996,19 @@ if btn:
 # ---------- UI (fora do if btn) ----------
 if df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
 
-    # Define a coluna de corte
+    # Opção 1: mostrar apenas da coluna do atleta para a frente
     col_inicio = None
-    if "ID_atleta" in df_metrics.columns:
-        col_inicio = "ID_atleta"
-    elif "Atleta_ID" in df_metrics.columns:
-        col_inicio = "Atleta_ID"
+    for possible in ["atleta_id", "ID_atleta", "Atleta_ID", "atleta"]:
+        if possible in df_metrics.columns:
+            col_inicio = possible
+            break
 
-    if col_inicio:
-        df_display = df_metrics.loc[:, col_inicio:]
-    else:
-        df_display = df_metrics  # fallback seguro
+    if col_inicio is None:
+        st.error("Não encontrei a coluna do atleta para cortar o relatório.")
+        st.write("Colunas disponíveis:", list(df_metrics.columns))
+        st.stop()
+
+    df_display = df_metrics.loc[:, col_inicio:]
 
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
