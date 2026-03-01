@@ -996,7 +996,7 @@ if btn:
 # ---------- UI (fora do if btn) ----------
 if df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
 
-    # Opção 1: mostrar apenas da coluna do atleta para a frente
+    # 1️⃣ Identificar coluna atleta
     col_inicio = None
     for possible in ["atleta_id", "ID_atleta", "Atleta_ID", "atleta"]:
         if possible in df_metrics.columns:
@@ -1004,14 +1004,38 @@ if df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_me
             break
 
     if col_inicio is None:
-        st.error("Não encontrei a coluna do atleta para cortar o relatório.")
+        st.error("Não encontrei a coluna do atleta.")
         st.write("Colunas disponíveis:", list(df_metrics.columns))
         st.stop()
 
-    df_display = df_metrics.loc[:, col_inicio:]
+    # 2️⃣ Cortar a partir da coluna do atleta
+    df_display = df_metrics.loc[:, col_inicio:].copy()
 
+    # 3️⃣ Remover engine_version (se existir)
+    if "engine_version" in df_display.columns:
+        df_display = df_display.drop(columns=["engine_version"])
+
+    # 4️⃣ Ordenação por atleta + fase (ordem personalizada)
+    if "fase" in df_display.columns:
+        ordem_fases = {
+            "Warm-Up": 0,
+            "1P": 1,
+            "2P": 2,
+            "Total": 3,
+        }
+
+        df_display["__fase_ord"] = df_display["fase"].map(ordem_fases).fillna(99)
+        df_display = df_display.sort_values(
+            by=[col_inicio, "__fase_ord"]
+        ).drop(columns="__fase_ord")
+
+    else:
+        df_display = df_display.sort_values(by=[col_inicio])
+
+    # 5️⃣ Mostrar
     st.dataframe(df_display, use_container_width=True, hide_index=True)
 
+    # 6️⃣ Download coerente com o display
     st.download_button(
         "⬇️ Download Métricas (.csv)",
         data=df_display.to_csv(index=False).encode("utf-8"),
