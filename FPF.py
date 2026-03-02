@@ -231,6 +231,29 @@ def _count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
     return bouts
 
 
+
+def _audit_timebase(df: pd.DataFrame, col_time: str, expected_hz: float = 10.0) -> dict:
+    if df.empty or col_time not in df.columns:
+        return {}
+
+    t = _time_to_seconds(df[col_time])
+    t = pd.to_numeric(t, errors="coerce").dropna().sort_values()
+
+    if len(t) < 2:
+        return {}
+
+    dt = np.diff(t.to_numpy(dtype=float))
+    dt_pos = dt[dt > 0]
+
+    dt_median = float(np.median(dt_pos)) if len(dt_pos) else np.nan
+    hz_est = float(1.0 / dt_median) if dt_median and dt_median > 0 else np.nan
+
+    return {
+        "hz_est": hz_est,
+        "n_dt_zero": int(np.sum(dt == 0)),
+        "n_gaps_gt_2s": int(np.sum(dt > 2.0)),
+    }
+
 def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
     """Calcula métricas para um atleta numa fase (df filtrado)."""
     if df.empty:
@@ -300,7 +323,11 @@ def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
             "n_dec_3_0": 0,
             "n_points": int(len(dfv)),
             "pct_time_valid": float(valid.mean() * 100.0),
-            "n_gaps_gt2s": n_gaps,
+            
+        "n_gaps_gt2s": n_gaps,
+        "active_time_min": float(np.nansum(dt[v >= 0.5])) / 60.0 if dur_s > 0 else 0.0,
+        "active_pct": (float(np.nansum(dt[v >= 0.5])) / dur_s * 100.0) if dur_s > 0 else np.nan,
+
         }
 
     dist_step = np.hypot(dx, dy)
@@ -359,7 +386,11 @@ def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
         "n_dec_3_0": n_dec,
         "n_points": int(len(dfv)),
         "pct_time_valid": float(valid.mean() * 100.0),
+        
         "n_gaps_gt2s": n_gaps,
+        "active_time_min": float(np.nansum(dt[v >= 0.5])) / 60.0 if dur_s > 0 else 0.0,
+        "active_pct": (float(np.nansum(dt[v >= 0.5])) / dur_s * 100.0) if dur_s > 0 else np.nan,
+
     }
 
 
@@ -655,13 +686,7 @@ def _processar_atletas_para_temp(
                 df["X_UTM"] = p_loc[:, 0]
                 df["Y_UTM"] = p_loc[:, 1]
 
-
-                df["X_UTM"] = df["X_UTM"].interpolate(limit=1, limit_direction="both")
-                df["Y_UTM"] = df["Y_UTM"].interpolate(limit=1, limit_direction="both")
-
-                # Suavização opcional Savitzky–Golay
-
-                if aplicar_suavizacao and len(df) >= int(janela) and int(janela) % 2 == 1:
+                if aplicar_suav and len(df) >= int(janela) and int(janela) % 2 == 1:
                     x = pd.Series(df["X_UTM"]).interpolate()
                     y = pd.Series(df["Y_UTM"]).interpolate()
                     try:
@@ -857,14 +882,7 @@ df_metrics = st.session_state.df_metrics
 report_txt = st.session_state.report_txt
 
 if btn:
-    with st.status("A iniciar processamento...", expanded=True) as status:
-        status.update(label="Calibração e rotação do campo...", state="running")
-        status.update(label="Validação geográfica...", state="running")
-        if not passed_geo:
-            status.update(label="Validação geográfica falhou. Processamento interrompido.", state="error")
-            st.error("Validação geográfica falhou. O processamento foi interrompido.")
-            st.stop()
-
+    with st.spinner("A processar..."):
         with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             temp_dir = td_path / "Temp_Processing"
@@ -872,7 +890,6 @@ if btn:
             temp_dir.mkdir(parents=True, exist_ok=True)
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            status.update(label="Processamento e limpeza de dados GPS...", state="running")
             temp_files, audit_proc, issues = _processar_atletas_para_temp(
                 f_atleta,
                 int(epsg_used),
@@ -888,7 +905,6 @@ if btn:
                 st.error("❌ Não foi possível gerar ficheiros temporários (verifica colunas Time/Lat/Lon e nomes).")
                 st.stop()
 
-            status.update(label="Sincronização temporal...", state="running")
             out_files, fases_ordenadas, fases_dict, n_master = _sincronizar(temp_files, out_dir)
 
             # Session identifiers (auditoria/dedup)
@@ -899,7 +915,6 @@ if btn:
             )
 
             # Métricas individuais a partir dos SYNC (por fase + Total)
-            status.update(label="Cálculo de métricas individuais...", state="running")
             metrics_rows = []
             for pth in out_files:
                 df_sync = pd.read_csv(pth, sep=";")
@@ -961,7 +976,6 @@ if btn:
 
             df_metrics = pd.DataFrame(metrics_rows)
 
-            status.update(label="Construção do relatório...", state="running")
             # Build report (rotação mantida)
             rot_deg = float(np.degrees(angulo_rad))
             report_lines = []
@@ -1030,27 +1044,11 @@ if btn:
             if df_metrics is not None and not df_metrics.empty:
                 try:
                     df_total = df_metrics[df_metrics["fase"] == "Total"].copy().dropna(subset=["m_min"])
-                    report_lines.append("  Top 3 (Total) — m/min:")
-                    top = df_total.sort_values("m_min", ascending=False).head(3)
-                    for _, r in top.iterrows():
-                        report_lines.append(
-                            f"    - Atleta {r['atleta_id']}: {r['m_min']:.1f} m/min | "
-                            f"Dist {r['dist_m']:.0f} m | Dur {r['duracao_min']:.1f} min"
-                        )
-                except Exception:
-                    pass
+                    
 
                 try:
                     df_total2 = df_metrics[df_metrics["fase"] == "Total"].copy().dropna(subset=["peak_1m_m_min"])
-                    report_lines.append("  Top 3 (Total) — Peak 1' (m/min):")
-                    top2 = df_total2.sort_values("peak_1m_m_min", ascending=False).head(3)
-                    for _, r in top2.iterrows():
-                        report_lines.append(
-                            f"    - Atleta {r['atleta_id']}: {r['peak_1m_m_min']:.0f} m/min | "
-                            f"Vmax {r['vmax_mps']:.2f} m/s"
-                        )
-                except Exception:
-                    pass
+                    
             else:
                 report_lines.append("  (Sem métricas calculadas)")
 
@@ -1060,7 +1058,6 @@ if btn:
             st.session_state.df_metrics = df_metrics
             st.session_state.report_txt = report_txt
             st.session_state.process_done = True
-            status.update(label="Finalizado.", state="complete")
 
     st.success("✅ Processamento concluído. Relatório e métricas disponíveis abaixo.")
 
