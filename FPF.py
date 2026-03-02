@@ -27,6 +27,14 @@ st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
+# --- Persistência de outputs (evita desaparecer após zoom/scroll no mapa) ---
+if "df_metrics" not in st.session_state:
+    st.session_state.df_metrics = None
+if "report_txt" not in st.session_state:
+    st.session_state.report_txt = None
+if "process_done" not in st.session_state:
+    st.session_state.process_done = False
+
 
 # --- LOGIN (CENTRADO + st.secrets) ---
 def _apply_login_style():
@@ -797,9 +805,9 @@ if not passed_geo:
 
 btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True)
 
-# outputs (para UI)
-df_metrics = None
-report_txt = None
+# outputs (para UI) — manter em session_state para sobreviver a reruns
+df_metrics = st.session_state.df_metrics
+report_txt = st.session_state.report_txt
 
 if btn:
     with st.spinner("A processar..."):
@@ -990,11 +998,19 @@ if btn:
 
             report_txt = "\n".join(report_lines)
 
+            # Persistir outputs (map zoom/scroll dispara rerun do Streamlit)
+            st.session_state.df_metrics = df_metrics
+            st.session_state.report_txt = report_txt
+            st.session_state.process_done = True
+
     st.success("✅ Processamento concluído. Relatório e métricas disponíveis abaixo.")
 
 
 # ---------- UI (fora do if btn) ----------
-if df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
+df_metrics = st.session_state.df_metrics
+report_txt = st.session_state.report_txt
+
+if st.session_state.process_done and df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
 
     # 1️⃣ Identificar coluna atleta
     col_inicio = None
@@ -1043,3 +1059,23 @@ if df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_me
         mime="text/csv",
         use_container_width=True,
     )
+
+    st.subheader("Relatório")
+    if report_txt:
+        st.code(report_txt, language="text")
+        st.download_button(
+            "⬇️ Download Relatório (.txt)",
+            data=report_txt.encode("utf-8"),
+            file_name="relatorio_FPF.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+    else:
+        st.warning("Sem relatório para mostrar (processa novamente).")
+
+    # (Opcional) botão para limpar resultados
+    if st.button("🧹 Limpar resultados", use_container_width=True):
+        st.session_state.df_metrics = None
+        st.session_state.report_txt = None
+        st.session_state.process_done = False
+        st.rerun()
