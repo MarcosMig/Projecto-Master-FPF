@@ -233,26 +233,49 @@ def _count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
 
 
 def _audit_timebase(df: pd.DataFrame, col_time: str, expected_hz: float = 10.0) -> dict:
-    if df.empty or col_time not in df.columns:
-        return {}
+    """Audita base temporal (por atleta/fase)."""
+    if df is None or df.empty or col_time not in df.columns:
+        return {
+            "n_rows": 0, "n_valid_t": 0, "wallclock_s": np.nan,
+            "dt_median_s": np.nan, "hz_est": np.nan,
+            "n_dt_neg": 0, "n_dt_zero": 0,
+            "n_gaps_gt_0_2s": 0, "n_gaps_gt_2s": 0,
+        }
 
     t = _time_to_seconds(df[col_time])
-    t = pd.to_numeric(t, errors="coerce").dropna().sort_values()
+    t = pd.to_numeric(t, errors="coerce").dropna()
+    if t.shape[0] < 2:
+        return {
+            "n_rows": int(len(df)), "n_valid_t": int(t.shape[0]), "wallclock_s": 0.0,
+            "dt_median_s": np.nan, "hz_est": np.nan,
+            "n_dt_neg": 0, "n_dt_zero": 0,
+            "n_gaps_gt_0_2s": 0, "n_gaps_gt_2s": 0,
+        }
 
-    if len(t) < 2:
-        return {}
-
-    dt = np.diff(t.to_numpy(dtype=float))
+    t = t.sort_values().to_numpy(dtype=float)
+    dt = np.diff(t)
+    n_dt_neg = int((dt < 0).sum())
+    n_dt_zero = int((dt == 0).sum())
     dt_pos = dt[dt > 0]
+    dt_median = float(np.median(dt_pos)) if dt_pos.size else np.nan
+    hz_est = float(1.0 / dt_median) if (dt_median and dt_median > 0) else np.nan
 
-    dt_median = float(np.median(dt_pos)) if len(dt_pos) else np.nan
-    hz_est = float(1.0 / dt_median) if dt_median and dt_median > 0 else np.nan
+    n_gaps_0_2 = int((dt_pos > 0.2).sum())  # para 10Hz: >0.2s é gap relevante
+    n_gaps_2 = int((dt_pos > 2.0).sum())
 
+    wallclock_s = float(t[-1] - t[0])
     return {
+        "n_rows": int(len(df)),
+        "n_valid_t": int(len(t)),
+        "wallclock_s": wallclock_s,
+        "dt_median_s": dt_median,
         "hz_est": hz_est,
-        "n_dt_zero": int(np.sum(dt == 0)),
-        "n_gaps_gt_2s": int(np.sum(dt > 2.0)),
+        "n_dt_neg": n_dt_neg,
+        "n_dt_zero": n_dt_zero,
+        "n_gaps_gt_0_2s": n_gaps_0_2,
+        "n_gaps_gt_2s": n_gaps_2,
     }
+
 
 def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
     """Calcula métricas para um atleta numa fase (df filtrado)."""
@@ -323,11 +346,7 @@ def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
             "n_dec_3_0": 0,
             "n_points": int(len(dfv)),
             "pct_time_valid": float(valid.mean() * 100.0),
-            
-        "n_gaps_gt2s": n_gaps,
-        "active_time_min": float(np.nansum(dt[v >= 0.5])) / 60.0 if dur_s > 0 else 0.0,
-        "active_pct": (float(np.nansum(dt[v >= 0.5])) / dur_s * 100.0) if dur_s > 0 else np.nan,
-
+            "n_gaps_gt2s": n_gaps,
         }
 
     dist_step = np.hypot(dx, dy)
@@ -338,6 +357,12 @@ def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
 
     v = dist_step / dt
     vmax = float(np.nanmax(v)) if len(v) else np.nan
+
+    # Active time (tempo em movimento) — limiar simples e robusto
+    ACTIVE_V_THR = 0.5  # m/s
+    active_time_s = float(np.nansum(dt[v >= ACTIVE_V_THR])) if len(v) else 0.0
+    active_time_min = active_time_s / 60.0 if active_time_s > 0 else 0.0
+    active_pct = (active_time_s / dur_s * 100.0) if dur_s > 0 else np.nan
 
     dv = np.diff(v)
     dt2 = dt[1:]
@@ -386,11 +411,7 @@ def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
         "n_dec_3_0": n_dec,
         "n_points": int(len(dfv)),
         "pct_time_valid": float(valid.mean() * 100.0),
-        
         "n_gaps_gt2s": n_gaps,
-        "active_time_min": float(np.nansum(dt[v >= 0.5])) / 60.0 if dur_s > 0 else 0.0,
-        "active_pct": (float(np.nansum(dt[v >= 0.5])) / dur_s * 100.0) if dur_s > 0 else np.nan,
-
     }
 
 
@@ -686,6 +707,15 @@ def _processar_atletas_para_temp(
                 df["X_UTM"] = p_loc[:, 0]
                 df["Y_UTM"] = p_loc[:, 1]
 
+                # Micro-gaps (≤1 amostra consecutiva): contagem + preenchimento
+                nan_before = int(df["X_UTM"].isna().sum() + df["Y_UTM"].isna().sum())
+                df["X_UTM"] = df["X_UTM"].interpolate(limit=1, limit_direction="both")
+                df["Y_UTM"] = df["Y_UTM"].interpolate(limit=1, limit_direction="both")
+                nan_after = int(df["X_UTM"].isna().sum() + df["Y_UTM"].isna().sum())
+                micro_gaps_corrigidos = max(0, nan_before - nan_after)
+                df["_micro_gaps_corrigidos"] = micro_gaps_corrigidos
+# Suavização opcional Savitzky–Golay
+
                 if aplicar_suav and len(df) >= int(janela) and int(janela) % 2 == 1:
                     x = pd.Series(df["X_UTM"]).interpolate()
                     y = pd.Series(df["Y_UTM"]).interpolate()
@@ -864,6 +894,13 @@ for aid in sorted(
 st.table(pd.DataFrame(rows))
 st.write(f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_data)}")
 
+QUORUM_MIN = 10
+quorum_ok = completos >= QUORUM_MIN
+if quorum_ok:
+    st.success(f"Quorum atingido: {completos} atletas válidos (mínimo {QUORUM_MIN}).")
+else:
+    st.error(f"Quorum NÃO atingido: {completos} atletas válidos (mínimo {QUORUM_MIN}).")
+
 st.divider()
 
 # Normalization + export
@@ -875,21 +912,26 @@ if not passed_geo:
     )
     st.stop()
 
-btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True)
+btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True, disabled=(not passed_geo) or (not quorum_ok))
 
 # outputs (para UI) — manter em session_state para sobreviver a reruns
 df_metrics = st.session_state.df_metrics
 report_txt = st.session_state.report_txt
 
 if btn:
-    with st.spinner("A processar..."):
-        with tempfile.TemporaryDirectory() as td:
+    with st.status("A iniciar processamento...", expanded=True) as status:
+        if not passed_geo:
+            status.update(label="Validação geográfica falhou. Processamento interrompido.", state="error")
+            st.error("Validação geográfica falhou. O processamento foi interrompido.")
+            st.stop()
+with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             temp_dir = td_path / "Temp_Processing"
             out_dir = td_path / "Output_UTM_Sincronizado"
             temp_dir.mkdir(parents=True, exist_ok=True)
             out_dir.mkdir(parents=True, exist_ok=True)
 
+            status.update(label="Processamento e limpeza de dados GPS...", state="running")
             temp_files, audit_proc, issues = _processar_atletas_para_temp(
                 f_atleta,
                 int(epsg_used),
@@ -905,6 +947,7 @@ if btn:
                 st.error("❌ Não foi possível gerar ficheiros temporários (verifica colunas Time/Lat/Lon e nomes).")
                 st.stop()
 
+            status.update(label="Sincronização temporal...", state="running")
             out_files, fases_ordenadas, fases_dict, n_master = _sincronizar(temp_files, out_dir)
 
             # Session identifiers (auditoria/dedup)
@@ -915,7 +958,13 @@ if btn:
             )
 
             # Métricas individuais a partir dos SYNC (por fase + Total)
+            status.update(label="Cálculo de métricas individuais...", state="running")
             metrics_rows = []
+            audit_time_rows = []
+            total_micro_gaps = 0
+
+            fases_target = ["Warm-Up", "1P", "2P"]
+
             for pth in out_files:
                 df_sync = pd.read_csv(pth, sep=";")
                 aid = (
@@ -924,9 +973,23 @@ if btn:
                     else Path(pth).stem
                 )
 
-                fases = [f for f in df_sync.get(COL_FASE, pd.Series(dtype=str)).dropna().unique().tolist() if f]
-                for fase in sorted(fases):
-                    met = _compute_metrics_for_df(df_sync[df_sync[COL_FASE] == fase])
+                # micro-gaps acumulados (gravados na etapa de processamento)
+                if "_micro_gaps_corrigidos" in df_sync.columns and df_sync["_micro_gaps_corrigidos"].notna().any():
+                    try:
+                        total_micro_gaps += int(df_sync["_micro_gaps_corrigidos"].dropna().iloc[0])
+                    except Exception:
+                        pass
+
+                fase_mets = {}
+
+                for fase in fases_target:
+                    df_f = df_sync[df_sync[COL_FASE] == fase].copy()
+                    met = _compute_metrics_for_df(df_f)
+                    fase_mets[fase] = met
+
+                    aud = _audit_timebase(df_f, COL_TIME, expected_hz=10.0)
+                    audit_time_rows.append({"atleta_id": aid, "fase": fase, **aud})
+
                     metrics_rows.append(
                         {
                             "session_id_hex": session_id_hex,
@@ -940,7 +1003,7 @@ if btn:
                                 if contexto == "Jogo"
                                 else ""
                             ),
-                            "estadio": estadio,
+                            "estadio": estadio,  # apenas para BD
                             "cidade": cidade,
                             "pais": pais,
                             "atleta_id": aid,
@@ -950,7 +1013,52 @@ if btn:
                         }
                     )
 
-                met_t = _compute_metrics_for_df(df_sync)
+                # -------- TOTAL POR SOMA DAS FASES --------
+                met_total = {}
+                met_total["dist_m"] = sum(fase_mets[f]["dist_m"] for f in fases_target)
+                met_total["duracao_min"] = sum(fase_mets[f]["duracao_min"] for f in fases_target)
+                met_total["m_min"] = (
+                    met_total["dist_m"] / met_total["duracao_min"]
+                    if met_total["duracao_min"] > 0
+                    else np.nan
+                )
+
+                met_total["hsr_dist_m"] = sum(fase_mets[f]["hsr_dist_m"] for f in fases_target)
+                met_total["sprint_dist_m"] = sum(fase_mets[f]["sprint_dist_m"] for f in fases_target)
+                met_total["n_sprints"] = sum(fase_mets[f]["n_sprints"] for f in fases_target)
+                met_total["n_acc_2_5"] = sum(fase_mets[f]["n_acc_2_5"] for f in fases_target)
+                met_total["n_dec_3_0"] = sum(fase_mets[f]["n_dec_3_0"] for f in fases_target)
+                met_total["n_points"] = sum(fase_mets[f]["n_points"] for f in fases_target)
+
+                met_total["vmax_mps"] = max(fase_mets[f]["vmax_mps"] for f in fases_target)
+                met_total["peak_1m_m_min"] = max(fase_mets[f]["peak_1m_m_min"] for f in fases_target)
+
+                met_total["hsr_pct"] = (
+                    met_total["hsr_dist_m"] / met_total["dist_m"] * 100.0
+                    if met_total["dist_m"] > 0
+                    else np.nan
+                )
+
+                # Active time total
+                met_total["active_time_min"] = sum(fase_mets[f]["active_time_min"] for f in fases_target)
+                dur_total_s = met_total["duracao_min"] * 60.0
+                met_total["active_pct"] = (
+                    (met_total["active_time_min"] * 60.0) / dur_total_s * 100.0
+                    if dur_total_s > 0
+                    else np.nan
+                )
+
+                # Qualidade: pct_time_valid e gaps>2s — média ponderada simples por pontos válidos
+                try:
+                    w = np.array([max(1, fase_mets[f]["n_points"]) for f in fases_target], dtype=float)
+                    met_total["pct_time_valid"] = float(
+                        np.average([fase_mets[f]["pct_time_valid"] for f in fases_target], weights=w)
+                    )
+                    met_total["n_gaps_gt2s"] = int(sum(fase_mets[f]["n_gaps_gt2s"] for f in fases_target))
+                except Exception:
+                    met_total["pct_time_valid"] = np.nan
+                    met_total["n_gaps_gt2s"] = int(sum(fase_mets[f]["n_gaps_gt2s"] for f in fases_target))
+
                 metrics_rows.append(
                     {
                         "session_id_hex": session_id_hex,
@@ -964,18 +1072,20 @@ if btn:
                             if contexto == "Jogo"
                             else ""
                         ),
-                        "estadio": estadio,
+                        "estadio": estadio,  # apenas para BD
                         "cidade": cidade,
                         "pais": pais,
                         "atleta_id": aid,
                         "fase": "Total",
-                        **met_t,
+                        **met_total,
                         "engine_version": ENGINE_VERSION,
                     }
                 )
 
             df_metrics = pd.DataFrame(metrics_rows)
-
+            df_time_audit = pd.DataFrame(audit_time_rows)
+            st.session_state.df_time_audit = df_time_audit
+status.update(label="Construção do relatório...", state="running")
             # Build report (rotação mantida)
             rot_deg = float(np.degrees(angulo_rad))
             report_lines = []
@@ -992,8 +1102,7 @@ if btn:
                 if vs_txt:
                     report_lines.append(f"  Jogo: {vs_txt}")
 
-            report_lines.append(f"  Estádio: {estadio or '—'}")
-            loc_part = ", ".join([p for p in [cidade, pais] if p]) or "—"
+                        loc_part = ", ".join([p for p in [cidade, pais] if p]) or "—"
             report_lines.append(f"  Localização: {loc_part}")
 
             report_lines.append(f"EPSG (UTM): {epsg_used}")
@@ -1042,15 +1151,32 @@ if btn:
             report_lines.append(f"  Session fingerprint (sha1): {session_fingerprint}")
 
             if df_metrics is not None and not df_metrics.empty:
-                try:
-                    df_total = df_metrics[df_metrics["fase"] == "Total"].copy().dropna(subset=["m_min"])
-                    
-
-                try:
-                    df_total2 = df_metrics[df_metrics["fase"] == "Total"].copy().dropna(subset=["peak_1m_m_min"])
-                    
+                report_lines.append("  (Métricas calculadas com sucesso)")
             else:
                 report_lines.append("  (Sem métricas calculadas)")
+
+            report_lines.append("-" * 70)
+            report_lines.append("Qualidade do Sinal GPS")
+            report_lines.append(f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
+
+            # Auditoria de timestamp (resumo)
+            try:
+                dfta = st.session_state.get("df_time_audit", None)
+                if dfta is not None and isinstance(dfta, pd.DataFrame) and not dfta.empty:
+                    hz_med = float(dfta["hz_est"].dropna().median()) if dfta["hz_est"].dropna().any() else np.nan
+                    n_dup = int((dfta["n_dt_zero"] > 0).sum()) if "n_dt_zero" in dfta.columns else 0
+                    n_g2 = int((dfta["n_gaps_gt_2s"] > 0).sum()) if "n_gaps_gt_2s" in dfta.columns else 0
+
+                    report_lines.append("-" * 70)
+                    report_lines.append("Auditoria de Timestamp")
+                    if np.isfinite(hz_med):
+                        report_lines.append(f"  Hz mediano estimado (por atleta/fase): {hz_med:.1f} Hz")
+                    else:
+                        report_lines.append("  Hz mediano estimado (por atleta/fase): —")
+                    report_lines.append(f"  Atleta×fase com timestamps duplicados: {n_dup}")
+                    report_lines.append(f"  Atleta×fase com gaps >2s: {n_g2}")
+            except Exception:
+                pass
 
             report_txt = "\n".join(report_lines)
 
@@ -1058,6 +1184,7 @@ if btn:
             st.session_state.df_metrics = df_metrics
             st.session_state.report_txt = report_txt
             st.session_state.process_done = True
+            status.update(label="Finalizado.", state="complete")
 
     st.success("✅ Processamento concluído. Relatório e métricas disponíveis abaixo.")
 
@@ -1115,6 +1242,15 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
         mime="text/csv",
         use_container_width=True,
     )
+
+    
+    # Auditoria de timestamp (opcional para diagnóstico)
+    if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
+        dfta = st.session_state.df_time_audit
+        if isinstance(dfta, pd.DataFrame) and not dfta.empty:
+            st.subheader("Auditoria de Timestamp (por atleta e fase)")
+            st.dataframe(dfta, use_container_width=True, hide_index=True)
+
 
     st.subheader("Relatório")
     if report_txt:
