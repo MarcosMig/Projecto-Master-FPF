@@ -233,30 +233,42 @@ def _count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
 
 
 def _audit_timebase(df: pd.DataFrame, col_time: str, expected_hz: float = 10.0) -> dict:
-    """Audita base temporal (por atleta/fase)."""
+    """Audita base temporal (por atleta/fase) para diagnosticar duplicados, gaps e Hz."""
     if df is None or df.empty or col_time not in df.columns:
         return {
-            "n_rows": 0, "n_valid_t": 0, "wallclock_s": np.nan,
-            "dt_median_s": np.nan, "hz_est": np.nan,
-            "n_dt_neg": 0, "n_dt_zero": 0,
-            "n_gaps_gt_0_2s": 0, "n_gaps_gt_2s": 0,
+            "n_rows": 0,
+            "n_valid_t": 0,
+            "wallclock_s": np.nan,
+            "dt_median_s": np.nan,
+            "hz_est": np.nan,
+            "n_dt_neg": 0,
+            "n_dt_zero": 0,
+            "n_gaps_gt_0_2s": 0,
+            "n_gaps_gt_2s": 0,
         }
 
     t = _time_to_seconds(df[col_time])
     t = pd.to_numeric(t, errors="coerce").dropna()
     if t.shape[0] < 2:
         return {
-            "n_rows": int(len(df)), "n_valid_t": int(t.shape[0]), "wallclock_s": 0.0,
-            "dt_median_s": np.nan, "hz_est": np.nan,
-            "n_dt_neg": 0, "n_dt_zero": 0,
-            "n_gaps_gt_0_2s": 0, "n_gaps_gt_2s": 0,
+            "n_rows": int(len(df)),
+            "n_valid_t": int(t.shape[0]),
+            "wallclock_s": 0.0,
+            "dt_median_s": np.nan,
+            "hz_est": np.nan,
+            "n_dt_neg": 0,
+            "n_dt_zero": 0,
+            "n_gaps_gt_0_2s": 0,
+            "n_gaps_gt_2s": 0,
         }
 
     t = t.sort_values().to_numpy(dtype=float)
     dt = np.diff(t)
+
     n_dt_neg = int((dt < 0).sum())
     n_dt_zero = int((dt == 0).sum())
     dt_pos = dt[dt > 0]
+
     dt_median = float(np.median(dt_pos)) if dt_pos.size else np.nan
     hz_est = float(1.0 / dt_median) if (dt_median and dt_median > 0) else np.nan
 
@@ -347,6 +359,8 @@ def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
             "n_points": int(len(dfv)),
             "pct_time_valid": float(valid.mean() * 100.0),
             "n_gaps_gt2s": n_gaps,
+        "active_time_min": active_time_min,
+        "active_pct": active_pct,
         }
 
     dist_step = np.hypot(dx, dy)
@@ -358,7 +372,7 @@ def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
     v = dist_step / dt
     vmax = float(np.nanmax(v)) if len(v) else np.nan
 
-    # Active time (tempo em movimento) — limiar simples e robusto
+    # Active time (tempo em movimento)
     ACTIVE_V_THR = 0.5  # m/s
     active_time_s = float(np.nansum(dt[v >= ACTIVE_V_THR])) if len(v) else 0.0
     active_time_min = active_time_s / 60.0 if active_time_s > 0 else 0.0
@@ -412,6 +426,8 @@ def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
         "n_points": int(len(dfv)),
         "pct_time_valid": float(valid.mean() * 100.0),
         "n_gaps_gt2s": n_gaps,
+        "active_time_min": active_time_min,
+        "active_pct": active_pct,
     }
 
 
@@ -707,16 +723,16 @@ def _processar_atletas_para_temp(
                 df["X_UTM"] = p_loc[:, 0]
                 df["Y_UTM"] = p_loc[:, 1]
 
+
                 # Micro-gaps (≤1 amostra consecutiva): contagem + preenchimento
                 nan_before = int(df["X_UTM"].isna().sum() + df["Y_UTM"].isna().sum())
                 df["X_UTM"] = df["X_UTM"].interpolate(limit=1, limit_direction="both")
                 df["Y_UTM"] = df["Y_UTM"].interpolate(limit=1, limit_direction="both")
                 nan_after = int(df["X_UTM"].isna().sum() + df["Y_UTM"].isna().sum())
-                micro_gaps_corrigidos = max(0, nan_before - nan_after)
-                df["_micro_gaps_corrigidos"] = micro_gaps_corrigidos
-# Suavização opcional Savitzky–Golay
+                df["_micro_gaps_corrigidos"] = max(0, nan_before - nan_after)
+                # Suavização opcional Savitzky–Golay
 
-                if aplicar_suav and len(df) >= int(janela) and int(janela) % 2 == 1:
+                if aplicar_suavizacao and len(df) >= int(janela) and int(janela) % 2 == 1:
                     x = pd.Series(df["X_UTM"]).interpolate()
                     y = pd.Series(df["Y_UTM"]).interpolate()
                     try:
@@ -894,13 +910,6 @@ for aid in sorted(
 st.table(pd.DataFrame(rows))
 st.write(f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_data)}")
 
-QUORUM_MIN = 10
-quorum_ok = completos >= QUORUM_MIN
-if quorum_ok:
-    st.success(f"Quorum atingido: {completos} atletas válidos (mínimo {QUORUM_MIN}).")
-else:
-    st.error(f"Quorum NÃO atingido: {completos} atletas válidos (mínimo {QUORUM_MIN}).")
-
 st.divider()
 
 # Normalization + export
@@ -912,7 +921,7 @@ if not passed_geo:
     )
     st.stop()
 
-btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True, disabled=(not passed_geo) or (not quorum_ok))
+btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True)
 
 # outputs (para UI) — manter em session_state para sobreviver a reruns
 df_metrics = st.session_state.df_metrics
@@ -924,7 +933,8 @@ if btn:
             status.update(label="Validação geográfica falhou. Processamento interrompido.", state="error")
             st.error("Validação geográfica falhou. O processamento foi interrompido.")
             st.stop()
-with tempfile.TemporaryDirectory() as td:
+
+        with tempfile.TemporaryDirectory() as td:
             td_path = Path(td)
             temp_dir = td_path / "Temp_Processing"
             out_dir = td_path / "Output_UTM_Sincronizado"
@@ -1085,7 +1095,9 @@ with tempfile.TemporaryDirectory() as td:
             df_metrics = pd.DataFrame(metrics_rows)
             df_time_audit = pd.DataFrame(audit_time_rows)
             st.session_state.df_time_audit = df_time_audit
-status.update(label="Construção do relatório...", state="running")
+
+
+            status.update(label="Construção do relatório...", state="running")
             # Build report (rotação mantida)
             rot_deg = float(np.degrees(angulo_rad))
             report_lines = []
@@ -1102,7 +1114,7 @@ status.update(label="Construção do relatório...", state="running")
                 if vs_txt:
                     report_lines.append(f"  Jogo: {vs_txt}")
 
-                        loc_part = ", ".join([p for p in [cidade, pais] if p]) or "—"
+            loc_part = ", ".join([p for p in [cidade, pais] if p]) or "—"
             report_lines.append(f"  Localização: {loc_part}")
 
             report_lines.append(f"EPSG (UTM): {epsg_used}")
@@ -1155,6 +1167,7 @@ status.update(label="Construção do relatório...", state="running")
             else:
                 report_lines.append("  (Sem métricas calculadas)")
 
+            
             report_lines.append("-" * 70)
             report_lines.append("Qualidade do Sinal GPS")
             report_lines.append(f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
@@ -1243,14 +1256,12 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
         use_container_width=True,
     )
 
-    
-    # Auditoria de timestamp (opcional para diagnóstico)
+    # Auditoria de timestamp (diagnóstico)
     if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
         dfta = st.session_state.df_time_audit
         if isinstance(dfta, pd.DataFrame) and not dfta.empty:
             st.subheader("Auditoria de Timestamp (por atleta e fase)")
             st.dataframe(dfta, use_container_width=True, hide_index=True)
-
 
     st.subheader("Relatório")
     if report_txt:
