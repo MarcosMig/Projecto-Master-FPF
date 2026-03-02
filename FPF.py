@@ -136,7 +136,8 @@ st.title("Validação de Dados")
 
 with st.sidebar:
     st.header("🧾 Dados da Sessão")
-    estadio = st.text_input("Estádio")
+    # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
+    estadio = None
     data_sessao = st.date_input("Data")
     selecao = st.text_input("Seleção (ex.: U19)")
     genero = st.selectbox("Género", options=["M", "F"], index=0)
@@ -505,6 +506,46 @@ def _reverse_geocode_city_country(lat: float, lon: float):
         return None, None
 
 
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def _reverse_geocode_place_city_country(lat: float, lon: float):
+    """Reverse geocode via OpenStreetMap Nominatim.
+    Devolve (place_name, city, country). 'place_name' tenta capturar estádio/recinto quando disponível.
+    """
+    try:
+        url = "https://nominatim.openstreetmap.org/reverse"
+        params = {"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18, "addressdetails": 1}
+        headers = {"User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
+        r = requests.get(url, params=params, headers=headers, timeout=10)
+        if r.status_code != 200:
+            return None, None, None
+        data = r.json()
+        if not isinstance(data, dict):
+            return None, None, None
+
+        addr = data.get("address", {}) or {}
+        city = (
+            addr.get("city")
+            or addr.get("town")
+            or addr.get("village")
+            or addr.get("municipality")
+            or addr.get("county")
+        )
+        country = addr.get("country")
+
+        # Melhor esforço para capturar um nome de recinto/estádio
+        place = (
+            data.get("name")
+            or addr.get("stadium")
+            or addr.get("sports_centre")
+            or addr.get("amenity")
+            or data.get("display_name")
+        )
+        return place, city, country
+    except Exception:
+        return None, None, None
+
 def _geo_validacao_por_atleta(
     f_atleta_files, centroid_lat, centroid_lon, raio_m, amostra_n, min_pct_ok
 ):
@@ -708,7 +749,7 @@ try:
     pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo(
         f_campo, int(epsg_used)
     )
-    cidade, pais = _reverse_geocode_city_country(clat, clon)
+    estadio, cidade, pais = _reverse_geocode_place_city_country(clat, clon)
 except Exception as e:
     st.error(f"❌ Erro na calibração do campo: {e}")
     st.stop()
@@ -720,14 +761,14 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
 # Campo
-cidade_campo, pais_campo = _reverse_geocode_city_country(clat, clon)
+_, cidade_campo, pais_campo = _reverse_geocode_place_city_country(clat, clon)
 
 # Atletas (centro estimado)
 alat, alon = _get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
 
 cidade_atl, pais_atl = None, None
 if alat is not None and alon is not None:
-    cidade_atl, pais_atl = _reverse_geocode_city_country(alat, alon)
+    _, cidade_atl, pais_atl = _reverse_geocode_place_city_country(alat, alon)
 # ----- Campo -----
 campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
