@@ -290,6 +290,26 @@ def _audit_timebase(df: pd.DataFrame, col_time: str, expected_hz: float = 10.0) 
 
 
 def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
+    # Defaults (evita KeyError em fases vazias/curtas)
+    DEFAULT_METRICS = {
+        "duracao_min": 0.0,
+        "dist_m": 0.0,
+        "m_min": float("nan"),
+        "hsr_dist_m": 0.0,
+        "sprint_dist_m": 0.0,
+        "n_sprints": 0,
+        "n_acc_2_5": 0,
+        "n_dec_3_0": 0,
+        "vmax_mps": float("nan"),
+        "peak_1m_m_min": float("nan"),
+        "hsr_pct": float("nan"),
+        "pct_time_valid": float("nan"),
+        "n_gaps_gt2s": 0,
+        "n_points": 0,
+        "active_time_min": 0.0,
+        "active_pct": float("nan"),
+    }
+
     """Calcula métricas para um atleta numa fase (df filtrado)."""
     if df.empty:
         return {
@@ -1025,23 +1045,23 @@ if btn:
 
                 # -------- TOTAL POR SOMA DAS FASES --------
                 met_total = {}
-                met_total["dist_m"] = sum(fase_mets[f]["dist_m"] for f in fases_target)
-                met_total["duracao_min"] = sum(fase_mets[f]["duracao_min"] for f in fases_target)
+                met_total["dist_m"] = sum(fase_mets.get(f, {}).get("dist_m", 0.0) for f in fases_target)
+                met_total["duracao_min"] = sum(fase_mets.get(f, {}).get("duracao_min", 0.0) for f in fases_target)
                 met_total["m_min"] = (
                     met_total["dist_m"] / met_total["duracao_min"]
                     if met_total["duracao_min"] > 0
                     else np.nan
                 )
 
-                met_total["hsr_dist_m"] = sum(fase_mets[f]["hsr_dist_m"] for f in fases_target)
-                met_total["sprint_dist_m"] = sum(fase_mets[f]["sprint_dist_m"] for f in fases_target)
-                met_total["n_sprints"] = sum(fase_mets[f]["n_sprints"] for f in fases_target)
-                met_total["n_acc_2_5"] = sum(fase_mets[f]["n_acc_2_5"] for f in fases_target)
-                met_total["n_dec_3_0"] = sum(fase_mets[f]["n_dec_3_0"] for f in fases_target)
-                met_total["n_points"] = sum(fase_mets[f]["n_points"] for f in fases_target)
+                met_total["hsr_dist_m"] = sum(fase_mets.get(f, {}).get("hsr_dist_m", 0.0) for f in fases_target)
+                met_total["sprint_dist_m"] = sum(fase_mets.get(f, {}).get("sprint_dist_m", 0.0) for f in fases_target)
+                met_total["n_sprints"] = sum(fase_mets.get(f, {}).get("n_sprints", 0) for f in fases_target)
+                met_total["n_acc_2_5"] = sum(fase_mets.get(f, {}).get("n_acc_2_5", 0) for f in fases_target)
+                met_total["n_dec_3_0"] = sum(fase_mets.get(f, {}).get("n_dec_3_0", 0) for f in fases_target)
+                met_total["n_points"] = sum(fase_mets.get(f, {}).get("n_points", 0) for f in fases_target)
 
-                met_total["vmax_mps"] = max(fase_mets[f]["vmax_mps"] for f in fases_target)
-                met_total["peak_1m_m_min"] = max(fase_mets[f]["peak_1m_m_min"] for f in fases_target)
+                met_total["vmax_mps"] = max((fase_mets.get(f, {}).get("vmax_mps", np.nan) for f in fases_target), default=np.nan)
+                met_total["peak_1m_m_min"] = max((fase_mets.get(f, {}).get("peak_1m_m_min", np.nan) for f in fases_target), default=np.nan)
 
                 met_total["hsr_pct"] = (
                     met_total["hsr_dist_m"] / met_total["dist_m"] * 100.0
@@ -1050,7 +1070,7 @@ if btn:
                 )
 
                 # Active time total
-                met_total["active_time_min"] = sum(fase_mets[f]["active_time_min"] for f in fases_target)
+                met_total["active_time_min"] = sum(fase_mets.get(f, {}).get("active_time_min", 0.0) for f in fases_target)
                 dur_total_s = met_total["duracao_min"] * 60.0
                 met_total["active_pct"] = (
                     (met_total["active_time_min"] * 60.0) / dur_total_s * 100.0
