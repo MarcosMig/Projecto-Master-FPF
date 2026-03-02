@@ -27,14 +27,6 @@ st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
-# --- Persistência de outputs (evita desaparecer após zoom/scroll no mapa) ---
-if "df_metrics" not in st.session_state:
-    st.session_state.df_metrics = None
-if "report_txt" not in st.session_state:
-    st.session_state.report_txt = None
-if "process_done" not in st.session_state:
-    st.session_state.process_done = False
-
 
 # --- LOGIN (CENTRADO + st.secrets) ---
 def _apply_login_style():
@@ -136,8 +128,7 @@ st.title("Validação de Dados")
 
 with st.sidebar:
     st.header("🧾 Dados da Sessão")
-    # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
-    estadio = None
+    estadio = st.text_input("Estádio")
     data_sessao = st.date_input("Data")
     selecao = st.text_input("Seleção (ex.: U19)")
     genero = st.selectbox("Género", options=["M", "F"], index=0)
@@ -506,46 +497,6 @@ def _reverse_geocode_city_country(lat: float, lon: float):
         return None, None
 
 
-
-
-@st.cache_data(show_spinner=False, ttl=86400)
-def _reverse_geocode_place_city_country(lat: float, lon: float):
-    """Reverse geocode via OpenStreetMap Nominatim.
-    Devolve (place_name, city, country). 'place_name' tenta capturar estádio/recinto quando disponível.
-    """
-    try:
-        url = "https://nominatim.openstreetmap.org/reverse"
-        params = {"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18, "addressdetails": 1}
-        headers = {"User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
-        r = requests.get(url, params=params, headers=headers, timeout=10)
-        if r.status_code != 200:
-            return None, None, None
-        data = r.json()
-        if not isinstance(data, dict):
-            return None, None, None
-
-        addr = data.get("address", {}) or {}
-        city = (
-            addr.get("city")
-            or addr.get("town")
-            or addr.get("village")
-            or addr.get("municipality")
-            or addr.get("county")
-        )
-        country = addr.get("country")
-
-        # Melhor esforço para capturar um nome de recinto/estádio
-        place = (
-            data.get("name")
-            or addr.get("stadium")
-            or addr.get("sports_centre")
-            or addr.get("amenity")
-            or data.get("display_name")
-        )
-        return place, city, country
-    except Exception:
-        return None, None, None
-
 def _geo_validacao_por_atleta(
     f_atleta_files, centroid_lat, centroid_lon, raio_m, amostra_n, min_pct_ok
 ):
@@ -749,7 +700,7 @@ try:
     pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo(
         f_campo, int(epsg_used)
     )
-    estadio, cidade, pais = _reverse_geocode_place_city_country(clat, clon)
+    cidade, pais = _reverse_geocode_city_country(clat, clon)
 except Exception as e:
     st.error(f"❌ Erro na calibração do campo: {e}")
     st.stop()
@@ -761,14 +712,14 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
 # Campo
-_, cidade_campo, pais_campo = _reverse_geocode_place_city_country(clat, clon)
+cidade_campo, pais_campo = _reverse_geocode_city_country(clat, clon)
 
 # Atletas (centro estimado)
 alat, alon = _get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
 
 cidade_atl, pais_atl = None, None
 if alat is not None and alon is not None:
-    _, cidade_atl, pais_atl = _reverse_geocode_place_city_country(alat, alon)
+    cidade_atl, pais_atl = _reverse_geocode_city_country(alat, alon)
 # ----- Campo -----
 campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
@@ -833,6 +784,17 @@ for aid in sorted(
 st.table(pd.DataFrame(rows))
 st.write(f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_data)}")
 
+# -------------------------------
+# Quorum mínimo (10 atletas válidos)
+# Nota: atleta válido = tem Warm-Up + 1P + 2P (caso falte 1 ficheiro/fase, não conta)
+# -------------------------------
+QUORUM_MIN = 10
+quorum_ok = completos >= QUORUM_MIN
+if quorum_ok:
+    st.success(f"✅ Quorum atingido: {completos} atletas válidos (mínimo {QUORUM_MIN}).")
+else:
+    st.error(f"❌ Quorum NÃO atingido: {completos} atletas válidos (mínimo {QUORUM_MIN}).")
+
 st.divider()
 
 # Normalization + export
@@ -844,11 +806,11 @@ if not passed_geo:
     )
     st.stop()
 
-btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True)
+btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True, disabled=(not quorum_ok))
 
-# outputs (para UI) — manter em session_state para sobreviver a reruns
-df_metrics = st.session_state.df_metrics
-report_txt = st.session_state.report_txt
+# outputs (para UI)
+df_metrics = None
+report_txt = None
 
 if btn:
     with st.spinner("A processar..."):
@@ -986,6 +948,7 @@ if btn:
             report_lines.append(
                 f"  Atletas totais: {len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
             )
+            report_lines.append(f"  Quorum (≥ {QUORUM_MIN} atletas válidos): {'OK' if quorum_ok else 'NOK'} ({completos}/{QUORUM_MIN})")
 
             report_lines.append("-" * 70)
             report_lines.append("Sincronização")
@@ -1039,19 +1002,11 @@ if btn:
 
             report_txt = "\n".join(report_lines)
 
-            # Persistir outputs (map zoom/scroll dispara rerun do Streamlit)
-            st.session_state.df_metrics = df_metrics
-            st.session_state.report_txt = report_txt
-            st.session_state.process_done = True
-
     st.success("✅ Processamento concluído. Relatório e métricas disponíveis abaixo.")
 
 
 # ---------- UI (fora do if btn) ----------
-df_metrics = st.session_state.df_metrics
-report_txt = st.session_state.report_txt
-
-if st.session_state.process_done and df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
+if df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
 
     # 1️⃣ Identificar coluna atleta
     col_inicio = None
@@ -1100,23 +1055,3 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
         mime="text/csv",
         use_container_width=True,
     )
-
-    st.subheader("Relatório")
-    if report_txt:
-        st.code(report_txt, language="text")
-        st.download_button(
-            "⬇️ Download Relatório (.txt)",
-            data=report_txt.encode("utf-8"),
-            file_name="relatorio_FPF.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
-    else:
-        st.warning("Sem relatório para mostrar (processa novamente).")
-
-    # (Opcional) botão para limpar resultados
-    if st.button("🧹 Limpar resultados", use_container_width=True):
-        st.session_state.df_metrics = None
-        st.session_state.report_txt = None
-        st.session_state.process_done = False
-        st.rerun()
