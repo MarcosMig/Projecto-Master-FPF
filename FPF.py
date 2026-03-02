@@ -655,7 +655,13 @@ def _processar_atletas_para_temp(
                 df["X_UTM"] = p_loc[:, 0]
                 df["Y_UTM"] = p_loc[:, 1]
 
-                if aplicar_suav and len(df) >= int(janela) and int(janela) % 2 == 1:
+
+                df["X_UTM"] = df["X_UTM"].interpolate(limit=1, limit_direction="both")
+                df["Y_UTM"] = df["Y_UTM"].interpolate(limit=1, limit_direction="both")
+
+                # Suavização opcional Savitzky–Golay
+
+                if aplicar_suavizacao and len(df) >= int(janela) and int(janela) % 2 == 1:
                     x = pd.Series(df["X_UTM"]).interpolate()
                     y = pd.Series(df["Y_UTM"]).interpolate()
                     try:
