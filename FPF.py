@@ -1327,6 +1327,7 @@ if btn:
                 st.stop()
 
             status.update(label="Sincronização temporal...", state="running")
+            out_files, fases_ordenadas, fases_dict, n_master, event_clock = sincronizar(temp_files, out_dir)
             out_files, fases_ordenadas, fases_dict, n_master = sincronizar(temp_files, out_dir)
 
             # Session identifiers (auditoria/dedup)
@@ -1515,6 +1516,25 @@ if btn:
             report_lines.append("  Fases (ordem cronológica):")
             for fase, (t_s, t_e) in fases_ordenadas:
                 report_lines.append(f"    - {fase:8} | início: {t_s} | fim: {t_e}")
+
+            if event_clock:
+                report_lines.append("  Timeline de Jogo (uniformizada):")
+                for fase in ["Warm-Up", "1P", "2P"]:
+                    if fase in event_clock:
+                        ec = event_clock[fase]
+                        ini = int(round(ec.get("start_s", 0.0)))
+                        fim = int(round(ec.get("end_s", 0.0)))
+                        ext = int(round(ec.get("extra_s", 0.0)))
+                        def _fmt(sec):
+                            sign = "-" if sec < 0 else ""
+                            sec = abs(sec)
+                            h = sec // 3600
+                            m = (sec % 3600) // 60
+                            s = sec % 60
+                            return f"{sign}{h:02d}:{m:02d}:{s:02d}"
+                        report_lines.append(
+                            f"    - {fase:8} | evento: {_fmt(ini)} → {_fmt(fim)} | extra: {_fmt(ext)}"
+                        )
 
             if issues:
                 report_lines.append("-" * 70)
