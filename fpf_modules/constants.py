@@ -1,0 +1,11 @@
+HSR_MPS = 5.5
+SPRINT_MPS = 7.0
+ACC_THR = 2.5
+DEC_THR = -3.0
+SPRINT_BOUT_MIN_S = 1.0
+ENGINE_VERSION = "v12-metrics"
+
+COL_LAT = "Lat"
+COL_LON = "Lon"
+COL_TIME = "Time"
+COL_FASE = "Fase"
