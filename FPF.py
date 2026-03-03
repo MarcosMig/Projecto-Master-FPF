@@ -1328,6 +1328,7 @@ if btn:
 
             status.update(label="Sincronização temporal...", state="running")
             out_files, fases_ordenadas, fases_dict, n_master, event_clock = sincronizar(temp_files, out_dir)
+            out_files, fases_ordenadas, fases_dict, n_master = sincronizar(temp_files, out_dir)
 
             # Session identifiers (auditoria/dedup)
             session_uuid = uuid.uuid4()

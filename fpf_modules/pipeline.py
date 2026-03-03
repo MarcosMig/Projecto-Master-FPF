@@ -163,6 +163,7 @@ def sincronizar(temp_files, out_dir: Path):
     for f in temp_files:
         df_atl = pd.read_csv(f, sep=";")
         df_sync = pd.merge(master_df[[COL_TIME, "__time_s"]], df_atl, on=COL_TIME, how="left")
+        df_sync = pd.merge(master_df, df_atl, on=COL_TIME, how="left")
         aid = str(df_atl["Atleta_ID"].iloc[0]) if "Atleta_ID" in df_atl.columns else f.stem.replace("T_", "")
         df_sync["Atleta_ID"] = aid
 
@@ -190,3 +191,4 @@ def sincronizar(temp_files, out_dir: Path):
     ordem_fases = {"Warm-Up": 0, "1P": 1, "2P": 2}
     fases_ordenadas = sorted(fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
     return out_files, fases_ordenadas, fases_dict, len(master_df), event_clock
+    return out_files, fases_ordenadas, fases_dict, len(master_df)
