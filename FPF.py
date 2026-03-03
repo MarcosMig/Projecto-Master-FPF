@@ -164,6 +164,26 @@ with st.sidebar:
     st.divider()
     st.header("📤 Upload de Ficheiros")
     st.caption("Campo: podes fazer upload de 4 CSVs (BL, BR, TL, TR) **ou** usar o modo 'Pick no mapa'.")
+    st.divider()
+
+    st.header("🗺️ Calibração do Campo")
+
+    metodo_campo = st.radio(
+
+        "Como queres definir os 4 cantos?",
+
+        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)"],
+
+        index=0,
+
+        help="Alternativa ao upload: usa um mapa satélite e clica nos 4 cantos do campo.",
+
+    )
+
+    st.caption("Se escolheres 'Pick no mapa', não precisas de carregar os 4 CSVs do campo.")
+
+    
+
     f_campo = st.file_uploader(
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
     )
@@ -173,16 +193,6 @@ with st.sidebar:
     f_atleta = st.file_uploader(
         "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
-
-    st.divider()
-    st.header("🗺️ Calibração do Campo")
-    metodo_campo = st.radio(
-        "Como queres definir os 4 cantos?",
-        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)"],
-        index=0,
-        help="Alternativa ao upload: usa um mapa satélite e clica nos 4 cantos do campo.",
-    )
-
 
 st.divider()
 
