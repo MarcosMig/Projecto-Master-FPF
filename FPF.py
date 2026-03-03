@@ -36,6 +36,15 @@ if "process_done" not in st.session_state:
     st.session_state.process_done = False
 
 
+
+
+
+# --- Persistência para 'Pick no mapa' (cantos do campo) ---
+if "pick_corners" not in st.session_state:
+    st.session_state.pick_corners = []  # lista [(lat, lon), ...]
+if "pts_gps_picked" not in st.session_state:
+    st.session_state.pts_gps_picked = None  # dict com BL/BR/TL/TR após ordenação
+
 # --- LOGIN (CENTRADO + st.secrets) ---
 def _apply_login_style():
     css = """
@@ -154,7 +163,7 @@ with st.sidebar:
 
     st.divider()
     st.header("📤 Upload de Ficheiros")
-    st.caption("Campo: 4 CSVs com BL, BR, TL, TR no nome do ficheiro.")
+    st.caption("Campo: podes fazer upload de 4 CSVs (BL, BR, TL, TR) **ou** usar o modo 'Pick no mapa'.")
     f_campo = st.file_uploader(
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
     )
@@ -164,6 +173,16 @@ with st.sidebar:
     f_atleta = st.file_uploader(
         "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
+
+    st.divider()
+    st.header("🗺️ Calibração do Campo")
+    metodo_campo = st.radio(
+        "Como queres definir os 4 cantos?",
+        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)"],
+        index=0,
+        help="Alternativa ao upload: usa um mapa satélite e clica nos 4 cantos do campo.",
+    )
+
 
 st.divider()
 
@@ -569,6 +588,103 @@ def _calibrar_campo(f_campo_files, epsg: int):
     )
 
 
+def _order_corners_latlon(points):
+    """
+    Recebe lista de 4 pontos [(lat, lon), ...] e devolve dict com chaves BL, BR, TL, TR.
+    Regra:
+      - divide por lat (top 2 e bottom 2)
+      - dentro de cada par, ordena por lon (esq/dir)
+    """
+    if points is None or len(points) != 4:
+        raise ValueError("São necessários exatamente 4 pontos para ordenar cantos.")
+
+    pts = [(float(lat), float(lon)) for lat, lon in points]
+    pts_sorted_lat = sorted(pts, key=lambda p: p[0], reverse=True)  # maior lat = norte (topo)
+    top = pts_sorted_lat[:2]
+    bottom = pts_sorted_lat[2:]
+
+    top_sorted = sorted(top, key=lambda p: p[1])      # menor lon = esquerda
+    bottom_sorted = sorted(bottom, key=lambda p: p[1])
+
+    TL = top_sorted[0]
+    TR = top_sorted[1]
+    BL = bottom_sorted[0]
+    BR = bottom_sorted[1]
+
+    return {"BL": [BL[0], BL[1]], "BR": [BR[0], BR[1]], "TL": [TL[0], TL[1]], "TR": [TR[0], TR[1]]}
+
+
+def _calibrar_campo_from_pts_gps(pts_gps: dict, epsg: int):
+    """
+    Igual ao _calibrar_campo, mas recebe os 4 cantos já como lat/lon.
+    pts_gps: {"BL":[lat,lon], "BR":[lat,lon], "TL":[lat,lon], "TR":[lat,lon]}
+    """
+    for k in ["BL", "BR", "TL", "TR"]:
+        if k not in pts_gps:
+            raise ValueError(f"Campo incompleto. Em falta: {k}")
+
+    clat = float(np.mean([pts_gps[k][0] for k in pts_gps]))
+    clon = float(np.mean([pts_gps[k][1] for k in pts_gps]))
+
+    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
+    pts_utm = {}
+    for key, (lat, lon) in pts_gps.items():
+        x, y = transformer.transform(float(lon), float(lat))
+        pts_utm[key] = np.array([x, y], dtype=float)
+
+    dist_comprimento = float(np.linalg.norm(pts_utm["BR"] - pts_utm["BL"]))
+    dist_largura = float(np.linalg.norm(pts_utm["TL"] - pts_utm["BL"]))
+
+    origin = pts_utm["BL"]
+    v_base = pts_utm["BR"] - origin
+    angulo_rad = float(np.arctan2(v_base[1], v_base[0]))
+
+    # Rotação para alinhar BL->BR no eixo X
+    R = np.array(
+        [
+            [np.cos(-angulo_rad), -np.sin(-angulo_rad)],
+            [np.sin(-angulo_rad), np.cos(-angulo_rad)],
+        ],
+        dtype=float,
+    )
+
+    return (
+        pts_gps,
+        (clat, clon),
+        pts_utm,
+        origin,
+        R,
+        angulo_rad,
+        dist_comprimento,
+        dist_largura,
+    )
+
+
+def _sample_athlete_track_latlon(f_atleta_files, max_points=600):
+    """
+    Lê um atleta (primeiro ficheiro) e devolve uma amostra de pontos lat/lon para desenhar no mapa.
+    Serve apenas para orientar o utilizador no 'pick' dos cantos.
+    """
+    if not f_atleta_files:
+        return []
+    try:
+        df = _read_csv_upload(f_atleta_files[0], nrows=5000)
+        if COL_LAT not in df.columns or COL_LON not in df.columns:
+            return []
+        sub = df[[COL_LAT, COL_LON]].dropna()
+        if sub.empty:
+            return []
+        if len(sub) > max_points:
+            sub = sub.sample(n=max_points, random_state=7)
+        pts = sub.values.tolist()
+        return [(float(lat), float(lon)) for lat, lon in pts if np.isfinite(lat) and np.isfinite(lon)]
+    except Exception:
+        return []
+
+
+
+
+
 @st.cache_data(show_spinner=False, ttl=86400)
 def _reverse_geocode_city_country(lat: float, lon: float):
     """Reverse geocode via OpenStreetMap Nominatim."""
@@ -838,16 +954,100 @@ def _sincronizar(temp_files, out_dir: Path):
 # -------------------------------
 # Main flow
 # -------------------------------
-if not f_campo or not f_atleta:
-    st.info("👋 Carrega os ficheiros na barra lateral para iniciar.")
+if not f_atleta:
+    st.info("👋 Carrega os ficheiros de ATLETAS na barra lateral para iniciar.")
+    st.stop()
+
+have_upload_corners = bool(f_campo)
+have_picked_corners = st.session_state.get("pts_gps_picked") is not None
+
+if metodo_campo == "Upload (BL/BR/TL/TR)" and not have_upload_corners:
+    st.info("👋 Selecionaste 'Upload', mas ainda não carregaste os 4 CSVs do campo (BL/BR/TL/TR).")
+    st.stop()
+
+if metodo_campo == "Pick no mapa (clicar 4 cantos)" and not have_picked_corners:
+    st.warning("ℹ️ Selecionaste 'Pick no mapa'. Define os 4 cantos no mapa abaixo e depois continua.")
+
+
+if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pts_gps_picked") is None:
+    # --- UI: Pick dos 4 cantos no mapa (alternativa ao upload) ---
+    alat0, alon0 = _get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
+    if alat0 is None or alon0 is None:
+        pts_fallback = _sample_athlete_track_latlon(f_atleta, max_points=10)
+        if pts_fallback:
+            alat0, alon0 = pts_fallback[0]
+        else:
+            alat0, alon0 = 0.0, 0.0
+
+    st.header("Pick dos 4 cantos do campo")
+    st.caption(
+        "Clica no mapa 4 vezes (um por canto). O sistema tenta ordenar automaticamente em TL/TR/BR/BL. "
+        "Se falhar, usa 'Reset' e volta a clicar com mais zoom."
+    )
+
+    m_pick = folium.Map(location=[alat0, alon0], zoom_start=18)
+    folium.TileLayer(
+        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attr="Esri World Imagery",
+        name="Esri (Satélite)",
+    ).add_to(m_pick)
+
+    pts_track = _sample_athlete_track_latlon(f_atleta, max_points=600)
+    if pts_track:
+        folium.PolyLine(pts_track, weight=2, opacity=0.8).add_to(m_pick)
+
+    for i, (lat, lon) in enumerate(st.session_state.pick_corners, start=1):
+        folium.Marker([lat, lon], tooltip=f"Pick {i}").add_to(m_pick)
+
+    if len(st.session_state.pick_corners) == 4:
+        folium.Polygon(st.session_state.pick_corners, tooltip="Cantos (pick)").add_to(m_pick)
+
+    out_pick = st_folium(m_pick, width=1100, height=520, key="mapa_pick_cantos")
+
+    if out_pick and out_pick.get("last_clicked"):
+        lat = float(out_pick["last_clicked"]["lat"])
+        lon = float(out_pick["last_clicked"]["lng"])
+        if len(st.session_state.pick_corners) < 4:
+            st.session_state.pick_corners.append((lat, lon))
+            st.rerun()
+
+    c1, c2, _ = st.columns([1, 1, 2])
+    with c1:
+        if st.button("↩️ Desfazer", disabled=(len(st.session_state.pick_corners) == 0)):
+            st.session_state.pick_corners.pop()
+            st.rerun()
+    with c2:
+        if st.button("🧹 Reset"):
+            st.session_state.pick_corners = []
+            st.rerun()
+
+    if len(st.session_state.pick_corners) == 4:
+        try:
+            st.session_state.pts_gps_picked = _order_corners_latlon(st.session_state.pick_corners)
+            st.subheader("Cantos (ordenados)")
+            st.json(st.session_state.pts_gps_picked)
+            st.success("✅ Cantos definidos. Agora o pipeline continua normalmente.")
+        except Exception as e:
+            st.error(f"Não consegui ordenar os cantos automaticamente: {e}")
+            st.info("Sugestão: faz mais zoom e clica exatamente nos 4 cantos; se necessário, usa Reset.")
+    else:
+        st.info(f"Pontos escolhidos: {len(st.session_state.pick_corners)}/4")
+
     st.stop()
 
 try:
-    pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo(
-        f_campo, int(epsg_used)
-    )
+    if metodo_campo == "Pick no mapa (clicar 4 cantos)":
+        pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo_from_pts_gps(
+            st.session_state.pts_gps_picked, int(epsg_used)
+        )
+    else:
+        pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo(
+            f_campo, int(epsg_used)
+        )
+
     estadio, cidade, pais = _reverse_geocode_place_city_country(clat, clon)
 except Exception as e:
+
     st.error(f"❌ Erro na calibração do campo: {e}")
     st.stop()
 
