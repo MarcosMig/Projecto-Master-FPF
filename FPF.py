@@ -624,6 +624,80 @@ def _order_corners_latlon(points):
     return {"BL": [BL[0], BL[1]], "BR": [BR[0], BR[1]], "TL": [TL[0], TL[1]], "TR": [TR[0], TR[1]]}
 
 
+def _retangularizar_cantos_latlon(points_latlon, epsg: int):
+    """
+    A partir de 4 pontos (lat,lon) clicados, cria uma versão "retangular" consistente.
+    Passos:
+      1) Ordena pontos (TL/TR/BR/BL) por lat/lon (aprox)
+      2) Converte para UTM
+      3) Define eixo X pelo vetor médio esquerda->direita (top + bottom), e eixo Y perpendicular
+      4) Projeta os 4 pontos nesses eixos, faz snap em min/max e reconstrói um retângulo perfeito
+      5) Converte o retângulo de volta para lat/lon
+    Retorna:
+      pts_clicked (dict BL/BR/TL/TR latlon),
+      pts_rect (dict BL/BR/TL/TR latlon)  # ajustado
+    """
+    pts_clicked = _order_corners_latlon(points_latlon)
+
+    # transformers
+    to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{int(epsg)}", always_xy=True)
+    to_wgs = Transformer.from_crs(f"EPSG:{int(epsg)}", "EPSG:4326", always_xy=True)
+
+    # UTM coords dict
+    pts_utm = {}
+    for k, (lat, lon) in pts_clicked.items():
+        x, y = to_utm.transform(float(lon), float(lat))
+        pts_utm[k] = np.array([x, y], dtype=float)
+
+    # centro
+    C = np.mean(np.stack(list(pts_utm.values()), axis=0), axis=0)
+
+    # eixo X: média (TL->TR) e (BL->BR)
+    vx1 = pts_utm["TR"] - pts_utm["TL"]
+    vx2 = pts_utm["BR"] - pts_utm["BL"]
+    vx = vx1 + vx2
+    norm_vx = float(np.linalg.norm(vx))
+    if norm_vx < 1e-6:
+        # fallback: BL->BR
+        vx = pts_utm["BR"] - pts_utm["BL"]
+        norm_vx = float(np.linalg.norm(vx))
+        if norm_vx < 1e-6:
+            raise ValueError("Não foi possível estimar eixo do campo a partir dos pontos.")
+
+    ux = vx / norm_vx
+    # eixo Y perpendicular (rot 90º)
+    uy = np.array([-ux[1], ux[0]], dtype=float)
+
+    # projecções
+    def proj(p):
+        d = p - C
+        return float(np.dot(d, ux)), float(np.dot(d, uy))  # (x', y')
+
+    proj_vals = {k: proj(v) for k, v in pts_utm.items()}
+    xs = [v[0] for v in proj_vals.values()]
+    ys = [v[1] for v in proj_vals.values()]
+    x_min, x_max = float(np.min(xs)), float(np.max(xs))
+    y_min, y_max = float(np.min(ys)), float(np.max(ys))
+
+    # reconstrução do retângulo em UTM
+    # Nota: usando a convenção: topo = y_max (mais "norte" no referencial uy), base = y_min
+    rect_proj = {
+        "TL": (x_min, y_max),
+        "TR": (x_max, y_max),
+        "BL": (x_min, y_min),
+        "BR": (x_max, y_min),
+    }
+
+    pts_rect_utm = {k: (C + x * ux + y * uy) for k, (x, y) in rect_proj.items()}
+
+    # back to latlon
+    pts_rect = {}
+    for k, p in pts_rect_utm.items():
+        lon, lat = to_wgs.transform(float(p[0]), float(p[1]))
+        pts_rect[k] = [float(lat), float(lon)]
+
+    return pts_clicked, pts_rect
+
 def _calibrar_campo_from_pts_gps(pts_gps: dict, epsg: int):
     """
     Igual ao _calibrar_campo, mas recebe os 4 cantos já como lat/lon.
@@ -979,8 +1053,20 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and not have_picked_corners:
     st.warning("ℹ️ Selecionaste 'Pick no mapa'. Define os 4 cantos no mapa abaixo e depois continua.")
 
 
+
 if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pts_gps_picked") is None:
     # --- UI: Pick dos 4 cantos no mapa (alternativa ao upload) ---
+    # Cursor crosshair para maior precisão no click
+    st.markdown(
+        '''
+        <style>
+          .leaflet-container { cursor: crosshair !important; }
+          div[data-testid="stFOLIUM"] * { cursor: crosshair !important; }
+        </style>
+        ''',
+        unsafe_allow_html=True,
+    )
+
     alat0, alon0 = _get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
     if alat0 is None or alon0 is None:
         pts_fallback = _sample_athlete_track_latlon(f_atleta, max_points=10)
@@ -991,8 +1077,8 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
 
     st.header("Pick dos 4 cantos do campo")
     st.caption(
-        "Clica no mapa 4 vezes (um por canto). O sistema tenta ordenar automaticamente em TL/TR/BR/BL. "
-        "Se falhar, usa 'Reset' e volta a clicar com mais zoom."
+        "Clica no mapa 4 vezes (um por canto). Depois de 4 picks, aplico uma retangularização automática "
+        "(corrige desvios) e mostro os pontos ajustados + o retângulo final."
     )
 
     m_pick = folium.Map(location=[alat0, alon0], zoom_start=18)
@@ -1006,14 +1092,59 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
     if pts_track:
         folium.PolyLine(pts_track, weight=2, opacity=0.8).add_to(m_pick)
 
+    # 1) Markers: pontos clicados
     for i, (lat, lon) in enumerate(st.session_state.pick_corners, start=1):
-        folium.Marker([lat, lon], tooltip=f"Pick {i}").add_to(m_pick)
+        folium.CircleMarker(
+            location=[lat, lon],
+            radius=6,
+            color="yellow",
+            fill=True,
+            fill_opacity=0.9,
+            tooltip=f"Clicado {i}",
+        ).add_to(m_pick)
 
+    # 2) Se já temos 4 pontos, calcular retangularização e desenhar versão ajustada
+    pts_clicked_dict = None
+    pts_rect_dict = None
     if len(st.session_state.pick_corners) == 4:
-        folium.Polygon(st.session_state.pick_corners, tooltip="Cantos (pick)").add_to(m_pick)
+        try:
+            pts_clicked_dict, pts_rect_dict = _retangularizar_cantos_latlon(
+                st.session_state.pick_corners, epsg=int(epsg_used)
+            )
+
+            # markers ajustados (cores diferentes)
+            for k, (lat, lon) in pts_rect_dict.items():
+                folium.CircleMarker(
+                    location=[lat, lon],
+                    radius=6,
+                    color="cyan",
+                    fill=True,
+                    fill_opacity=0.9,
+                    tooltip=f"Ajustado {k}",
+                ).add_to(m_pick)
+
+            # polígono final (retângulo ajustado)
+            poly = [
+                pts_rect_dict["TL"],
+                pts_rect_dict["TR"],
+                pts_rect_dict["BR"],
+                pts_rect_dict["BL"],
+            ]
+            folium.Polygon(
+                locations=poly,
+                color="cyan",
+                weight=3,
+                fill=False,
+                tooltip="Retângulo final (ajustado)",
+            ).add_to(m_pick)
+
+        except Exception as e:
+            st.error(f"Falha ao retangularizar cantos: {e}")
+            pts_clicked_dict, pts_rect_dict = None, None
 
     out_pick = st_folium(m_pick, width=1100, height=520, key="mapa_pick_cantos")
 
+    # Capturar clique
     if out_pick and out_pick.get("last_clicked"):
         lat = float(out_pick["last_clicked"]["lat"])
         lon = float(out_pick["last_clicked"]["lng"])
@@ -1031,17 +1162,20 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
             st.session_state.pick_corners = []
             st.rerun()
 
-    if len(st.session_state.pick_corners) == 4:
-        try:
-            st.session_state.pts_gps_picked = _order_corners_latlon(st.session_state.pick_corners)
-            st.subheader("Cantos (ordenados)")
-            st.json(st.session_state.pts_gps_picked)
-            st.success("✅ Cantos definidos. Agora o pipeline continua normalmente.")
-        except Exception as e:
-            st.error(f"Não consegui ordenar os cantos automaticamente: {e}")
-            st.info("Sugestão: faz mais zoom e clica exatamente nos 4 cantos; se necessário, usa Reset.")
-    else:
+    if len(st.session_state.pick_corners) < 4:
         st.info(f"Pontos escolhidos: {len(st.session_state.pick_corners)}/4")
+    else:
+        if pts_clicked_dict and pts_rect_dict:
+            st.subheader("Cantos (clicados)")
+            st.json(pts_clicked_dict)
+            st.subheader("Cantos (ajustados - usados no pipeline)")
+            st.json(pts_rect_dict)
+
+            # Guardar já ajustado para o pipeline
+            st.session_state.pts_gps_picked = pts_rect_dict
+            st.success("✅ Cantos ajustados guardados. Agora o pipeline continua normalmente.")
+        else:
+            st.warning("Tens 4 pontos, mas não consegui ajustar. Faz Reset e tenta com mais zoom.")
 
     st.stop()
 
