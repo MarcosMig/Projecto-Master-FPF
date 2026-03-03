@@ -20,6 +20,11 @@ import io
 from streamlit_folium import st_folium
 from scipy.signal import savgol_filter
 
+from fpf_modules.constants import ENGINE_VERSION
+from fpf_modules.io_utils import hash_session
+from fpf_modules.metrics import audit_timebase, compute_metrics_for_df
+from fpf_modules.pipeline import processar_atletas_para_temp, sincronizar
+
 GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 
 # --- CONFIGURAÇÃO ---
@@ -213,7 +218,7 @@ SPRINT_MPS = 7.0  # Sprint (m/s) ~25.2 km/h
 ACC_THR = 2.5  # m/s^2
 DEC_THR = -3.0  # m/s^2
 SPRINT_BOUT_MIN_S = 1.0  # duração mínima do bout de sprint (s)
-ENGINE_VERSION = "v12-metrics"
+# ENGINE_VERSION importado de fpf_modules.constants
 
 COL_LAT, COL_LON, COL_TIME, COL_FASE = "Lat", "Lon", "Time", "Fase"
 
@@ -1306,7 +1311,7 @@ if btn:
             out_dir.mkdir(parents=True, exist_ok=True)
 
             status.update(label="Processamento e limpeza de dados GPS...", state="running")
-            temp_files, audit_proc, issues = _processar_atletas_para_temp(
+            temp_files, audit_proc, issues = processar_atletas_para_temp(
                 f_atleta,
                 int(epsg_used),
                 origin,
@@ -1322,12 +1327,12 @@ if btn:
                 st.stop()
 
             status.update(label="Sincronização temporal...", state="running")
-            out_files, fases_ordenadas, fases_dict, n_master = _sincronizar(temp_files, out_dir)
+            out_files, fases_ordenadas, fases_dict, n_master, event_clock = sincronizar(temp_files, out_dir)
 
             # Session identifiers (auditoria/dedup)
             session_uuid = uuid.uuid4()
             session_id_hex = session_uuid.hex
-            session_fingerprint = _hash_session(
+            session_fingerprint = hash_session(
                 data_sessao, selecao, genero, contexto, estadio, f_campo, f_atleta
             )
 
@@ -1358,10 +1363,10 @@ if btn:
 
                 for fase in fases_target:
                     df_f = df_sync[df_sync[COL_FASE] == fase].copy()
-                    met = _compute_metrics_for_df(df_f)
+                    met = compute_metrics_for_df(df_f)
                     fase_mets[fase] = met
 
-                    aud = _audit_timebase(df_f, COL_TIME, expected_hz=10.0)
+                    aud = audit_timebase(df_f, COL_TIME, expected_hz=10.0)
                     audit_time_rows.append({"atleta_id": aid, "fase": fase, **aud})
 
                     metrics_rows.append(
@@ -1510,6 +1515,25 @@ if btn:
             report_lines.append("  Fases (ordem cronológica):")
             for fase, (t_s, t_e) in fases_ordenadas:
                 report_lines.append(f"    - {fase:8} | início: {t_s} | fim: {t_e}")
+
+            if event_clock:
+                report_lines.append("  Timeline de Jogo (uniformizada):")
+                for fase in ["Warm-Up", "1P", "2P"]:
+                    if fase in event_clock:
+                        ec = event_clock[fase]
+                        ini = int(round(ec.get("start_s", 0.0)))
+                        fim = int(round(ec.get("end_s", 0.0)))
+                        ext = int(round(ec.get("extra_s", 0.0)))
+                        def _fmt(sec):
+                            sign = "-" if sec < 0 else ""
+                            sec = abs(sec)
+                            h = sec // 3600
+                            m = (sec % 3600) // 60
+                            s = sec % 60
+                            return f"{sign}{h:02d}:{m:02d}:{s:02d}"
+                        report_lines.append(
+                            f"    - {fase:8} | evento: {_fmt(ini)} → {_fmt(fim)} | extra: {_fmt(ext)}"
+                        )
 
             if issues:
                 report_lines.append("-" * 70)
