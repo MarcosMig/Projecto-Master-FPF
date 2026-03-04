@@ -38,7 +38,17 @@ def read_csv_upload(upload, nrows=None) -> pd.DataFrame:
     return clean_cols(df)
 
 
-def hash_session(data_sessao, selecao, genero, contexto, estadio, f_campo_files, f_atleta_files) -> str:
+def hash_session(
+    data_sessao,
+    selecao,
+    genero,
+    contexto,
+    estadio,
+    f_campo_files,
+    f_atleta_files
+    ) -> str:
+    """Fingerprint determinístico (para deduplicação futura)."""
+
     h = hashlib.sha1()
     h.update(str(data_sessao).encode("utf-8"))
     h.update(str(selecao).encode("utf-8"))
