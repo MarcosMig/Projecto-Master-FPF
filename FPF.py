@@ -151,7 +151,7 @@ with st.sidebar:
     # --- USER LOGGED IN ---
     if "login_user" in st.session_state:
         st.markdown(
-        f"<div style='text-align:right; font-size:14px; color:#9aa0a6;'>User: {st.session_state.login_user}</div>",
+        f"<div style='text-align:left; font-size:14px; color:#9aa0a6;'>User: {st.session_state.login_user}</div>",
         unsafe_allow_html=True
     )
 
