@@ -22,6 +22,21 @@ from scipy.signal import savgol_filter
 
 GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 
+# --- Seleções (lista fechada) ---
+SELECOES_OPCOES = [
+    "AA M", "AA F",
+    "U23 M", "U23 F",
+    "U21 M", "U21 F",
+    "U20 M", "U20 F",
+    "U19 M", "U19 F",
+    "U18 M", "U18 F",
+    "U17 M", "U17 F",
+    "U16 M", "U16 F",
+    "U15 M", "U15 F",
+    "U14 M", "U14 F",
+    "U13 M", "U13 F",
+]
+
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
 if "auth" not in st.session_state:
@@ -145,32 +160,22 @@ if not st.session_state.auth:
 
 # --- INTERFACE SINGLE PAGE ---
 st.title("Validação de Dados")
-
+user_name = (st.session_state.get("login_user") or "").strip() or "—"
+st.markdown(f"**User:** {user_name}")
 
 with st.sidebar:
-    # --- USER LOGGED IN ---
-    if "login_user" in st.session_state:
-        st.markdown(
-        f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user}</div>",
-        unsafe_allow_html=True
-    )
-
     st.header("Dados da Sessão")
     # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
     estadio = None
-    data_sessao = st.date_input("Data")
-    selecao = st.text_input("Seleção (ex.: U19)")
-    genero = st.selectbox("Género", options=["M", "F"], index=0)
+    data_sessao = st.date_input("Data do Evento")
+    selecao = st.selectbox("Seleção", options=SELECOES_OPCOES, index=0)
+    # Género é inferido da seleção (M/F), não é input manual
+    genero = selecao.split()[-1] if selecao.split() and selecao.split()[-1] in ["M", "F"] else ""
     contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0)
 
-    adversario_a = ""
-    adversario_b = ""
+    adversario = ""
     if contexto == "Jogo":
-        col_a, col_b = st.columns(2)
-        with col_a:
-            adversario_a = st.text_input("Equipa A (ex.: Portugal)")
-        with col_b:
-            adversario_b = st.text_input("Equipa B (ex.: Espanha)")
+        adversario = st.text_input("Adversário")
     st.divider()
 
     st.header("🗺️ Calibração do Campo")
@@ -1381,7 +1386,7 @@ if btn:
                             "genero": genero,
                             "contexto": contexto,
                             "jogo": (
-                                " vs ".join([t for t in [adversario_a.strip(), adversario_b.strip()] if t])
+                                adversario.strip()
                                 if contexto == "Jogo"
                                 else ""
                             ),
@@ -1450,7 +1455,7 @@ if btn:
                         "genero": genero,
                         "contexto": contexto,
                         "jogo": (
-                            " vs ".join([t for t in [adversario_a.strip(), adversario_b.strip()] if t])
+                            adversario.strip()
                             if contexto == "Jogo"
                             else ""
                         ),
@@ -1482,7 +1487,7 @@ if btn:
             )
             report_lines.append(f"  Seleção: {selecao} | Género: {genero} | Contexto: {contexto}")
             if contexto == "Jogo":
-                vs_txt = " vs ".join([t for t in [adversario_a.strip(), adversario_b.strip()] if t])
+                vs_txt = adversario.strip()
                 if vs_txt:
                     report_lines.append(f"  Jogo: {vs_txt}")
 
