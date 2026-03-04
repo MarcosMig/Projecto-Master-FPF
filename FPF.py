@@ -20,22 +20,45 @@ import io
 from streamlit_folium import st_folium
 from scipy.signal import savgol_filter
 
-GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
+# -- Local Modules -- #
+from fpf_modules.constants import (
+    HSR_MPS, SPRINT_MPS, ACC_THR, DEC_THR, SPRINT_BOUT_MIN_S, ENGINE_VERSION,
+    COL_LAT, COL_LON, COL_TIME, COL_FASE,
+    SELECOES_OPCOES
+)
 
-# --- Seleções (lista fechada) ---
-SELECOES_OPCOES = [
-    "AA M", "AA F",
-    "U23 M", "U23 F",
-    "U21 M", "U21 F",
-    "U20 M", "U20 F",
-    "U19 M", "U19 F",
-    "U18 M", "U18 F",
-    "U17 M", "U17 F",
-    "U16 M", "U16 F",
-    "U15 M", "U15 F",
-    "U14 M", "U14 F",
-    "U13 M", "U13 F",
-]
+from fpf_modules.metrics import (
+    time_to_seconds,
+    count_bouts,
+    audit_timebase,
+    compute_metrics_for_df
+)
+
+from fpf_modules.io_utils import (
+    hash_session,
+    clean_cols,
+    get_atleta_id,
+    infer_fase,
+    read_csv_upload
+)
+
+from fpf_modules.geo import (
+    calibrar_campo,
+    order_corners_latlon,
+    retangularizar_cantos_latlon,
+    geo_validacao_por_atleta,
+    calibrar_campo_from_pts_gps,
+    sample_athlete_track_latlon,
+    reverse_geocode_place_city_country,
+    get_atletas_centroid_latlon
+)
+
+from fpf_modules.pipeline import (
+    processar_atletas_para_temp,
+    sincronizar
+)
+
+GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
@@ -51,10 +74,6 @@ if "report_txt" not in st.session_state:
     st.session_state.report_txt = None
 if "process_done" not in st.session_state:
     st.session_state.process_done = False
-
-
-
-
 
 # --- Persistência para 'Pick no mapa' (cantos do campo) ---
 if "pick_corners" not in st.session_state:
@@ -197,7 +216,7 @@ with st.sidebar:
 
     st.caption("Se escolheres 'Pick no mapa', não precisas de carregar os 4 CSVs do campo.")
 
-    
+
 
     f_campo = st.file_uploader(
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
@@ -219,569 +238,6 @@ min_pct_atletas_ok = 0.80
 aplicar_suavizacao = True
 janela_savgol = 11
 poly_savgol = 2
-
-# -------------------------------
-# Métricas Individuais (GPS-only)
-# -------------------------------
-HSR_MPS = 5.5  # High-Speed Running (m/s) ~19.8 km/h
-SPRINT_MPS = 7.0  # Sprint (m/s) ~25.2 km/h
-ACC_THR = 2.5  # m/s^2
-DEC_THR = -3.0  # m/s^2
-SPRINT_BOUT_MIN_S = 1.0  # duração mínima do bout de sprint (s)
-ENGINE_VERSION = "v12-metrics"
-
-COL_LAT, COL_LON, COL_TIME, COL_FASE = "Lat", "Lon", "Time", "Fase"
-
-
-def _time_to_seconds(series: pd.Series) -> pd.Series:
-    """Converte Time para segundos (float). Suporta numérico (s/ms) ou datetime-like string."""
-    s = series.copy()
-    s_num = pd.to_numeric(s, errors="coerce")
-    if s_num.notna().mean() > 0.8:
-        med = float(s_num.dropna().median()) if s_num.notna().any() else 0.0
-        if med > 1e12:  # epoch ms
-            return s_num / 1000.0
-        if med > 1e9:  # epoch s
-            return s_num.astype(float)
-        return s_num.astype(float)
-    dt = pd.to_datetime(s, errors="coerce", utc=True)
-    if dt.notna().any():
-        t0 = dt.dropna().iloc[0]
-        return (dt - t0).dt.total_seconds()
-    return pd.Series([np.nan] * len(s), index=s.index, dtype="float64")
-
-
-def _count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
-    """Conta episódios consecutivos onde mask==True com duração >= min_dur_s."""
-    if len(t) == 0:
-        return 0
-    bouts = 0
-    in_bout = False
-    t_start = None
-    for i in range(len(t)):
-        if mask[i] and not in_bout:
-            in_bout = True
-            t_start = t[i]
-        if (not mask[i]) and in_bout:
-            dur = t[i - 1] - t_start if t_start is not None else 0.0
-            if dur >= min_dur_s:
-                bouts += 1
-            in_bout = False
-            t_start = None
-    if in_bout and t_start is not None:
-        dur = t[-1] - t_start
-        if dur >= min_dur_s:
-            bouts += 1
-    return bouts
-
-
-
-def _audit_timebase(df: pd.DataFrame, col_time: str, expected_hz: float = 10.0) -> dict:
-    """Audita base temporal (por atleta/fase) para diagnosticar duplicados, gaps e Hz."""
-    if df is None or df.empty or col_time not in df.columns:
-        return {
-            "n_rows": 0,
-            "n_valid_t": 0,
-            "wallclock_s": np.nan,
-            "dt_median_s": np.nan,
-            "hz_est": np.nan,
-            "n_dt_neg": 0,
-            "n_dt_zero": 0,
-            "n_gaps_gt_0_2s": 0,
-            "n_gaps_gt_2s": 0,
-        }
-
-    t = _time_to_seconds(df[col_time])
-    t = pd.to_numeric(t, errors="coerce").dropna()
-    if t.shape[0] < 2:
-        return {
-            "n_rows": int(len(df)),
-            "n_valid_t": int(t.shape[0]),
-            "wallclock_s": 0.0,
-            "dt_median_s": np.nan,
-            "hz_est": np.nan,
-            "n_dt_neg": 0,
-            "n_dt_zero": 0,
-            "n_gaps_gt_0_2s": 0,
-            "n_gaps_gt_2s": 0,
-        }
-
-    t = t.sort_values().to_numpy(dtype=float)
-    dt = np.diff(t)
-
-    n_dt_neg = int((dt < 0).sum())
-    n_dt_zero = int((dt == 0).sum())
-    dt_pos = dt[dt > 0]
-
-    dt_median = float(np.median(dt_pos)) if dt_pos.size else np.nan
-    hz_est = float(1.0 / dt_median) if (dt_median and dt_median > 0) else np.nan
-
-    n_gaps_0_2 = int((dt_pos > 0.2).sum())  # para 10Hz: >0.2s é gap relevante
-    n_gaps_2 = int((dt_pos > 2.0).sum())
-
-    wallclock_s = float(t[-1] - t[0])
-    return {
-        "n_rows": int(len(df)),
-        "n_valid_t": int(len(t)),
-        "wallclock_s": wallclock_s,
-        "dt_median_s": dt_median,
-        "hz_est": hz_est,
-        "n_dt_neg": n_dt_neg,
-        "n_dt_zero": n_dt_zero,
-        "n_gaps_gt_0_2s": n_gaps_0_2,
-        "n_gaps_gt_2s": n_gaps_2,
-    }
-
-
-def _compute_metrics_for_df(df: pd.DataFrame) -> dict:
-    # Defaults (evita KeyError em fases vazias/curtas)
-    DEFAULT_METRICS = {
-        "duracao_min": 0.0,
-        "dist_m": 0.0,
-        "m_min": float("nan"),
-        "hsr_dist_m": 0.0,
-        "sprint_dist_m": 0.0,
-        "n_sprints": 0,
-        "n_acc_2_5": 0,
-        "n_dec_3_0": 0,
-        "vmax_mps": float("nan"),
-        "peak_1m_m_min": float("nan"),
-        "hsr_pct": float("nan"),
-        "pct_time_valid": float("nan"),
-        "n_gaps_gt2s": 0,
-        "n_points": 0,
-        "active_time_min": 0.0,
-        "active_pct": float("nan"),
-    }
-
-    """Calcula métricas para um atleta numa fase (df filtrado)."""
-    if df.empty:
-        return {
-            "duracao_min": 0.0,
-            "dist_m": 0.0,
-            "m_min": np.nan,
-            "peak_1m_m_min": np.nan,
-            "vmax_mps": np.nan,
-            "hsr_dist_m": 0.0,
-            "hsr_pct": np.nan,
-            "sprint_dist_m": 0.0,
-            "n_sprints": 0,
-            "n_acc_2_5": 0,
-            "n_dec_3_0": 0,
-            "n_points": 0,
-            "pct_time_valid": 0.0,
-            "n_gaps_gt2s": 0,
-        }
-
-    t_sec = _time_to_seconds(df[COL_TIME])
-    x = pd.to_numeric(df["X_UTM"], errors="coerce")
-    y = pd.to_numeric(df["Y_UTM"], errors="coerce")
-
-    valid = t_sec.notna() & x.notna() & y.notna()
-    dfv = pd.DataFrame({"t": t_sec[valid], "x": x[valid], "y": y[valid]}).sort_values("t")
-
-    if len(dfv) < 2:
-        return {
-            "duracao_min": 0.0,
-            "dist_m": 0.0,
-            "m_min": np.nan,
-            "peak_1m_m_min": np.nan,
-            "vmax_mps": np.nan,
-            "hsr_dist_m": 0.0,
-            "hsr_pct": np.nan,
-            "sprint_dist_m": 0.0,
-            "n_sprints": 0,
-            "n_acc_2_5": 0,
-            "n_dec_3_0": 0,
-            "n_points": int(len(dfv)),
-            "pct_time_valid": float(valid.mean() * 100.0),
-            "n_gaps_gt2s": 0,
-        }
-
-    t = dfv["t"].to_numpy(dtype=float)
-    dx = np.diff(dfv["x"].to_numpy(dtype=float))
-    dy = np.diff(dfv["y"].to_numpy(dtype=float))
-    dt = np.diff(t)
-
-    good = dt > 0
-    n_gaps = int(np.sum(dt[good] > 2.0)) if np.any(good) else 0
-
-    dx, dy, dt = dx[good], dy[good], dt[good]
-    if len(dt) == 0:
-        return {
-            "duracao_min": 0.0,
-            "dist_m": 0.0,
-            "m_min": np.nan,
-            "peak_1m_m_min": np.nan,
-            "vmax_mps": np.nan,
-            "hsr_dist_m": 0.0,
-            "hsr_pct": np.nan,
-            "sprint_dist_m": 0.0,
-            "n_sprints": 0,
-            "n_acc_2_5": 0,
-            "n_dec_3_0": 0,
-            "n_points": int(len(dfv)),
-            "pct_time_valid": float(valid.mean() * 100.0),
-            "n_gaps_gt2s": n_gaps,
-        "active_time_min": active_time_min,
-        "active_pct": active_pct,
-        }
-
-    dist_step = np.hypot(dx, dy)
-    dist_total = float(np.nansum(dist_step))
-    dur_s = float(np.nansum(dt))
-    dur_min = dur_s / 60.0 if dur_s > 0 else 0.0
-    m_min = (dist_total / dur_min) if dur_min > 0 else np.nan
-
-    v = dist_step / dt
-    vmax = float(np.nanmax(v)) if len(v) else np.nan
-
-    # Active time (tempo em movimento)
-    ACTIVE_V_THR = 0.5  # m/s
-    active_time_s = float(np.nansum(dt[v >= ACTIVE_V_THR])) if len(v) else 0.0
-    active_time_min = active_time_s / 60.0 if active_time_s > 0 else 0.0
-    active_pct = (active_time_s / dur_s * 100.0) if dur_s > 0 else np.nan
-
-    dv = np.diff(v)
-    dt2 = dt[1:]
-    acc = np.where(dt2 > 0, dv / dt2, np.nan)
-
-    hsr_dist = float(np.nansum(dist_step[v >= HSR_MPS]))
-    sprint_dist = float(np.nansum(dist_step[v >= SPRINT_MPS]))
-    hsr_pct = (hsr_dist / dist_total * 100.0) if dist_total > 0 else np.nan
-
-    n_acc = int(np.nansum(acc >= ACC_THR))
-    n_dec = int(np.nansum(acc <= DEC_THR))
-
-    dist_cum = np.concatenate([[0.0], np.cumsum(dist_step)])
-    # t_cum alinhado com dist_cum (1+len(dist_step)); usamos o t original pós-filter
-    # Nota: t[1:] tem comprimento igual a np.diff(t) (antes de filtrar); usamos a mesma máscara good
-    t_cum = np.concatenate([[t[0]], t[1:][good]])
-
-    peak_1m = np.nan
-    if len(t_cum) == len(dist_cum) and len(t_cum) > 1:
-        best = 0.0
-        j = 0
-        for i in range(len(t_cum)):
-            while j < len(t_cum) and t_cum[j] - t_cum[i] <= 60.0:
-                j += 1
-            if j - 1 >= i:
-                dj = dist_cum[j - 1] - dist_cum[i]
-                if dj > best:
-                    best = dj
-        peak_1m = float(best)
-
-    t_mid = t[1:][good]
-    sprint_mask = v >= SPRINT_MPS
-    n_sprints = _count_bouts(t_mid, sprint_mask, SPRINT_BOUT_MIN_S)
-
-    return {
-        "duracao_min": dur_min,
-        "dist_m": dist_total,
-        "m_min": m_min,
-        "peak_1m_m_min": peak_1m,
-        "vmax_mps": vmax,
-        "hsr_dist_m": hsr_dist,
-        "hsr_pct": hsr_pct,
-        "sprint_dist_m": sprint_dist,
-        "n_sprints": n_sprints,
-        "n_acc_2_5": n_acc,
-        "n_dec_3_0": n_dec,
-        "n_points": int(len(dfv)),
-        "pct_time_valid": float(valid.mean() * 100.0),
-        "n_gaps_gt2s": n_gaps,
-        "active_time_min": active_time_min,
-        "active_pct": active_pct,
-    }
-
-
-def _hash_session(
-    data_sessao, selecao, genero, contexto, estadio, f_campo_files, f_atleta_files
-) -> str:
-    """Fingerprint determinístico (para deduplicação futura)."""
-    h = hashlib.sha1()
-    h.update(str(data_sessao).encode("utf-8"))
-    h.update(str(selecao).encode("utf-8"))
-    h.update(str(genero).encode("utf-8"))
-    h.update(str(contexto).encode("utf-8"))
-    h.update(str(estadio).encode("utf-8"))
-
-    def _feed_files(files):
-        for uf in sorted(files, key=lambda x: x.name):
-            h.update(uf.name.encode("utf-8"))
-            try:
-                h.update(str(getattr(uf, "size", "")).encode("utf-8"))
-            except Exception:
-                pass
-            try:
-                uf.seek(0)
-                chunk = uf.read(8192)
-                if isinstance(chunk, str):
-                    chunk = chunk.encode("utf-8", errors="ignore")
-                h.update(chunk or b"")
-                uf.seek(0)
-            except Exception:
-                pass
-
-    _feed_files(f_campo_files)
-    _feed_files(f_atleta_files)
-    return h.hexdigest()
-
-
-def _clean_cols(df: pd.DataFrame) -> pd.DataFrame:
-    df.columns = [c.strip().replace('"', "") for c in df.columns]
-    return df
-
-
-def _get_atleta_id(fname: str) -> str:
-    m = re.search(r"Player-(\d+)", fname, flags=re.I)
-    return m.group(1) if m else (fname.split("-")[0] if "-" in fname else fname)
-
-
-def _infer_fase(fname: str) -> str:
-    n = fname.upper()
-    if "WARM" in n or "WUP" in n:
-        return "Warm-Up"
-    if "1P" in n or "PRIMEIRA" in n or "FIRST" in n:
-        return "1P"
-    if "2P" in n or "SEGUNDA" in n or "SECOND" in n:
-        return "2P"
-    return "Extra"
-
-
-def _read_csv_upload(upload, nrows=None) -> pd.DataFrame:
-    try:
-        upload.seek(0)
-    except Exception:
-        pass
-    df = pd.read_csv(upload, sep=None, engine="python", nrows=nrows)
-    try:
-        upload.seek(0)
-    except Exception:
-        pass
-    return _clean_cols(df)
-
-
-def _calibrar_campo(f_campo_files, epsg: int):
-    pts_gps = {}
-    for f in f_campo_files:
-        df_c = _read_csv_upload(f)
-        if COL_LAT not in df_c.columns or COL_LON not in df_c.columns:
-            continue
-        for key in ["BL", "BR", "TL", "TR"]:
-            if key in f.name.upper():
-                pts_gps[key] = [df_c[COL_LAT].mean(), df_c[COL_LON].mean()]
-
-    if len(pts_gps) != 4:
-        missing = [k for k in ["BL", "BR", "TL", "TR"] if k not in pts_gps]
-        raise ValueError(f"Campo incompleto. Em falta: {', '.join(missing)}")
-
-    clat = float(np.mean([p[0] for p in pts_gps.values()]))
-    clon = float(np.mean([p[1] for p in pts_gps.values()]))
-
-    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-    pts_utm = {}
-    for key, (lat, lon) in pts_gps.items():
-        x, y = transformer.transform(lon, lat)
-        pts_utm[key] = np.array([x, y], dtype=float)
-
-    dist_comprimento = float(np.linalg.norm(pts_utm["BR"] - pts_utm["BL"]))
-    dist_largura = float(np.linalg.norm(pts_utm["TL"] - pts_utm["BL"]))
-
-    origin = pts_utm["BL"]
-    v_base = pts_utm["BR"] - origin
-    angulo_rad = float(np.arctan2(v_base[1], v_base[0]))
-
-    # Rotação para alinhar BL->BR no eixo X
-    R = np.array(
-        [
-            [np.cos(-angulo_rad), -np.sin(-angulo_rad)],
-            [np.sin(-angulo_rad), np.cos(-angulo_rad)],
-        ],
-        dtype=float,
-    )
-
-    return (
-        pts_gps,
-        (clat, clon),
-        pts_utm,
-        origin,
-        R,
-        angulo_rad,
-        dist_comprimento,
-        dist_largura,
-    )
-
-
-def _order_corners_latlon(points):
-    """
-    Recebe lista de 4 pontos [(lat, lon), ...] e devolve dict com chaves BL, BR, TL, TR.
-    Regra:
-      - divide por lat (top 2 e bottom 2)
-      - dentro de cada par, ordena por lon (esq/dir)
-    """
-    if points is None or len(points) != 4:
-        raise ValueError("São necessários exatamente 4 pontos para ordenar cantos.")
-
-    pts = [(float(lat), float(lon)) for lat, lon in points]
-    pts_sorted_lat = sorted(pts, key=lambda p: p[0], reverse=True)  # maior lat = norte (topo)
-    top = pts_sorted_lat[:2]
-    bottom = pts_sorted_lat[2:]
-
-    top_sorted = sorted(top, key=lambda p: p[1])      # menor lon = esquerda
-    bottom_sorted = sorted(bottom, key=lambda p: p[1])
-
-    TL = top_sorted[0]
-    TR = top_sorted[1]
-    BL = bottom_sorted[0]
-    BR = bottom_sorted[1]
-
-    return {"BL": [BL[0], BL[1]], "BR": [BR[0], BR[1]], "TL": [TL[0], TL[1]], "TR": [TR[0], TR[1]]}
-
-
-def _retangularizar_cantos_latlon(points_latlon, epsg: int):
-    """
-    A partir de 4 pontos (lat,lon) clicados, cria uma versão "retangular" consistente.
-    Passos:
-      1) Ordena pontos (TL/TR/BR/BL) por lat/lon (aprox)
-      2) Converte para UTM
-      3) Define eixo X pelo vetor médio esquerda->direita (top + bottom), e eixo Y perpendicular
-      4) Projeta os 4 pontos nesses eixos, faz snap em min/max e reconstrói um retângulo perfeito
-      5) Converte o retângulo de volta para lat/lon
-    Retorna:
-      pts_clicked (dict BL/BR/TL/TR latlon),
-      pts_rect (dict BL/BR/TL/TR latlon)  # ajustado
-    """
-    pts_clicked = _order_corners_latlon(points_latlon)
-
-    # transformers
-    to_utm = Transformer.from_crs("EPSG:4326", f"EPSG:{int(epsg)}", always_xy=True)
-    to_wgs = Transformer.from_crs(f"EPSG:{int(epsg)}", "EPSG:4326", always_xy=True)
-
-    # UTM coords dict
-    pts_utm = {}
-    for k, (lat, lon) in pts_clicked.items():
-        x, y = to_utm.transform(float(lon), float(lat))
-        pts_utm[k] = np.array([x, y], dtype=float)
-
-    # centro
-    C = np.mean(np.stack(list(pts_utm.values()), axis=0), axis=0)
-
-    # eixo X: média (TL->TR) e (BL->BR)
-    vx1 = pts_utm["TR"] - pts_utm["TL"]
-    vx2 = pts_utm["BR"] - pts_utm["BL"]
-    vx = vx1 + vx2
-    norm_vx = float(np.linalg.norm(vx))
-    if norm_vx < 1e-6:
-        # fallback: BL->BR
-        vx = pts_utm["BR"] - pts_utm["BL"]
-        norm_vx = float(np.linalg.norm(vx))
-        if norm_vx < 1e-6:
-            raise ValueError("Não foi possível estimar eixo do campo a partir dos pontos.")
-
-    ux = vx / norm_vx
-    # eixo Y perpendicular (rot 90º)
-    uy = np.array([-ux[1], ux[0]], dtype=float)
-
-    # projecções
-    def proj(p):
-        d = p - C
-        return float(np.dot(d, ux)), float(np.dot(d, uy))  # (x', y')
-
-    proj_vals = {k: proj(v) for k, v in pts_utm.items()}
-    xs = [v[0] for v in proj_vals.values()]
-    ys = [v[1] for v in proj_vals.values()]
-    x_min, x_max = float(np.min(xs)), float(np.max(xs))
-    y_min, y_max = float(np.min(ys)), float(np.max(ys))
-
-    # reconstrução do retângulo em UTM
-    # Nota: usando a convenção: topo = y_max (mais "norte" no referencial uy), base = y_min
-    rect_proj = {
-        "TL": (x_min, y_max),
-        "TR": (x_max, y_max),
-        "BL": (x_min, y_min),
-        "BR": (x_max, y_min),
-    }
-
-    pts_rect_utm = {k: (C + x * ux + y * uy) for k, (x, y) in rect_proj.items()}
-
-    # back to latlon
-    pts_rect = {}
-    for k, p in pts_rect_utm.items():
-        lon, lat = to_wgs.transform(float(p[0]), float(p[1]))
-        pts_rect[k] = [float(lat), float(lon)]
-
-    return pts_clicked, pts_rect
-
-def _calibrar_campo_from_pts_gps(pts_gps: dict, epsg: int):
-    """
-    Igual ao _calibrar_campo, mas recebe os 4 cantos já como lat/lon.
-    pts_gps: {"BL":[lat,lon], "BR":[lat,lon], "TL":[lat,lon], "TR":[lat,lon]}
-    """
-    for k in ["BL", "BR", "TL", "TR"]:
-        if k not in pts_gps:
-            raise ValueError(f"Campo incompleto. Em falta: {k}")
-
-    clat = float(np.mean([pts_gps[k][0] for k in pts_gps]))
-    clon = float(np.mean([pts_gps[k][1] for k in pts_gps]))
-
-    transformer = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-    pts_utm = {}
-    for key, (lat, lon) in pts_gps.items():
-        x, y = transformer.transform(float(lon), float(lat))
-        pts_utm[key] = np.array([x, y], dtype=float)
-
-    dist_comprimento = float(np.linalg.norm(pts_utm["BR"] - pts_utm["BL"]))
-    dist_largura = float(np.linalg.norm(pts_utm["TL"] - pts_utm["BL"]))
-
-    origin = pts_utm["BL"]
-    v_base = pts_utm["BR"] - origin
-    angulo_rad = float(np.arctan2(v_base[1], v_base[0]))
-
-    # Rotação para alinhar BL->BR no eixo X
-    R = np.array(
-        [
-            [np.cos(-angulo_rad), -np.sin(-angulo_rad)],
-            [np.sin(-angulo_rad), np.cos(-angulo_rad)],
-        ],
-        dtype=float,
-    )
-
-    return (
-        pts_gps,
-        (clat, clon),
-        pts_utm,
-        origin,
-        R,
-        angulo_rad,
-        dist_comprimento,
-        dist_largura,
-    )
-
-
-def _sample_athlete_track_latlon(f_atleta_files, max_points=600):
-    """
-    Lê um atleta (primeiro ficheiro) e devolve uma amostra de pontos lat/lon para desenhar no mapa.
-    Serve apenas para orientar o utilizador no 'pick' dos cantos.
-    """
-    if not f_atleta_files:
-        return []
-    try:
-        df = _read_csv_upload(f_atleta_files[0], nrows=5000)
-        if COL_LAT not in df.columns or COL_LON not in df.columns:
-            return []
-        sub = df[[COL_LAT, COL_LON]].dropna()
-        if sub.empty:
-            return []
-        if len(sub) > max_points:
-            sub = sub.sample(n=max_points, random_state=7)
-        pts = sub.values.tolist()
-        return [(float(lat), float(lon)) for lat, lon in pts if np.isfinite(lat) and np.isfinite(lon)]
-    except Exception:
-        return []
-
-
-
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
@@ -812,109 +268,7 @@ def _reverse_geocode_city_country(lat: float, lon: float):
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
-def _reverse_geocode_place_city_country(lat: float, lon: float):
-    """Reverse geocode via OpenStreetMap Nominatim.
-    Devolve (place_name, city, country). 'place_name' tenta capturar estádio/recinto quando disponível.
-    """
-    try:
-        url = "https://nominatim.openstreetmap.org/reverse"
-        params = {"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18, "addressdetails": 1}
-        headers = {"User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
-        r = requests.get(url, params=params, headers=headers, timeout=10)
-        if r.status_code != 200:
-            return None, None, None
-        data = r.json()
-        if not isinstance(data, dict):
-            return None, None, None
 
-        addr = data.get("address", {}) or {}
-        city = (
-            addr.get("city")
-            or addr.get("town")
-            or addr.get("village")
-            or addr.get("municipality")
-            or addr.get("county")
-        )
-        country = addr.get("country")
-
-        # Melhor esforço para capturar um nome de recinto/estádio
-        place = (
-            data.get("name")
-            or addr.get("stadium")
-            or addr.get("sports_centre")
-            or addr.get("amenity")
-            or data.get("display_name")
-        )
-        return place, city, country
-    except Exception:
-        return None, None, None
-
-def _geo_validacao_por_atleta(
-    f_atleta_files, centroid_lat, centroid_lon, raio_m, amostra_n, min_pct_ok
-):
-    ok, fora, erros = [], [], []
-    for f in f_atleta_files:
-        aid = _get_atleta_id(f.name)
-        try:
-            df = _read_csv_upload(f, nrows=int(amostra_n))
-            if COL_LAT not in df.columns or COL_LON not in df.columns:
-                erros.append((aid, "Sem colunas Lat/Lon"))
-                continue
-            sub = df[[COL_LAT, COL_LON]].dropna()
-            if sub.empty:
-                erros.append((aid, "Sem amostras Lat/Lon válidas"))
-                continue
-            lat_med = float(sub[COL_LAT].median())
-            lon_med = float(sub[COL_LON].median())
-            _, _, dist_m = GEOD.inv(lon_med, lat_med, centroid_lon, centroid_lat)
-            if dist_m <= raio_m:
-                ok.append((aid, dist_m))
-            else:
-                fora.append((aid, dist_m))
-        except Exception as e:
-            erros.append((aid, str(e)))
-
-    total = len(set([_get_atleta_id(f.name) for f in f_atleta_files]))
-    pct_ok = (len({a for a, _ in ok}) / max(1, total))
-    passed = pct_ok >= min_pct_ok
-    return passed, pct_ok, ok, fora, erros
-
-def _get_atletas_centroid_latlon(f_atleta_files, amostra_n=500):
-    per_atleta = {}
-
-    for f in f_atleta_files:
-        aid = _get_atleta_id(f.name)
-        try:
-            df = _read_csv_upload(f, nrows=int(amostra_n))
-            if COL_LAT not in df.columns or COL_LON not in df.columns:
-                continue
-
-            sub = df[[COL_LAT, COL_LON]].dropna()
-            if sub.empty:
-                continue
-
-            lat_med = float(pd.to_numeric(sub[COL_LAT], errors="coerce").dropna().median())
-            lon_med = float(pd.to_numeric(sub[COL_LON], errors="coerce").dropna().median())
-
-            if np.isfinite(lat_med) and np.isfinite(lon_med):
-                per_atleta.setdefault(aid, []).append((lat_med, lon_med))
-
-        except Exception:
-            continue
-
-    if not per_atleta:
-        return None, None
-
-    atleta_meds = []
-    for vals in per_atleta.values():
-        lats = [v[0] for v in vals]
-        lons = [v[1] for v in vals]
-        atleta_meds.append((float(np.median(lats)), float(np.median(lons))))
-
-    lat_c = float(np.median([x[0] for x in atleta_meds]))
-    lon_c = float(np.median([x[1] for x in atleta_meds]))
-
-    return lat_c, lon_c
 
 
 def _processar_atletas_para_temp(
@@ -924,7 +278,7 @@ def _processar_atletas_para_temp(
 
     groups = {}
     for f in f_atleta_files:
-        aid = _get_atleta_id(f.name)
+        aid = get_atleta_id(f.name)
         groups.setdefault(aid, []).append(f)
 
     temp_files = []
@@ -936,8 +290,8 @@ def _processar_atletas_para_temp(
         audit[aid] = []
         for uf in files:
             try:
-                df = _read_csv_upload(uf)
-                fase_n = _infer_fase(uf.name)
+                df = read_csv_upload(uf)
+                fase_n = infer_fase(uf.name)
                 audit[aid].append(fase_n)
 
                 if df.empty:
@@ -1082,9 +436,9 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
         unsafe_allow_html=True,
     )
 
-    alat0, alon0 = _get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
+    alat0, alon0 = get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
     if alat0 is None or alon0 is None:
-        pts_fallback = _sample_athlete_track_latlon(f_atleta, max_points=10)
+        pts_fallback = sample_athlete_track_latlon(f_atleta, max_points=10)
         if pts_fallback:
             alat0, alon0 = pts_fallback[0]
         else:
@@ -1103,7 +457,7 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
         name="Esri (Satélite)",
     ).add_to(m_pick)
 
-    pts_track = _sample_athlete_track_latlon(f_atleta, max_points=600)
+    pts_track = sample_athlete_track_latlon(f_atleta, max_points=600)
     if pts_track:
         folium.PolyLine(pts_track, weight=2, opacity=0.8).add_to(m_pick)
 
@@ -1123,7 +477,7 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
     pts_rect_dict = None
     if len(st.session_state.pick_corners) == 4:
         try:
-            pts_clicked_dict, pts_rect_dict = _retangularizar_cantos_latlon(
+            pts_clicked_dict, pts_rect_dict = retangularizar_cantos_latlon(
                 st.session_state.pick_corners, epsg=int(epsg_used)
             )
 
@@ -1196,35 +550,35 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
 
 try:
     if metodo_campo == "Pick no mapa (clicar 4 cantos)":
-        pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo_from_pts_gps(
+        pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
             st.session_state.pts_gps_picked, int(epsg_used)
         )
     else:
-        pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = _calibrar_campo(
+        pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo(
             f_campo, int(epsg_used)
         )
 
-    estadio, cidade, pais = _reverse_geocode_place_city_country(clat, clon)
+    estadio, cidade, pais = reverse_geocode_place_city_country(clat, clon)
 except Exception as e:
 
     st.error(f"❌ Erro na calibração do campo: {e}")
     st.stop()
 
-passed_geo, pct_ok, ok_list, fora_list, geo_errors = _geo_validacao_por_atleta(
+passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
     f_atleta, clat, clon, float(raio_validacao_m), int(amostra_geo_n), float(min_pct_atletas_ok)
 )
 
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
 # Campo
-_, cidade_campo, pais_campo = _reverse_geocode_place_city_country(clat, clon)
+_, cidade_campo, pais_campo = reverse_geocode_place_city_country(clat, clon)
 
 # Atletas (centro estimado)
-alat, alon = _get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
+alat, alon = get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
 
 cidade_atl, pais_atl = None, None
 if alat is not None and alon is not None:
-    _, cidade_atl, pais_atl = _reverse_geocode_place_city_country(alat, alon)
+    _, cidade_atl, pais_atl = reverse_geocode_place_city_country(alat, alon)
 # ----- Campo -----
 campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
@@ -1264,9 +618,9 @@ st.divider()
 st.header("Auditoria de Atletas")
 audit_data = {}
 for f in f_atleta:
-    aid = _get_atleta_id(f.name)
+    aid = get_atleta_id(f.name)
     audit_data.setdefault(aid, [])
-    audit_data[aid].append(_infer_fase(f.name))
+    audit_data[aid].append(infer_fase(f.name))
 
 rows = []
 completos = 0
@@ -1342,7 +696,7 @@ if btn:
             # Session identifiers (auditoria/dedup)
             session_uuid = uuid.uuid4()
             session_id_hex = session_uuid.hex
-            session_fingerprint = _hash_session(
+            session_fingerprint = hash_session(
                 data_sessao, selecao, genero, contexto, estadio, f_campo, f_atleta
             )
 
@@ -1373,10 +727,10 @@ if btn:
 
                 for fase in fases_target:
                     df_f = df_sync[df_sync[COL_FASE] == fase].copy()
-                    met = _compute_metrics_for_df(df_f)
+                    met = compute_metrics_for_df(df_f)
                     fase_mets[fase] = met
 
-                    aud = _audit_timebase(df_f, COL_TIME, expected_hz=10.0)
+                    aud = audit_timebase(df_f, COL_TIME, expected_hz=10.0)
                     audit_time_rows.append({"atleta_id": aid, "fase": fase, **aud})
 
                     metrics_rows.append(
@@ -1546,7 +900,7 @@ if btn:
             else:
                 report_lines.append("  (Sem métricas calculadas)")
 
-            
+
             report_lines.append("-" * 70)
             report_lines.append("Qualidade do Sinal GPS")
             report_lines.append(f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
