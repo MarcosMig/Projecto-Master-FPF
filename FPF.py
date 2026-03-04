@@ -26,6 +26,8 @@ GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
 if "auth" not in st.session_state:
     st.session_state.auth = False
+if "login_user" not in st.session_state:
+    st.session_state.login_user = ""
 
 # --- Persistência de outputs (evita desaparecer após zoom/scroll no mapa) ---
 if "df_metrics" not in st.session_state:
@@ -130,6 +132,7 @@ if not st.session_state.auth:
 
         if st.button("Entrar"):
             if secrets_user and u == secrets_user and p == secrets_pass:
+                st.session_state.login_user = u
                 st.session_state.auth = True
                 st.rerun()
             else:
@@ -142,6 +145,8 @@ if not st.session_state.auth:
 
 # --- INTERFACE SINGLE PAGE ---
 st.title("Validação de Dados")
+user_name = (st.session_state.get("login_user") or "").strip() or "—"
+st.markdown(f"**User:** {user_name}")
 
 with st.sidebar:
     st.header("Dados da Sessão")
@@ -160,13 +165,10 @@ with st.sidebar:
             adversario_a = st.text_input("Equipa A (ex.: Portugal)")
         with col_b:
             adversario_b = st.text_input("Equipa B (ex.: Espanha)")
-
-    st.divider()
-    st.header("📤 Upload de Ficheiros")
-    st.caption("Campo: podes fazer upload de 4 CSVs (BL, BR, TL, TR) **ou** usar o modo 'Pick no mapa'.")
     st.divider()
 
     st.header("🗺️ Calibração do Campo")
+    st.caption("Define os 4 cantos via upload (BL/BR/TL/TR) ou usando o modo 'Pick no mapa'.")
 
     metodo_campo = st.radio(
 
