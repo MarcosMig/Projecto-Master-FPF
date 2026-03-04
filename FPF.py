@@ -145,10 +145,16 @@ if not st.session_state.auth:
 
 # --- INTERFACE SINGLE PAGE ---
 st.title("Validação de Dados")
-user_name = (st.session_state.get("login_user") or "").strip() or "—"
-st.markdown(f"**User:** {user_name}")
+
 
 with st.sidebar:
+    # --- USER LOGGED IN ---
+    if "login_user" in st.session_state:
+        st.markdown(
+        f"<div style='text-align:right; font-size:14px; color:#9aa0a6;'>User: {st.session_state.login_user}</div>",
+        unsafe_allow_html=True
+    )
+
     st.header("Dados da Sessão")
     # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
     estadio = None
