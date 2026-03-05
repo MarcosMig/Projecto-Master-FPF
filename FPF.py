@@ -183,6 +183,7 @@ if not st.session_state.auth:
 
 
 
+
 # --- HEADER UTILIZADOR (topo esquerdo) ---
 def _render_user_badge():
     nome = st.session_state.get("user_name") or "Utilizador"
@@ -191,32 +192,104 @@ def _render_user_badge():
     st.markdown(
         f"""
         <style>
-          .user-badge {{
+          /* Reserva espaço no topo para a barra (evita tapar conteúdo) */
+          .main .block-container {{
+            padding-top: 4.25rem !important;
+          }}
+
+          .topbar {{
             position: fixed;
-            top: 10px;
-            left: 12px;
+            top: 0;
+            left: 0;
+            right: 0;
             z-index: 9999;
-            background: rgba(15, 17, 23, 0.88);
+            height: 54px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 18px 0 14px;
+            background: rgba(15, 17, 23, 0.92);
+            border-bottom: 1px solid rgba(255,255,255,0.10);
+            backdrop-filter: blur(10px);
+          }}
+
+          .topbar-left {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 280px;
+          }}
+
+          .pill {{
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 14px;
+            background: rgba(255,255,255,0.06);
             border: 1px solid rgba(255,255,255,0.10);
-            padding: 8px 10px;
-            border-radius: 12px;
-            backdrop-filter: blur(6px);
-            font-size: 12px;
-            line-height: 1.15;
           }}
-          .user-badge .name {{
+
+          .avatar {{
+            width: 30px;
+            height: 30px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(99,102,241,0.22);
+            border: 1px solid rgba(99,102,241,0.35);
+            font-size: 16px;
+          }}
+
+          .who {{
+            display: flex;
+            flex-direction: column;
+            line-height: 1.05;
+          }}
+
+          .who .name {{
             font-weight: 800;
-            font-size: 13px;
-            margin-bottom: 2px;
+            font-size: 13.5px;
+            color: rgba(255,255,255,0.95);
           }}
-          .user-badge .org {{
-            opacity: 0.85;
+
+          .who .org {{
+            font-weight: 600;
+            font-size: 11.5px;
+            color: rgba(255,255,255,0.70);
+            margin-top: 2px;
+          }}
+
+          .topbar-right {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            opacity: 0.95;
+          }}
+
+          .app-tag {{
+            font-weight: 800;
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: rgba(255,255,255,0.75);
           }}
         </style>
 
-        <div class="user-badge">
-          <div class="name">👤 {nome}</div>
-          <div class="org">🏛️ {org}</div>
+        <div class="topbar">
+          <div class="topbar-left">
+            <div class="pill">
+              <div class="avatar">👤</div>
+              <div class="who">
+                <div class="name">{nome}</div>
+                <div class="org">{org}</div>
+              </div>
+            </div>
+          </div>
+          <div class="topbar-right">
+            <div class="app-tag">FPF Performance Hub</div>
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
