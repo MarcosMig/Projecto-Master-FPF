@@ -588,78 +588,57 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
     st.stop()
 
 try:
-
     if metodo_campo == "Pick no mapa (clicar 4 cantos)":
         pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
             st.session_state.pts_gps_picked, int(epsg_used)
         )
 
     elif metodo_campo == "Escolher um campo guardado anteriormente":
-
         df_campos = read_field_from_parquet()
 
-    if df_campos is None or df_campos.empty:
-        st.warning("Ainda não existem campos guardados.")
-        st.stop()
+        if df_campos is None or df_campos.empty:
+            st.warning("Ainda não existem campos guardados.")
+            st.stop()
 
-    # Display name
-    df_campos = df_campos.copy()
-    df_campos["display_name"] = df_campos["estadio"].astype(
-        str) + " (" + df_campos["campo_local"].astype(str) + ")"
+        df_campos = df_campos.copy()
+        df_campos["display_name"] = (
+            df_campos["estadio"].astype(str) + " (" + df_campos["campo_local"].astype(str) + ")"
+        )
 
-    campo_selecionado = st.selectbox(
-        "Seleciona o Estádio/Campo",
-        options=df_campos["display_name"].tolist()
-    )
+        campo_selecionado = st.selectbox(
+            "Seleciona o Estádio/Campo",
+            options=df_campos["display_name"].tolist()
+        )
 
-    row = df_campos[df_campos["display_name"] == campo_selecionado].iloc[0]
+        row = df_campos[df_campos["display_name"] == campo_selecionado].iloc[0]
 
-    pts_gps_recuperado = {
-        "BL": [float(row["BL_lat"]), float(row["BL_lon"])],
-        "BR": [float(row["BR_lat"]), float(row["BR_lon"])],
-        "TL": [float(row["TL_lat"]), float(row["TL_lon"])],
-        "TR": [float(row["TR_lat"]), float(row["TR_lon"])],
-    }
+        pts_gps_recuperado = {
+            "BL": [float(row["BL_lat"]), float(row["BL_lon"])],
+            "BR": [float(row["BR_lat"]), float(row["BR_lon"])],
+            "TL": [float(row["TL_lat"]), float(row["TL_lon"])],
+            "TR": [float(row["TR_lat"]), float(row["TR_lon"])],
+        }
 
-    st.session_state.pts_gps_picked = pts_gps_recuperado
+        # guardar cantos limpos em sessão
+        st.session_state.pts_gps_picked = pts_gps_recuperado
 
-    pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
-        pts_gps_recuperado, int(epsg_used)
-    )
+        # recalibrar -> define origin, R, pts_utm, dist_x, dist_y, angulo_rad, clat, clon
+        pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
+            pts_gps_recuperado, int(epsg_used)
+        )
 
-    st.success(f"✅ Campo '{row['estadio']
-                           }' carregado e calibrado com sucesso!")
+        st.success(f"✅ Campo '{row['estadio']}' carregado e calibrado com sucesso!")
 
-    # 2) Guardar em session_state (para consistência com o pipeline)
-    st.session_state.pts_gps_picked = pts_gps_recuperado
-
-    # 3) RE-CALIBRAR: isto define origin, R, pts_utm, dist_x, dist_y, angulo_rad, clat, clon
-    pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
-        pts_gps_recuperado, int(epsg_used)
-    )
-
-    st.success(f"✅ Campo '{row['estadio']
-                           }' carregado e calibrado com sucesso!")
-
-    # Injetar no session_state para que o pipeline o use
-    st.session_state.pts_gps_picked = pts_gps_recuperado
-
-    # obter outros dados
-    clat = row['clat']
-    clon = row['clon']
-    pts_gps = row['pts_gps']
-    dist_x = row['dist_x']
-    dist_y = row['dist_y']
-    angulo_rad = row['rotation']
-
-    st.success(f"✅ Campo '{row['estadio']
-                           }' carregado com sucesso!")
     else:
         pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo(
             f_campo, int(epsg_used)
         )
 
     estadio, cidade, pais = reverse_geocode_place_city_country(clat, clon)
+
+except Exception as e:
+    st.error(f"❌ Erro na calibração do campo: {e}")
+    st.stop()
 except Exception as e:
 
     st.error(f"❌ Erro na calibração do campo: {e}")
