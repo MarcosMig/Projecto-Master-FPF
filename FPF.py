@@ -58,6 +58,11 @@ from fpf_modules.pipeline import (
     sincronizar
 )
 
+from fpf_modules.data_manager import (
+    save_field_to_parquet,
+    read_field_from_parquet
+)
+
 GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 
 # --- CONFIGURAÇÃO ---
@@ -208,7 +213,7 @@ with st.sidebar:
 
         "Como queres definir os 4 cantos?",
 
-        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)"],
+        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)", "Escolher um campo guardado anteriormente"],
 
         index=0,
 
@@ -423,8 +428,6 @@ if metodo_campo == "Upload (BL/BR/TL/TR)" and not have_upload_corners:
 if metodo_campo == "Pick no mapa (clicar 4 cantos)" and not have_picked_corners:
     st.warning("ℹ️ Selecionaste 'Pick no mapa'. Define os 4 cantos no mapa abaixo e depois continua.")
 
-
-
 if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pts_gps_picked") is None:
     # --- UI: Pick dos 4 cantos no mapa (alternativa ao upload) ---
     # Cursor crosshair para maior precisão no click
@@ -570,10 +573,50 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
     st.stop()
 
 try:
+
     if metodo_campo == "Pick no mapa (clicar 4 cantos)":
         pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
             st.session_state.pts_gps_picked, int(epsg_used)
         )
+
+    elif metodo_campo == "Escolher um campo guardado anteriormente":
+
+        # Read DataFrame
+        df_campos = read_field_from_parquet()
+
+        if not df_campos.empty:
+
+                # Display name
+                df_campos['display_name'] = df_campos['estadio'] + " (" + df_campos['campo_local'].astype(str)+ ")"
+
+                campo_selecionado = st.selectbox(
+                    "Seleciona o Estádio/Campo",
+                    options=df_campos['display_name'].tolist()
+                )
+
+                # Extrair dados do campo escolhido
+                row = df_campos[df_campos['display_name'] == campo_selecionado].iloc[0]
+
+                # Preparar dicionário pts_gps para o pipeline
+                pts_gps_recuperado = {
+                    "BL": [row['BL_lat'], row['BL_lon']],
+                    "BR": [row['BR_lat'], row['BR_lon']],
+                    "TL": [row['TL_lat'], row['TL_lon']],
+                    "TR": [row['TR_lat'], row['TR_lon']]
+                }
+
+                # Injetar no session_state para que o pipeline o use
+                st.session_state.pts_gps_picked = pts_gps_recuperado
+
+                # obter outros dados
+                clat = row['clat']
+                clon = row['clon']
+                pts_gps = row['pts_gps']
+                dist_x = row['dist_x']
+                dist_y = row['dist_y']
+                angulo_rad = row['rotation']
+
+                st.success(f"✅ Campo '{row['estadio']}' carregado com sucesso!")
     else:
         pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo(
             f_campo, int(epsg_used)
@@ -672,6 +715,43 @@ if not passed_geo:
         "A exportação está desativada porque a validação geográfica falhou. Ajusta o raio/% mínimo ou verifica os ficheiros."
     )
     st.stop()
+
+# -- Obter e guardar campo -- #
+
+# Dados do campo
+field_data = {
+    "estadio": '',
+    "campo_local": [campo_local],
+    "cidade": [cidade_campo],
+    "pais": [pais_campo],
+    "clat": [float(clat)],
+    "clon": [float(clon)],
+    "dist_x": [float(dist_x)],
+    "dist_y": [float(dist_y)],
+    "rotation": [float(angulo_rad)],
+    "epsg": [int(epsg_used)],
+    # Coordenadas dos cantos para o preview do mapa
+    'pts_gps': [pts_gps],
+    "BL_lat": [float(pts_gps['BL'][0])], "BL_lon": [float(pts_gps['BL'][1])],
+    "BR_lat": [float(pts_gps['BR'][0])], "BR_lon": [float(pts_gps['BR'][1])],
+    "TL_lat": [float(pts_gps['TL'][0])], "TL_lon": [float(pts_gps['TL'][1])],
+    "TR_lat": [float(pts_gps['TR'][0])], "TR_lon": [float(pts_gps['TR'][1])],
+    'obs': ''
+}
+
+
+# Pop Up para Guardar campo na base de dados
+with st.sidebar.popover('💾 Guardar Campo'):
+
+    estadio = st.text_input('Adiciona o nome do estadio!')
+    obs = st.text_input('Adiciona uma observação!')
+
+    field_data['estadio'] = estadio
+    field_data['obs'] = obs
+    if st.button("Guardar"):
+        campo_df = pd.DataFrame(field_data)
+        save_field_to_parquet(campo_df)
+        st.success("Campo Guardado!")
 
 btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True)
 
