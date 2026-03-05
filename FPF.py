@@ -23,7 +23,9 @@ from scipy.signal import savgol_filter
 GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 
 # --- CONFIGURAÇÃO ---
+# --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
+
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
@@ -40,15 +42,12 @@ if "report_txt" not in st.session_state:
 if "process_done" not in st.session_state:
     st.session_state.process_done = False
 
-
-
-
-
 # --- Persistência para 'Pick no mapa' (cantos do campo) ---
 if "pick_corners" not in st.session_state:
     st.session_state.pick_corners = []  # lista [(lat, lon), ...]
 if "pts_gps_picked" not in st.session_state:
     st.session_state.pts_gps_picked = None  # dict com BL/BR/TL/TR após ordenação
+
 
 # --- LOGIN (CENTRADO + st.secrets) ---
 def _apply_login_style():
@@ -58,12 +57,12 @@ def _apply_login_style():
   header, footer {visibility: hidden;}
   [data-testid="stSidebar"] {display: none;}
 
-  /* Container geral transparente */
+  /* IMPORTANTE:
+     Não definir padding-top aqui, para não conflitar com a topbar após login */
   .main .block-container {
     background: transparent !important;
     box-shadow: none !important;
     border: none !important;
-    padding-top: 2rem !important;
   }
 
   .login-card{
@@ -104,6 +103,7 @@ def _apply_login_style():
 </style>
 """
     st.markdown(css, unsafe_allow_html=True)
+
 
 def _get_auth_from_secrets():
     """
@@ -153,36 +153,24 @@ if not st.session_state.auth:
             st.warning("⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud.")
 
         if st.button("Entrar"):
-
             if secrets_user and u == secrets_user and p == secrets_pass:
-
                 st.session_state.auth = True
 
-
                 # Nome/Entidade para header (fallback: usa o utilizador e "FPF")
-
                 dn, org = _get_auth_profile_from_secrets()
-
                 st.session_state.user_name = dn or u
-
                 st.session_state.user_org = org or "FPF"
 
-
                 st.rerun()
-
             else:
-
                 st.error("Credenciais inválidas")
-
 
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.stop()
 
 
-
-
-# --- HEADER UTILIZADOR (topo esquerdo) ---
+# --- TOPBAR (nome + instituição) ---
 def _render_user_badge():
     nome = st.session_state.get("user_name") or "Utilizador"
     org = st.session_state.get("user_org") or ""
@@ -190,9 +178,9 @@ def _render_user_badge():
     st.markdown(
         f"""
         <style>
-          /* Reserva espaço no topo para a barra (evita tapar conteúdo) */
+          /* padding-top com prioridade para ficar abaixo da barra */
           .main .block-container {{
-            padding-top: 4.25rem !important;
+            padding-top: 4.5rem !important;
           }}
 
           .topbar {{
@@ -209,13 +197,6 @@ def _render_user_badge():
             background: rgba(15, 17, 23, 0.92);
             border-bottom: 1px solid rgba(255,255,255,0.10);
             backdrop-filter: blur(10px);
-          }}
-
-          .topbar-left {{
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            min-width: 280px;
           }}
 
           .pill {{
@@ -259,13 +240,6 @@ def _render_user_badge():
             margin-top: 2px;
           }}
 
-          .topbar-right {{
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            opacity: 0.95;
-          }}
-
           .app-tag {{
             font-weight: 800;
             font-size: 12px;
@@ -276,18 +250,14 @@ def _render_user_badge():
         </style>
 
         <div class="topbar">
-          <div class="topbar-left">
-            <div class="pill">
-              <div class="avatar">👤</div>
-              <div class="who">
-                <div class="name">{nome}</div>
-                <div class="org">{org}</div>
-              </div>
+          <div class="pill">
+            <div class="avatar">👤</div>
+            <div class="who">
+              <div class="name">{nome}</div>
+              <div class="org">{org}</div>
             </div>
           </div>
-          <div class="topbar-right">
-            <div class="app-tag">FPF Performance Hub</div>
-          </div>
+          <div class="app-tag">FPF Performance Hub</div>
         </div>
         """,
         unsafe_allow_html=True,
