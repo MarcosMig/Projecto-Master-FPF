@@ -1,7 +1,7 @@
 """
 Module responsible for coordinate transformations and geocoding.
 """
-
+import pandas as pd
 import numpy as np
 import folium
 from pyproj import Transformer
