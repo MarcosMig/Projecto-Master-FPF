@@ -182,7 +182,7 @@ st.title("Validação de Dados")
 
 with st.sidebar:
     st.markdown(
-    f"<div style='text-align:let; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
+    f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
     unsafe_allow_html=True
 )
     st.header("Dados da Sessão")
@@ -583,8 +583,6 @@ if alat is not None and alon is not None:
 campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
 # ----- Atletas (centro médio → Cidade/País) -----
-atletas_local = ", ".join([p for p in [cidade_atl, pais_atl] if p]) or "—"
-
 atletas_parts = [p for p in [cidade_atl, pais_atl] if p]
 atletas_local = ", ".join(atletas_parts) if atletas_parts else "—"
 
