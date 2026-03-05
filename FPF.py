@@ -80,6 +80,8 @@ if "pick_corners" not in st.session_state:
     st.session_state.pick_corners = []  # lista [(lat, lon), ...]
 if "pts_gps_picked" not in st.session_state:
     st.session_state.pts_gps_picked = None  # dict com BL/BR/TL/TR após ordenação
+if "pick_last_click_sig" not in st.session_state:
+    st.session_state.pick_last_click_sig = None  # evita duplicar o mesmo clique após rerun
 
 # --- LOGIN (CENTRADO + st.secrets) ---
 def _apply_login_style():
@@ -182,7 +184,7 @@ st.title("Validação de Dados")
 
 with st.sidebar:
     st.markdown(
-    f"<div style='text-align:let; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
+    f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
     unsafe_allow_html=True
 )
     st.header("Dados da Sessão")
@@ -472,6 +474,20 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
             tooltip=f"Clicado {i}",
         ).add_to(m_pick)
 
+    # 1.1) Feedback visual imediato: polígono dos pontos clicados (fecha quando tiver 4)
+    if len(st.session_state.pick_corners) >= 2:
+        poly_clicked = list(st.session_state.pick_corners)
+        if len(st.session_state.pick_corners) == 4:
+            poly_clicked = poly_clicked + [poly_clicked[0]]
+        folium.PolyLine(
+            locations=poly_clicked,
+            color="yellow",
+            weight=2,
+            opacity=0.9,
+            dash_array="6,6",
+            tooltip="Perímetro (pontos clicados)",
+        ).add_to(m_pick)
+
     # 2) Se já temos 4 pontos, calcular retangularização e desenhar versão ajustada
     pts_clicked_dict = None
     pts_rect_dict = None
@@ -513,11 +529,13 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
 
     out_pick = st_folium(m_pick, width=1100, height=520, key="mapa_pick_cantos")
 
-    # Capturar clique
+    # Capturar clique (com deduplicação para evitar reprocessar o mesmo ponto após rerun)
     if out_pick and out_pick.get("last_clicked"):
         lat = float(out_pick["last_clicked"]["lat"])
         lon = float(out_pick["last_clicked"]["lng"])
-        if len(st.session_state.pick_corners) < 4:
+        click_sig = f"{lat:.7f},{lon:.7f}"
+        if len(st.session_state.pick_corners) < 4 and click_sig != st.session_state.pick_last_click_sig:
+            st.session_state.pick_last_click_sig = click_sig
             st.session_state.pick_corners.append((lat, lon))
             st.rerun()
 
@@ -525,10 +543,13 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
     with c1:
         if st.button("↩️ Desfazer", disabled=(len(st.session_state.pick_corners) == 0)):
             st.session_state.pick_corners.pop()
+            st.session_state.pick_last_click_sig = None
             st.rerun()
     with c2:
         if st.button("🧹 Reset"):
             st.session_state.pick_corners = []
+            st.session_state.pick_last_click_sig = None
+            st.session_state.pts_gps_picked = None
             st.rerun()
 
     if len(st.session_state.pick_corners) < 4:
@@ -583,8 +604,6 @@ if alat is not None and alon is not None:
 campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
 # ----- Atletas (centro médio → Cidade/País) -----
-atletas_local = ", ".join([p for p in [cidade_atl, pais_atl] if p]) or "—"
-
 atletas_parts = [p for p in [cidade_atl, pais_atl] if p]
 atletas_local = ", ".join(atletas_parts) if atletas_parts else "—"
 
