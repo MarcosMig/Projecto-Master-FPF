@@ -1,8 +1,12 @@
 """
 Module responsible for coordinate transformations and geocoding.
+
+v2 (FPF): reverse-geocode com cache + timeout curto (evita lentidão em Streamlit Cloud)
 """
 
 import time
+from functools import lru_cache
+
 import numpy as np
 import pandas as pd
 import folium
@@ -141,7 +145,6 @@ def retangularizar_cantos_latlon(points_latlon, epsg: int):
     # eixo Y perpendicular (rot 90º)
     uy = np.array([-ux[1], ux[0]], dtype=float)
 
-    # projecções
     def proj(p):
         d = p - C
         return float(np.dot(d, ux)), float(np.dot(d, uy))  # (x', y')
@@ -152,7 +155,6 @@ def retangularizar_cantos_latlon(points_latlon, epsg: int):
     x_min, x_max = float(np.min(xs)), float(np.max(xs))
     y_min, y_max = float(np.min(ys)), float(np.max(ys))
 
-    # reconstrução do retângulo em UTM
     rect_proj = {
         "TL": (x_min, y_max),
         "TR": (x_max, y_max),
@@ -162,7 +164,6 @@ def retangularizar_cantos_latlon(points_latlon, epsg: int):
 
     pts_rect_utm = {k: (C + x * ux + y * uy) for k, (x, y) in rect_proj.items()}
 
-    # back to latlon
     pts_rect = {}
     for k, p in pts_rect_utm.items():
         lon, lat = to_wgs.transform(float(p[0]), float(p[1]))
@@ -196,7 +197,6 @@ def calibrar_campo_from_pts_gps(pts_gps: dict, epsg: int):
     v_base = pts_utm["BR"] - origin
     angulo_rad = float(np.arctan2(v_base[1], v_base[0]))
 
-    # Rotação para alinhar BL->BR no eixo X
     R = np.array(
         [
             [np.cos(-angulo_rad), -np.sin(-angulo_rad)],
@@ -240,70 +240,60 @@ def sample_athlete_track_latlon(f_atleta_files, max_points=600):
         return []
 
 
+@lru_cache(maxsize=512)
 def reverse_geocode_place_city_country(lat: float, lon: float):
-    """Reverse geocode via OpenStreetMap Nominatim.
-    Devolve (place_name, city, country). 'place_name' tenta capturar estádio/recinto quando disponível.
-
-    Inclui retries + backoff e logs via print (útil em Streamlit Cloud).
     """
-    url = "https://nominatim.openstreetmap.org/reverse"
-    params = {"format": "jsonv2", "lat": float(lat), "lon": float(lon), "zoom": 18, "addressdetails": 1}
-    headers = {
-        "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)",
-        "Accept-Language": "pt-PT,pt,en",
-    }
+    Reverse geocode (Nominatim).
+    - Cache em memória: lat/lon arredondados a 6 casas.
+    - Timeout curto (3s) para não bloquear a UI.
+    - Sem retries automáticos (evita lentidão e rate-limit).
+    Retorna: (place, city, country) ou (None, None, None)
+    """
+    try:
+        lat = round(float(lat), 6)
+        lon = round(float(lon), 6)
 
-    for attempt in range(3):
-        try:
-            r = requests.get(url, params=params, headers=headers, timeout=12)
+        url = "https://nominatim.openstreetmap.org/reverse"
+        params = {"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 16, "addressdetails": 1}
+        headers = {
+            "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)",
+            "Accept-Language": "pt-PT,pt,en",
+        }
 
-            if r.status_code == 200:
-                data = r.json() if r.content else None
-                if not isinstance(data, dict):
-                    print(f"[GEO] Nominatim resposta inválida (não-dict). lat={lat} lon={lon}")
-                    return None, None, None
-
-                addr = data.get("address", {}) or {}
-
-                city = (
-                    addr.get("city")
-                    or addr.get("town")
-                    or addr.get("village")
-                    or addr.get("municipality")
-                    or addr.get("county")
-                    or addr.get("state")
-                )
-                country = addr.get("country")
-
-                place = (
-                    data.get("name")
-                    or addr.get("stadium")
-                    or addr.get("sports_centre")
-                    or addr.get("amenity")
-                    or data.get("display_name")
-                )
-
-                if not city:
-                    dn = data.get("display_name") or ""
-                    parts = [p.strip() for p in dn.split(",") if p.strip()]
-                    if len(parts) >= 3:
-                        city = parts[-3]
-
-                return place, city, country
-
-            print(f"[GEO] Nominatim HTTP {r.status_code}. attempt={attempt+1}/3 lat={lat} lon={lon}")
-            if r.status_code in (429, 500, 502, 503, 504):
-                time.sleep(1.2 * (attempt + 1))
-                continue
-
+        r = requests.get(url, params=params, headers=headers, timeout=3)
+        if r.status_code != 200:
+            print(f"[GEO] Nominatim HTTP {r.status_code} lat={lat} lon={lon}")
             return None, None, None
 
-        except Exception as e:
-            print(f"[GEO] Nominatim EXCEPTION attempt={attempt+1}/3 lat={lat} lon={lon} err={e}")
-            time.sleep(1.2 * (attempt + 1))
-            continue
+        data = r.json() if r.content else None
+        if not isinstance(data, dict):
+            print(f"[GEO] Nominatim resposta inválida (não-dict). lat={lat} lon={lon}")
+            return None, None, None
 
-    return None, None, None
+        addr = data.get("address", {}) or {}
+        city = (
+            addr.get("city")
+            or addr.get("town")
+            or addr.get("village")
+            or addr.get("municipality")
+            or addr.get("county")
+            or addr.get("state")
+        )
+        country = addr.get("country")
+
+        place = (
+            data.get("name")
+            or addr.get("stadium")
+            or addr.get("sports_centre")
+            or addr.get("amenity")
+            or data.get("display_name")
+        )
+
+        return place, city, country
+
+    except Exception as e:
+        print(f"[GEO] Nominatim exception lat={lat} lon={lon} err={e}")
+        return None, None, None
 
 
 def geo_validacao_por_atleta(
@@ -321,9 +311,9 @@ def geo_validacao_por_atleta(
             if sub.empty:
                 erros.append((aid, "Sem amostras Lat/Lon válidas"))
                 continue
+
             lat_med = float(pd.to_numeric(sub[COL_LAT], errors="coerce").dropna().median())
             lon_med = float(pd.to_numeric(sub[COL_LON], errors="coerce").dropna().median())
-
             if not (np.isfinite(lat_med) and np.isfinite(lon_med)):
                 erros.append((aid, "Lat/Lon não-numéricas ou inválidas"))
                 continue
