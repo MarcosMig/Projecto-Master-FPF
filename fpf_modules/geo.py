@@ -1,11 +1,12 @@
 """
 Module responsible for coordinate transformations and geocoding.
 """
-import pandas as pd
 import numpy as np
+import pandas as pd
 import folium
 from pyproj import Transformer
 import requests
+import time
 
 from .constants import (
     COL_LAT, COL_LON,
@@ -240,42 +241,76 @@ def sample_athlete_track_latlon(f_atleta_files, max_points=600):
         return []
 
 
-def reverse_geocode_place_city_country(lat: float, lon: float):
+ def reverse_geocode_place_city_country(lat: float, lon: float):
     """Reverse geocode via OpenStreetMap Nominatim.
     Devolve (place_name, city, country). 'place_name' tenta capturar estádio/recinto quando disponível.
+
+    Nota: esta função tem retries e logs (via print) para facilitar debug em Streamlit Cloud.
     """
-    try:
-        url = "https://nominatim.openstreetmap.org/reverse"
-        params = {"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 18, "addressdetails": 1}
-        headers = {"User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
-        r = requests.get(url, params=params, headers=headers, timeout=10)
-        if r.status_code != 200:
-            return None, None, None
-        data = r.json()
-        if not isinstance(data, dict):
+    url = "https://nominatim.openstreetmap.org/reverse"
+    params = {"format": "jsonv2", "lat": float(lat), "lon": float(lon), "zoom": 18, "addressdetails": 1}
+    headers = {
+        "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)",
+        "Accept-Language": "pt-PT,pt,en"
+    }
+
+    # 3 tentativas com backoff simples (respeita 429 / 5xx)
+    for attempt in range(3):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=12)
+
+            if r.status_code == 200:
+                data = r.json() if r.content else None
+                if not isinstance(data, dict):
+                    print(f"[GEO] Nominatim resposta inválida (não-dict). lat={lat} lon={lon}")
+                    return None, None, None
+
+                addr = data.get("address", {}) or {}
+
+                city = (
+                    addr.get("city")
+                    or addr.get("town")
+                    or addr.get("village")
+                    or addr.get("municipality")
+                    or addr.get("county")
+                    or addr.get("state")   # fallback útil em PT
+                )
+                country = addr.get("country")
+
+                # Melhor esforço para capturar um nome de recinto/estádio
+                place = (
+                    data.get("name")
+                    or addr.get("stadium")
+                    or addr.get("sports_centre")
+                    or addr.get("amenity")
+                    or data.get("display_name")
+                )
+
+                # Fallback extra: se city vier vazio, tenta extrair algo do display_name
+                if not city:
+                    dn = data.get("display_name") or ""
+                    # pega no penúltimo/antepenúltimo token como heurística (sem ser perfeito)
+                    parts = [p.strip() for p in dn.split(",") if p.strip()]
+                    if len(parts) >= 3:
+                        city = parts[-3]
+
+                return place, city, country
+
+            # Não-200: loga e tenta novamente se for rate-limit / erro temporário
+            print(f"[GEO] Nominatim HTTP {r.status_code}. attempt={attempt+1}/3 lat={lat} lon={lon}")
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep(1.2 * (attempt + 1))
+                continue
+
+            # outros erros: não vale a pena insistir
             return None, None, None
 
-        addr = data.get("address", {}) or {}
-        city = (
-            addr.get("city")
-            or addr.get("town")
-            or addr.get("village")
-            or addr.get("municipality")
-            or addr.get("county")
-        )
-        country = addr.get("country")
+        except Exception as e:
+            print(f"[GEO] Nominatim EXCEPTION attempt={attempt+1}/3 lat={lat} lon={lon} err={e}")
+            time.sleep(1.2 * (attempt + 1))
+            continue
 
-        # Melhor esforço para capturar um nome de recinto/estádio
-        place = (
-            data.get("name")
-            or addr.get("stadium")
-            or addr.get("sports_centre")
-            or addr.get("amenity")
-            or data.get("display_name")
-        )
-        return place, city, country
-    except Exception:
-        return None, None, None
+    return None, None, None
 
 
 
