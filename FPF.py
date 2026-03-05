@@ -27,9 +27,6 @@ st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
-from pathlib import Path
-st.sidebar.caption(f"✅ BUILD: userbadge_v2 | running: {Path(__file__).name}")
-
 if "user_name" not in st.session_state:
     st.session_state.user_name = None
 if "user_org" not in st.session_state:
