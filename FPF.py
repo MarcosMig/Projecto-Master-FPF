@@ -218,15 +218,29 @@ with st.sidebar:
 
 
 
-    f_campo = st.file_uploader(
-        "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
-    )
+    f_campo = []
+    if metodo_campo == "Upload (BL/BR/TL/TR)":
+        f_campo = st.file_uploader(
+            "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
+        )
     st.caption(
         "Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
     )
     f_atleta = st.file_uploader(
         "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
+
+    st.divider()
+    st.subheader("Utilitários")
+    app_file = Path(__file__)
+    if app_file.exists():
+        st.download_button(
+            "⬇️ Download FPF.py",
+            data=app_file.read_bytes(),
+            file_name="FPF.py",
+            mime="text/x-python",
+            use_container_width=True,
+        )
 
 st.divider()
 
