@@ -261,24 +261,41 @@ def _reverse_geocode_city_country(lat: float, lon: float):
     """Reverse geocode via OpenStreetMap Nominatim."""
     try:
         url = "https://nominatim.openstreetmap.org/reverse"
-        params = {"format":"jsonv2","lat": round(lat,6), "lon": round(lon,6), "zoom": 12, "addressdetails": 1}
-        r = requests.get(..., timeout=2.5)
+
+        params = {
+            "format": "jsonv2",
+            "lat": round(float(lat), 6),
+            "lon": round(float(lon), 6),
+            "zoom": 12,
+            "addressdetails": 1
+        }
+
         headers = {
-            "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
-        r = requests.get(url, params=params, headers=headers, timeout=10)
+            "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"
+        }
+
+        r = requests.get(url, params=params, headers=headers, timeout=3)
+
         if r.status_code != 200:
             return None, None
+
         data = r.json()
+
         addr = data.get("address", {}) if isinstance(data, dict) else {}
+
         city = (
             addr.get("city")
             or addr.get("town")
             or addr.get("village")
             or addr.get("municipality")
             or addr.get("county")
+            or addr.get("state")
         )
+
         country = addr.get("country")
+
         return city, country
+
     except Exception:
         return None, None
 
