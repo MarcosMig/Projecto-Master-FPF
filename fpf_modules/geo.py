@@ -1,12 +1,13 @@
 """
 Module responsible for coordinate transformations and geocoding.
 """
+
+import time
 import numpy as np
 import pandas as pd
 import folium
 from pyproj import Transformer
 import requests
-import time
 
 from .constants import (
     COL_LAT, COL_LON,
@@ -17,7 +18,6 @@ from .io_utils import (
     read_csv_upload,
     get_atleta_id
 )
-
 
 
 def calibrar_campo(f_campo_files, epsg: int):
@@ -69,6 +69,7 @@ def calibrar_campo(f_campo_files, epsg: int):
         dist_comprimento,
         dist_largura,
     )
+
 
 def order_corners_latlon(points):
     """
@@ -152,7 +153,6 @@ def retangularizar_cantos_latlon(points_latlon, epsg: int):
     y_min, y_max = float(np.min(ys)), float(np.max(ys))
 
     # reconstrução do retângulo em UTM
-    # Nota: usando a convenção: topo = y_max (mais "norte" no referencial uy), base = y_min
     rect_proj = {
         "TL": (x_min, y_max),
         "TR": (x_max, y_max),
@@ -169,7 +169,6 @@ def retangularizar_cantos_latlon(points_latlon, epsg: int):
         pts_rect[k] = [float(lat), float(lon)]
 
     return pts_clicked, pts_rect
-
 
 
 def calibrar_campo_from_pts_gps(pts_gps: dict, epsg: int):
@@ -218,7 +217,6 @@ def calibrar_campo_from_pts_gps(pts_gps: dict, epsg: int):
     )
 
 
-
 def sample_athlete_track_latlon(f_atleta_files, max_points=600):
     """
     Lê um atleta (primeiro ficheiro) e devolve uma amostra de pontos lat/lon para desenhar no mapa.
@@ -237,24 +235,24 @@ def sample_athlete_track_latlon(f_atleta_files, max_points=600):
             sub = sub.sample(n=max_points, random_state=7)
         pts = sub.values.tolist()
         return [(float(lat), float(lon)) for lat, lon in pts if np.isfinite(lat) and np.isfinite(lon)]
-    except Exception:
+    except Exception as e:
+        print(f"[GEO] sample_athlete_track_latlon erro: {e}")
         return []
 
 
- def reverse_geocode_place_city_country(lat: float, lon: float):
+def reverse_geocode_place_city_country(lat: float, lon: float):
     """Reverse geocode via OpenStreetMap Nominatim.
     Devolve (place_name, city, country). 'place_name' tenta capturar estádio/recinto quando disponível.
 
-    Nota: esta função tem retries e logs (via print) para facilitar debug em Streamlit Cloud.
+    Inclui retries + backoff e logs via print (útil em Streamlit Cloud).
     """
     url = "https://nominatim.openstreetmap.org/reverse"
     params = {"format": "jsonv2", "lat": float(lat), "lon": float(lon), "zoom": 18, "addressdetails": 1}
     headers = {
         "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)",
-        "Accept-Language": "pt-PT,pt,en"
+        "Accept-Language": "pt-PT,pt,en",
     }
 
-    # 3 tentativas com backoff simples (respeita 429 / 5xx)
     for attempt in range(3):
         try:
             r = requests.get(url, params=params, headers=headers, timeout=12)
@@ -273,11 +271,10 @@ def sample_athlete_track_latlon(f_atleta_files, max_points=600):
                     or addr.get("village")
                     or addr.get("municipality")
                     or addr.get("county")
-                    or addr.get("state")   # fallback útil em PT
+                    or addr.get("state")
                 )
                 country = addr.get("country")
 
-                # Melhor esforço para capturar um nome de recinto/estádio
                 place = (
                     data.get("name")
                     or addr.get("stadium")
@@ -286,23 +283,19 @@ def sample_athlete_track_latlon(f_atleta_files, max_points=600):
                     or data.get("display_name")
                 )
 
-                # Fallback extra: se city vier vazio, tenta extrair algo do display_name
                 if not city:
                     dn = data.get("display_name") or ""
-                    # pega no penúltimo/antepenúltimo token como heurística (sem ser perfeito)
                     parts = [p.strip() for p in dn.split(",") if p.strip()]
                     if len(parts) >= 3:
                         city = parts[-3]
 
                 return place, city, country
 
-            # Não-200: loga e tenta novamente se for rate-limit / erro temporário
             print(f"[GEO] Nominatim HTTP {r.status_code}. attempt={attempt+1}/3 lat={lat} lon={lon}")
             if r.status_code in (429, 500, 502, 503, 504):
                 time.sleep(1.2 * (attempt + 1))
                 continue
 
-            # outros erros: não vale a pena insistir
             return None, None, None
 
         except Exception as e:
@@ -311,7 +304,6 @@ def sample_athlete_track_latlon(f_atleta_files, max_points=600):
             continue
 
     return None, None, None
-
 
 
 def geo_validacao_por_atleta(
@@ -329,8 +321,13 @@ def geo_validacao_por_atleta(
             if sub.empty:
                 erros.append((aid, "Sem amostras Lat/Lon válidas"))
                 continue
-            lat_med = float(sub[COL_LAT].median())
-            lon_med = float(sub[COL_LON].median())
+            lat_med = float(pd.to_numeric(sub[COL_LAT], errors="coerce").dropna().median())
+            lon_med = float(pd.to_numeric(sub[COL_LON], errors="coerce").dropna().median())
+
+            if not (np.isfinite(lat_med) and np.isfinite(lon_med)):
+                erros.append((aid, "Lat/Lon não-numéricas ou inválidas"))
+                continue
+
             _, _, dist_m = GEOD.inv(lon_med, lat_med, centroid_lon, centroid_lat)
             if dist_m <= raio_m:
                 ok.append((aid, dist_m))
@@ -343,7 +340,6 @@ def geo_validacao_por_atleta(
     pct_ok = (len({a for a, _ in ok}) / max(1, total))
     passed = pct_ok >= min_pct_ok
     return passed, pct_ok, ok, fora, erros
-
 
 
 def get_atletas_centroid_latlon(f_atleta_files, amostra_n=500):
@@ -366,7 +362,8 @@ def get_atletas_centroid_latlon(f_atleta_files, amostra_n=500):
             if np.isfinite(lat_med) and np.isfinite(lon_med):
                 per_atleta.setdefault(aid, []).append((lat_med, lon_med))
 
-        except Exception:
+        except Exception as e:
+            print(f"[GEO] centroid erro aid={aid} file={getattr(f,'name','?')}: {e}")
             continue
 
     if not per_atleta:
