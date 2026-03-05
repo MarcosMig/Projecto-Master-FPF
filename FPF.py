@@ -233,6 +233,18 @@ with st.sidebar:
         "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
 
+    st.divider()
+    st.subheader("Utilitários")
+    app_file = Path(__file__)
+    if app_file.exists():
+        st.download_button(
+            "⬇️ Download FPF.py",
+            data=app_file.read_bytes(),
+            file_name="FPF.py",
+            mime="text/x-python",
+            use_container_width=True,
+        )
+
 st.divider()
 
 # Defaults (menu de opções removido)
