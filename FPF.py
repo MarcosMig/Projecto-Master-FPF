@@ -86,9 +86,12 @@ if "pick_corners" not in st.session_state:
 if "pts_gps_picked" not in st.session_state:
     st.session_state.pts_gps_picked = None  # dict com BL/BR/TL/TR após ordenação
 if "pick_last_click_sig" not in st.session_state:
-    st.session_state.pick_last_click_sig = None  # evita duplicar o mesmo clique após rerun
+    # evita duplicar o mesmo clique após rerun
+    st.session_state.pick_last_click_sig = None
 
 # --- LOGIN (CENTRADO + st.secrets) ---
+
+
 def _apply_login_style():
     css = """
 <style>
@@ -143,6 +146,7 @@ def _apply_login_style():
 """
     st.markdown(css, unsafe_allow_html=True)
 
+
 def _get_auth_from_secrets():
     """
     Espera em st.secrets:
@@ -162,14 +166,16 @@ if not st.session_state.auth:
 
     left, mid, right = st.columns([1, 1.2, 1])
     with mid:
-        st.markdown('<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
 
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
 
         secrets_user, secrets_pass = _get_auth_from_secrets()
         if not secrets_user:
-            st.warning("⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud.")
+            st.warning(
+                "⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud.")
 
         if st.button("Entrar"):
             if secrets_user and u == secrets_user and p == secrets_pass:
@@ -189,16 +195,18 @@ st.title("Validação de Dados")
 
 with st.sidebar:
     st.markdown(
-    f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
-    unsafe_allow_html=True
-)
+        f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {
+            st.session_state.login_user} | FPF</div>",
+        unsafe_allow_html=True
+    )
     st.header("Dados da Sessão")
     # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
     estadio = None
     data_sessao = st.date_input("Data do Evento")
     selecao = st.selectbox("Seleção", options=SELECOES_OPCOES, index=0)
     # Género é inferido da seleção (M/F), não é input manual
-    genero = selecao.split()[-1] if selecao.split() and selecao.split()[-1] in ["M", "F"] else ""
+    genero = selecao.split(
+    )[-1] if selecao.split() and selecao.split()[-1] in ["M", "F"] else ""
     contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0)
 
     adversario = ""
@@ -207,13 +215,15 @@ with st.sidebar:
     st.divider()
 
     st.header("🗺️ Calibração do Campo")
-    st.caption("Define os 4 cantos via upload (BL/BR/TL/TR) ou usando o modo 'Pick no mapa'.")
+    st.caption(
+        "Define os 4 cantos via upload (BL/BR/TL/TR) ou usando o modo 'Pick no mapa'.")
 
     metodo_campo = st.radio(
 
         "Como queres definir os 4 cantos?",
 
-        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)", "Escolher um campo guardado anteriormente"],
+        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)",
+                 "Escolher um campo guardado anteriormente"],
 
         index=0,
 
@@ -221,9 +231,8 @@ with st.sidebar:
 
     )
 
-    st.caption("Se escolheres 'Pick no mapa', não precisas de carregar os 4 CSVs do campo.")
-
-
+    st.caption(
+        "Se escolheres 'Pick no mapa', não precisas de carregar os 4 CSVs do campo.")
 
     f_campo = st.file_uploader(
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
@@ -252,8 +261,10 @@ def _reverse_geocode_city_country(lat: float, lon: float):
     """Reverse geocode via OpenStreetMap Nominatim."""
     try:
         url = "https://nominatim.openstreetmap.org/reverse"
-        params = {"format": "jsonv2", "lat": lat, "lon": lon, "zoom": 10, "addressdetails": 1}
-        headers = {"User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
+        params = {"format": "jsonv2", "lat": lat,
+                  "lon": lon, "zoom": 10, "addressdetails": 1}
+        headers = {
+            "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
         r = requests.get(url, params=params, headers=headers, timeout=10)
         if r.status_code != 200:
             return None, None
@@ -272,12 +283,7 @@ def _reverse_geocode_city_country(lat: float, lon: float):
         return None, None
 
 
-
-
 @st.cache_data(show_spinner=False, ttl=86400)
-
-
-
 def _processar_atletas_para_temp(
     f_atleta_files, epsg, origin, R, aplicar_suav, janela, poly, temp_dir: Path
 ):
@@ -319,12 +325,15 @@ def _processar_atletas_para_temp(
                 df["X_UTM"] = p_loc[:, 0]
                 df["Y_UTM"] = p_loc[:, 1]
 
-
                 # Micro-gaps (≤1 amostra consecutiva): contagem + preenchimento
-                nan_before = int(df["X_UTM"].isna().sum() + df["Y_UTM"].isna().sum())
-                df["X_UTM"] = df["X_UTM"].interpolate(limit=1, limit_direction="both")
-                df["Y_UTM"] = df["Y_UTM"].interpolate(limit=1, limit_direction="both")
-                nan_after = int(df["X_UTM"].isna().sum() + df["Y_UTM"].isna().sum())
+                nan_before = int(df["X_UTM"].isna().sum() +
+                                 df["Y_UTM"].isna().sum())
+                df["X_UTM"] = df["X_UTM"].interpolate(
+                    limit=1, limit_direction="both")
+                df["Y_UTM"] = df["Y_UTM"].interpolate(
+                    limit=1, limit_direction="both")
+                nan_after = int(df["X_UTM"].isna().sum() +
+                                df["Y_UTM"].isna().sum())
                 df["_micro_gaps_corrigidos"] = max(0, nan_before - nan_after)
                 # Suavização opcional Savitzky–Golay
 
@@ -406,7 +415,8 @@ def _sincronizar(temp_files, out_dir: Path):
         out_files.append(out_path)
 
     ordem_fases = {"Warm-Up": 0, "1P": 1, "2P": 2}
-    fases_ordenadas = sorted(fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
+    fases_ordenadas = sorted(
+        fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
 
     return out_files, fases_ordenadas, fases_dict, len(master_df)
 
@@ -426,7 +436,8 @@ if metodo_campo == "Upload (BL/BR/TL/TR)" and not have_upload_corners:
     st.stop()
 
 if metodo_campo == "Pick no mapa (clicar 4 cantos)" and not have_picked_corners:
-    st.warning("ℹ️ Selecionaste 'Pick no mapa'. Define os 4 cantos no mapa abaixo e depois continua.")
+    st.warning(
+        "ℹ️ Selecionaste 'Pick no mapa'. Define os 4 cantos no mapa abaixo e depois continua.")
 
 if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pts_gps_picked") is None:
     # --- UI: Pick dos 4 cantos no mapa (alternativa ao upload) ---
@@ -441,7 +452,8 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
         unsafe_allow_html=True,
     )
 
-    alat0, alon0 = get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
+    alat0, alon0 = get_atletas_centroid_latlon(
+        f_atleta, amostra_n=amostra_geo_n)
     if alat0 is None or alon0 is None:
         pts_fallback = sample_athlete_track_latlon(f_atleta, max_points=10)
         if pts_fallback:
@@ -530,7 +542,8 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
             st.error(f"Falha ao retangularizar cantos: {e}")
             pts_clicked_dict, pts_rect_dict = None, None
 
-    out_pick = st_folium(m_pick, width=1100, height=520, key="mapa_pick_cantos")
+    out_pick = st_folium(m_pick, width=1100, height=520,
+                         key="mapa_pick_cantos")
 
     # Capturar clique (com deduplicação para evitar reprocessar o mesmo ponto após rerun)
     if out_pick and out_pick.get("last_clicked"):
@@ -566,9 +579,11 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
 
             # Guardar já ajustado para o pipeline
             st.session_state.pts_gps_picked = pts_rect_dict
-            st.success("✅ Cantos ajustados guardados. Agora o pipeline continua normalmente.")
+            st.success(
+                "✅ Cantos ajustados guardados. Agora o pipeline continua normalmente.")
         else:
-            st.warning("Tens 4 pontos, mas não consegui ajustar. Faz Reset e tenta com mais zoom.")
+            st.warning(
+                "Tens 4 pontos, mas não consegui ajustar. Faz Reset e tenta com mais zoom.")
 
     st.stop()
 
@@ -589,7 +604,8 @@ try:
 
     # Display name
     df_campos = df_campos.copy()
-    df_campos["display_name"] = df_campos["estadio"].astype(str) + " (" + df_campos["campo_local"].astype(str) + ")"
+    df_campos["display_name"] = df_campos["estadio"].astype(
+        str) + " (" + df_campos["campo_local"].astype(str) + ")"
 
     campo_selecionado = st.selectbox(
         "Seleciona o Estádio/Campo",
@@ -611,7 +627,8 @@ try:
         pts_gps_recuperado, int(epsg_used)
     )
 
-    st.success(f"✅ Campo '{row['estadio']}' carregado e calibrado com sucesso!")
+    st.success(f"✅ Campo '{row['estadio']
+                           }' carregado e calibrado com sucesso!")
 
     # 2) Guardar em session_state (para consistência com o pipeline)
     st.session_state.pts_gps_picked = pts_gps_recuperado
@@ -621,21 +638,22 @@ try:
         pts_gps_recuperado, int(epsg_used)
     )
 
-    st.success(f"✅ Campo '{row['estadio']}' carregado e calibrado com sucesso!")
-                
+    st.success(f"✅ Campo '{row['estadio']
+                           }' carregado e calibrado com sucesso!")
 
-                # Injetar no session_state para que o pipeline o use
-                st.session_state.pts_gps_picked = pts_gps_recuperado
+    # Injetar no session_state para que o pipeline o use
+    st.session_state.pts_gps_picked = pts_gps_recuperado
 
-                # obter outros dados
-                clat = row['clat']
-                clon = row['clon']
-                pts_gps = row['pts_gps']
-                dist_x = row['dist_x']
-                dist_y = row['dist_y']
-                angulo_rad = row['rotation']
+    # obter outros dados
+    clat = row['clat']
+    clon = row['clon']
+    pts_gps = row['pts_gps']
+    dist_x = row['dist_x']
+    dist_y = row['dist_y']
+    angulo_rad = row['rotation']
 
-                st.success(f"✅ Campo '{row['estadio']}' carregado com sucesso!")
+    st.success(f"✅ Campo '{row['estadio']
+                           }' carregado com sucesso!")
     else:
         pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo(
             f_campo, int(epsg_used)
@@ -648,7 +666,8 @@ except Exception as e:
     st.stop()
 
 passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
-    f_atleta, clat, clon, float(raio_validacao_m), int(amostra_geo_n), float(min_pct_atletas_ok)
+    f_atleta, clat, clon, float(raio_validacao_m), int(
+        amostra_geo_n), float(min_pct_atletas_ok)
 )
 
 st.header("Validação de Localização (Campo ↔ Atletas)")
@@ -679,7 +698,8 @@ st.markdown("---")
 if passed_geo:
     st.success("✅ Validação geográfica aprovada.")
 else:
-    st.error("❌ Validação geográfica falhou (percentagem insuficiente dentro do raio).")
+    st.error(
+        "❌ Validação geográfica falhou (percentagem insuficiente dentro do raio).")
 
 
 # Map
@@ -707,7 +727,8 @@ rows = []
 completos = 0
 for aid in sorted(
     audit_data.keys(),
-    key=lambda x: int(re.search(r"\d+", x).group()) if re.search(r"\d+", x) else 0,
+    key=lambda x: int(re.search(r"\d+", x).group()
+                      ) if re.search(r"\d+", x) else 0,
 ):
     fases = audit_data[aid]
     is_ok = all(x in fases for x in ["Warm-Up", "1P", "2P"])
@@ -722,7 +743,8 @@ for aid in sorted(
         }
     )
 st.table(pd.DataFrame(rows))
-st.write(f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_data)}")
+st.write(
+    f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_data)}")
 
 st.divider()
 
@@ -772,7 +794,8 @@ with st.sidebar.popover('💾 Guardar Campo'):
         save_field_to_parquet(campo_df)
         st.success("Campo Guardado!")
 
-btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", use_container_width=True)
+btn = st.button("⚙️ Processar e Gerar Relatório",
+                type="primary", use_container_width=True)
 
 # outputs (para UI) — manter em session_state para sobreviver a reruns
 df_metrics = st.session_state.df_metrics
@@ -781,8 +804,10 @@ report_txt = st.session_state.report_txt
 if btn:
     with st.status("A iniciar processamento...", expanded=True) as status:
         if not passed_geo:
-            status.update(label="Validação geográfica falhou. Processamento interrompido.", state="error")
-            st.error("Validação geográfica falhou. O processamento foi interrompido.")
+            status.update(
+                label="Validação geográfica falhou. Processamento interrompido.", state="error")
+            st.error(
+                "Validação geográfica falhou. O processamento foi interrompido.")
             st.stop()
 
         with tempfile.TemporaryDirectory() as td:
@@ -792,7 +817,8 @@ if btn:
             temp_dir.mkdir(parents=True, exist_ok=True)
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            status.update(label="Processamento e limpeza de dados GPS...", state="running")
+            status.update(
+                label="Processamento e limpeza de dados GPS...", state="running")
             temp_files, audit_proc, issues = _processar_atletas_para_temp(
                 f_atleta,
                 int(epsg_used),
@@ -805,11 +831,13 @@ if btn:
             )
 
             if not temp_files:
-                st.error("❌ Não foi possível gerar ficheiros temporários (verifica colunas Time/Lat/Lon e nomes).")
+                st.error(
+                    "❌ Não foi possível gerar ficheiros temporários (verifica colunas Time/Lat/Lon e nomes).")
                 st.stop()
 
             status.update(label="Sincronização temporal...", state="running")
-            out_files, fases_ordenadas, fases_dict, n_master = _sincronizar(temp_files, out_dir)
+            out_files, fases_ordenadas, fases_dict, n_master = _sincronizar(
+                temp_files, out_dir)
 
             # Session identifiers (auditoria/dedup)
             session_uuid = uuid.uuid4()
@@ -819,7 +847,8 @@ if btn:
             )
 
             # Métricas individuais a partir dos SYNC (por fase + Total)
-            status.update(label="Cálculo de métricas individuais...", state="running")
+            status.update(
+                label="Cálculo de métricas individuais...", state="running")
             metrics_rows = []
             audit_time_rows = []
             total_micro_gaps = 0
@@ -837,7 +866,8 @@ if btn:
                 # micro-gaps acumulados (gravados na etapa de processamento)
                 if "_micro_gaps_corrigidos" in df_sync.columns and df_sync["_micro_gaps_corrigidos"].notna().any():
                     try:
-                        total_micro_gaps += int(df_sync["_micro_gaps_corrigidos"].dropna().iloc[0])
+                        total_micro_gaps += int(
+                            df_sync["_micro_gaps_corrigidos"].dropna().iloc[0])
                     except Exception:
                         pass
 
@@ -849,7 +879,8 @@ if btn:
                     fase_mets[fase] = met
 
                     aud = audit_timebase(df_f, COL_TIME, expected_hz=10.0)
-                    audit_time_rows.append({"atleta_id": aid, "fase": fase, **aud})
+                    audit_time_rows.append(
+                        {"atleta_id": aid, "fase": fase, **aud})
 
                     metrics_rows.append(
                         {
@@ -876,23 +907,33 @@ if btn:
 
                 # -------- TOTAL POR SOMA DAS FASES --------
                 met_total = {}
-                met_total["dist_m"] = sum(fase_mets.get(f, {}).get("dist_m", 0.0) for f in fases_target)
-                met_total["duracao_min"] = sum(fase_mets.get(f, {}).get("duracao_min", 0.0) for f in fases_target)
+                met_total["dist_m"] = sum(fase_mets.get(f, {}).get(
+                    "dist_m", 0.0) for f in fases_target)
+                met_total["duracao_min"] = sum(fase_mets.get(f, {}).get(
+                    "duracao_min", 0.0) for f in fases_target)
                 met_total["m_min"] = (
                     met_total["dist_m"] / met_total["duracao_min"]
                     if met_total["duracao_min"] > 0
                     else np.nan
                 )
 
-                met_total["hsr_dist_m"] = sum(fase_mets.get(f, {}).get("hsr_dist_m", 0.0) for f in fases_target)
-                met_total["sprint_dist_m"] = sum(fase_mets.get(f, {}).get("sprint_dist_m", 0.0) for f in fases_target)
-                met_total["n_sprints"] = sum(fase_mets.get(f, {}).get("n_sprints", 0) for f in fases_target)
-                met_total["n_acc_2_5"] = sum(fase_mets.get(f, {}).get("n_acc_2_5", 0) for f in fases_target)
-                met_total["n_dec_3_0"] = sum(fase_mets.get(f, {}).get("n_dec_3_0", 0) for f in fases_target)
-                met_total["n_points"] = sum(fase_mets.get(f, {}).get("n_points", 0) for f in fases_target)
+                met_total["hsr_dist_m"] = sum(fase_mets.get(f, {}).get(
+                    "hsr_dist_m", 0.0) for f in fases_target)
+                met_total["sprint_dist_m"] = sum(fase_mets.get(f, {}).get(
+                    "sprint_dist_m", 0.0) for f in fases_target)
+                met_total["n_sprints"] = sum(fase_mets.get(
+                    f, {}).get("n_sprints", 0) for f in fases_target)
+                met_total["n_acc_2_5"] = sum(fase_mets.get(
+                    f, {}).get("n_acc_2_5", 0) for f in fases_target)
+                met_total["n_dec_3_0"] = sum(fase_mets.get(
+                    f, {}).get("n_dec_3_0", 0) for f in fases_target)
+                met_total["n_points"] = sum(fase_mets.get(
+                    f, {}).get("n_points", 0) for f in fases_target)
 
-                met_total["vmax_mps"] = max((fase_mets.get(f, {}).get("vmax_mps", np.nan) for f in fases_target), default=np.nan)
-                met_total["peak_1m_m_min"] = max((fase_mets.get(f, {}).get("peak_1m_m_min", np.nan) for f in fases_target), default=np.nan)
+                met_total["vmax_mps"] = max((fase_mets.get(f, {}).get(
+                    "vmax_mps", np.nan) for f in fases_target), default=np.nan)
+                met_total["peak_1m_m_min"] = max((fase_mets.get(f, {}).get(
+                    "peak_1m_m_min", np.nan) for f in fases_target), default=np.nan)
 
                 met_total["hsr_pct"] = (
                     met_total["hsr_dist_m"] / met_total["dist_m"] * 100.0
@@ -901,7 +942,8 @@ if btn:
                 )
 
                 # Active time total
-                met_total["active_time_min"] = sum(fase_mets.get(f, {}).get("active_time_min", 0.0) for f in fases_target)
+                met_total["active_time_min"] = sum(fase_mets.get(f, {}).get(
+                    "active_time_min", 0.0) for f in fases_target)
                 dur_total_s = met_total["duracao_min"] * 60.0
                 met_total["active_pct"] = (
                     (met_total["active_time_min"] * 60.0) / dur_total_s * 100.0
@@ -911,14 +953,18 @@ if btn:
 
                 # Qualidade: pct_time_valid e gaps>2s — média ponderada simples por pontos válidos
                 try:
-                    w = np.array([max(1, fase_mets[f]["n_points"]) for f in fases_target], dtype=float)
+                    w = np.array([max(1, fase_mets[f]["n_points"])
+                                 for f in fases_target], dtype=float)
                     met_total["pct_time_valid"] = float(
-                        np.average([fase_mets[f]["pct_time_valid"] for f in fases_target], weights=w)
+                        np.average([fase_mets[f]["pct_time_valid"]
+                                   for f in fases_target], weights=w)
                     )
-                    met_total["n_gaps_gt2s"] = int(sum(fase_mets[f]["n_gaps_gt2s"] for f in fases_target))
+                    met_total["n_gaps_gt2s"] = int(
+                        sum(fase_mets[f]["n_gaps_gt2s"] for f in fases_target))
                 except Exception:
                     met_total["pct_time_valid"] = np.nan
-                    met_total["n_gaps_gt2s"] = int(sum(fase_mets[f]["n_gaps_gt2s"] for f in fases_target))
+                    met_total["n_gaps_gt2s"] = int(
+                        sum(fase_mets[f]["n_gaps_gt2s"] for f in fases_target))
 
                 metrics_rows.append(
                     {
@@ -947,19 +993,21 @@ if btn:
             df_time_audit = pd.DataFrame(audit_time_rows)
             st.session_state.df_time_audit = df_time_audit
 
-
             status.update(label="Construção do relatório...", state="running")
             # Build report (rotação mantida)
             rot_deg = float(np.degrees(angulo_rad))
             report_lines = []
-            report_lines.append("FPF Performance Hub — Relatório de Validação e Normalização")
+            report_lines.append(
+                "FPF Performance Hub — Relatório de Validação e Normalização")
             report_lines.append("=" * 70)
 
             report_lines.append("Dados da Sessão")
             report_lines.append(
-                f"  Data: {data_sessao.strftime('%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}"
+                f"  Data: {data_sessao.strftime(
+                    '%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}"
             )
-            report_lines.append(f"  Seleção: {selecao} | Género: {genero} | Contexto: {contexto}")
+            report_lines.append(f"  Seleção: {selecao} | Género: {
+                                genero} | Contexto: {contexto}")
             if contexto == "Jogo":
                 vs_txt = adversario.strip()
                 if vs_txt:
@@ -971,23 +1019,27 @@ if btn:
             report_lines.append(f"EPSG (UTM): {epsg_used}")
             report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
             report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
-            report_lines.append(f"Rotação aplicada:    {rot_deg:.2f}° (alinhamento BL→BR com eixo X)")
+            report_lines.append(f"Rotação aplicada:    {
+                                rot_deg:.2f}° (alinhamento BL→BR com eixo X)")
 
             report_lines.append("-" * 70)
             report_lines.append("Validação geográfica")
             report_lines.append(
-                f"  Raio: {raio_validacao_m:.0f} m | Amostra: {amostra_geo_n} linhas/atleta | % OK: {pct_ok*100:.0f}% "
+                f"  Raio: {raio_validacao_m:.0f} m | Amostra: {
+                    amostra_geo_n} linhas/atleta | % OK: {pct_ok*100:.0f}% "
                 f"(mínimo {min_pct_atletas_ok*100:.0f}%)"
             )
             report_lines.append(
-                f"  Dentro do raio: {len({a for a,_ in ok_list})} atletas | "
-                f"Fora: {len({a for a,_ in fora_list})} atletas | Erros: {len(geo_errors)}"
+                f"  Dentro do raio: {len({a for a, _ in ok_list})} atletas | "
+                f"Fora: {len({a for a, _ in fora_list})} atletas | Erros: {
+                    len(geo_errors)}"
             )
 
             report_lines.append("-" * 70)
             report_lines.append("Auditoria de atletas (submissão)")
             report_lines.append(
-                f"  Atletas totais: {len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
+                f"  Atletas totais: {
+                    len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
             )
 
             report_lines.append("-" * 70)
@@ -996,7 +1048,8 @@ if btn:
             report_lines.append(f"  Ficheiros gerados: {len(out_files)}")
             report_lines.append("  Fases (ordem cronológica):")
             for fase, (t_s, t_e) in fases_ordenadas:
-                report_lines.append(f"    - {fase:8} | início: {t_s} | fim: {t_e}")
+                report_lines.append(
+                    f"    - {fase:8} | início: {t_s} | fim: {t_e}")
 
             if issues:
                 report_lines.append("-" * 70)
@@ -1005,39 +1058,47 @@ if btn:
                     report_lines.append(f"  - {aid} | {fn} | {msg}")
 
             report_lines.append("-" * 70)
-            report_lines.append("Métricas Individuais (GPS-only) — thresholds fixos")
+            report_lines.append(
+                "Métricas Individuais (GPS-only) — thresholds fixos")
             report_lines.append(
                 f"  HSR ≥ {HSR_MPS:.1f} m/s | Sprint ≥ {SPRINT_MPS:.1f} m/s | "
                 f"Acc ≥ {ACC_THR:.1f} m/s² | Dec ≤ {DEC_THR:.1f} m/s²"
             )
             report_lines.append(f"  Session ID (hex): {session_id_hex}")
-            report_lines.append(f"  Session fingerprint (sha1): {session_fingerprint}")
+            report_lines.append(f"  Session fingerprint (sha1): {
+                                session_fingerprint}")
 
             if df_metrics is not None and not df_metrics.empty:
                 report_lines.append("  (Métricas calculadas com sucesso)")
             else:
                 report_lines.append("  (Sem métricas calculadas)")
 
-
             report_lines.append("-" * 70)
             report_lines.append("Qualidade do Sinal GPS")
-            report_lines.append(f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
+            report_lines.append(
+                f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
 
             # Auditoria de timestamp (resumo)
             try:
                 dfta = st.session_state.get("df_time_audit", None)
                 if dfta is not None and isinstance(dfta, pd.DataFrame) and not dfta.empty:
-                    hz_med = float(dfta["hz_est"].dropna().median()) if dfta["hz_est"].dropna().any() else np.nan
-                    n_dup = int((dfta["n_dt_zero"] > 0).sum()) if "n_dt_zero" in dfta.columns else 0
-                    n_g2 = int((dfta["n_gaps_gt_2s"] > 0).sum()) if "n_gaps_gt_2s" in dfta.columns else 0
+                    hz_med = float(dfta["hz_est"].dropna().median(
+                    )) if dfta["hz_est"].dropna().any() else np.nan
+                    n_dup = int((dfta["n_dt_zero"] > 0).sum()
+                                ) if "n_dt_zero" in dfta.columns else 0
+                    n_g2 = int((dfta["n_gaps_gt_2s"] > 0).sum()
+                               ) if "n_gaps_gt_2s" in dfta.columns else 0
 
                     report_lines.append("-" * 70)
                     report_lines.append("Auditoria de Timestamp")
                     if np.isfinite(hz_med):
-                        report_lines.append(f"  Hz mediano estimado (por atleta/fase): {hz_med:.1f} Hz")
+                        report_lines.append(
+                            f"  Hz mediano estimado (por atleta/fase): {hz_med:.1f} Hz")
                     else:
-                        report_lines.append("  Hz mediano estimado (por atleta/fase): —")
-                    report_lines.append(f"  Atleta×fase com timestamps duplicados: {n_dup}")
+                        report_lines.append(
+                            "  Hz mediano estimado (por atleta/fase): —")
+                    report_lines.append(
+                        f"  Atleta×fase com timestamps duplicados: {n_dup}")
                     report_lines.append(f"  Atleta×fase com gaps >2s: {n_g2}")
             except Exception:
                 pass
@@ -1050,7 +1111,8 @@ if btn:
             st.session_state.process_done = True
             status.update(label="Finalizado.", state="complete")
 
-    st.success("✅ Processamento concluído. Relatório e métricas disponíveis abaixo.")
+    st.success(
+        "✅ Processamento concluído. Relatório e métricas disponíveis abaixo.")
 
 
 # ---------- UI (fora do if btn) ----------
@@ -1087,7 +1149,8 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
             "Total": 3,
         }
 
-        df_display["__fase_ord"] = df_display["fase"].map(ordem_fases).fillna(99)
+        df_display["__fase_ord"] = df_display["fase"].map(
+            ordem_fases).fillna(99)
         df_display = df_display.sort_values(
             by=[col_inicio, "__fase_ord"]
         ).drop(columns="__fase_ord")
