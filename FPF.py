@@ -651,15 +651,41 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
 
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
-# Campo
-_, cidade_campo, pais_campo = reverse_geocode_place_city_country(clat, clon)
+# -----------------------------
+# Reverse geocode (ON-DEMAND)
+#   - evita lentidão em reruns
+#   - guarda resultado em session_state
+# -----------------------------
+if "geo_cache" not in st.session_state:
+    st.session_state.geo_cache = {}
 
-# Atletas (centro estimado)
+# Atletas (centro estimado) — usado em validação e, opcionalmente, em geocode
 alat, alon = get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
 
-cidade_atl, pais_atl = None, None
+# Mostrar coordenadas (sempre rápido e útil)
+st.caption(f"Campo coords: {clat:.6f}, {clon:.6f}")
 if alat is not None and alon is not None:
-    _, cidade_atl, pais_atl = reverse_geocode_place_city_country(alat, alon)
+    st.caption(f"Atletas coords: {alat:.6f}, {alon:.6f}")
+
+# Botão para resolver localização (faz chamadas externas apenas quando o utilizador pede)
+do_geo = st.button("Resolver Localização (OSM)")
+
+cidade_campo = pais_campo = cidade_atl = pais_atl = None
+
+if do_geo:
+    key_campo = ("campo", round(float(clat), 6), round(float(clon), 6))
+    if key_campo not in st.session_state.geo_cache:
+        _, c, p = reverse_geocode_place_city_country(float(clat), float(clon))
+        st.session_state.geo_cache[key_campo] = (c, p)
+    cidade_campo, pais_campo = st.session_state.geo_cache.get(key_campo, (None, None))
+
+    if alat is not None and alon is not None:
+        key_atl = ("atl", round(float(alat), 6), round(float(alon), 6))
+        if key_atl not in st.session_state.geo_cache:
+            _, c, p = reverse_geocode_place_city_country(float(alat), float(alon))
+            st.session_state.geo_cache[key_atl] = (c, p)
+        cidade_atl, pais_atl = st.session_state.geo_cache.get(key_atl, (None, None))
+
 # ----- Campo -----
 campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
