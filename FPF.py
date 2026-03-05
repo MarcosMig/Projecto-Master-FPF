@@ -221,6 +221,11 @@ with st.sidebar:
     f_campo = st.file_uploader(
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
     )
+    f_campo = []
+    if metodo_campo == "Upload (BL/BR/TL/TR)":
+        f_campo = st.file_uploader(
+            "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
+        )
     st.caption(
         "Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
     )
