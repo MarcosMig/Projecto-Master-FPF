@@ -1,4 +1,4 @@
- # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 FPF UTM Engine v11.1 (fix indent + report + metrics)
 Autor: Marcos (base) + ajustes de estabilidade/indentação
@@ -27,15 +27,15 @@ from fpf_modules.constants import (
     SELECOES_OPCOES
 )
 
-from fpf_modules.qc import qc_gps_df
-from fpf_modules.normalize import normalize_pitch_xy
-
-from fpf_modules.metrics import (
+from fpf_modules.metrics_v2 import (
     time_to_seconds,
     count_bouts,
     audit_timebase,
     compute_metrics_for_df
 )
+
+from fpf_modules.qc_v2 import qc_gps_df
+from fpf_modules.normalize import normalize_pitch_xy
 
 from fpf_modules.io_utils import (
     hash_session,
@@ -264,41 +264,24 @@ def _reverse_geocode_city_country(lat: float, lon: float):
     """Reverse geocode via OpenStreetMap Nominatim."""
     try:
         url = "https://nominatim.openstreetmap.org/reverse"
-
-        params = {
-            "format": "jsonv2",
-            "lat": round(float(lat), 6),
-            "lon": round(float(lon), 6),
-            "zoom": 12,
-            "addressdetails": 1
-        }
-
+        params = {"format": "jsonv2", "lat": lat,
+                  "lon": lon, "zoom": 10, "addressdetails": 1}
         headers = {
-            "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"
-        }
-
-        r = requests.get(url, params=params, headers=headers, timeout=3)
-
+            "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)"}
+        r = requests.get(url, params=params, headers=headers, timeout=10)
         if r.status_code != 200:
             return None, None
-
         data = r.json()
-
         addr = data.get("address", {}) if isinstance(data, dict) else {}
-
         city = (
             addr.get("city")
             or addr.get("town")
             or addr.get("village")
             or addr.get("municipality")
             or addr.get("county")
-            or addr.get("state")
         )
-
         country = addr.get("country")
-
         return city, country
-
     except Exception:
         return None, None
 
@@ -654,8 +637,7 @@ try:
             f_campo, int(epsg_used)
         )
 
-    cidade, pais = _reverse_geocode_city_country(clat, clon)
-    estadio = None  # mantém a tua lógica atual (estádio é input manual no popover)
+    estadio, cidade, pais = reverse_geocode_place_city_country(clat, clon)
 
 except Exception as e:
     st.error(f"❌ Erro na calibração do campo: {e}")
@@ -672,15 +654,15 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
 
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
-# Campo (usa função local cacheada)
-cidade_campo, pais_campo = _reverse_geocode_city_country(clat, clon)
+# Campo
+_, cidade_campo, pais_campo = reverse_geocode_place_city_country(clat, clon)
 
 # Atletas (centro estimado)
 alat, alon = get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
 
 cidade_atl, pais_atl = None, None
 if alat is not None and alon is not None:
-    cidade_atl, pais_atl = _reverse_geocode_city_country(alat, alon)
+    _, cidade_atl, pais_atl = reverse_geocode_place_city_country(alat, alon)
 # ----- Campo -----
 campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
@@ -875,11 +857,18 @@ if btn:
 
                 for fase in fases_target:
                     df_f = df_sync[df_sync[COL_FASE] == fase].copy()
-                    # Normalização canónica do campo (rebase + clip) — melhora comparabilidade
-                    df_f, _norm_meta = normalize_pitch_xy(df_f, dist_x=float(dist_x), dist_y=float(dist_y), flip_x=False, clip=True)
-                    met = compute_metrics_for_df(df_f)
-                    qc = qc_gps_df(df_f)
-
+                    phase_present = not df_f.empty
+                    if not phase_present:
+                        # Fase não jogada / não submetida → NA (não é falha de qualidade)
+                        met = compute_metrics_for_df(df_f)  # defaults (0/NaN)
+                        qc = qc_gps_df(df_f, phase_present=False)
+                    else:
+                        # Normalização canónica do campo (rebase + clip)
+                        df_f, _norm_meta = normalize_pitch_xy(
+                            df_f, dist_x=float(dist_x), dist_y=float(dist_y), flip_x=False, clip=True
+                        )
+                        met = compute_metrics_for_df(df_f)
+                        qc = qc_gps_df(df_f, phase_present=True)
                     fase_mets[fase] = met
 
                     aud = audit_timebase(df_f, COL_TIME, expected_hz=10.0)
@@ -1091,17 +1080,6 @@ if btn:
             report_lines.append("Qualidade do Sinal GPS")
             report_lines.append(
                 f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
-
-
-            # QC summary (PASS/WARN/FAIL) — por atleta×fase
-            try:
-                if df_metrics is not None and not df_metrics.empty and "qc_grade" in df_metrics.columns:
-                    vc = df_metrics["qc_grade"].value_counts(dropna=False).to_dict()
-                    report_lines.append("-" * 70)
-                    report_lines.append("QC (Data Quality) — resumo")
-                    report_lines.append(f"  PASS: {int(vc.get('PASS', 0))} | WARN: {int(vc.get('WARN', 0))} | FAIL: {int(vc.get('FAIL', 0))}")
-            except Exception:
-                pass
 
             # Auditoria de timestamp (resumo)
             try:
