@@ -1,10 +1,6 @@
 import numpy as np
 import pandas as pd
 
-# --- Plausibility filters (futebol) ---
-V_HARD_MPS = 11.0   # ~39.6 km/h
-JUMP_HARD_M = 12.0  # salto espacial por amostra
-
 from .constants import (
     ACC_THR,
     COL_TIME,
@@ -36,14 +32,15 @@ def time_to_seconds(series: pd.Series) -> pd.Series:
 def count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
     """Conta episódios consecutivos onde mask==True com duração >= min_dur_s.
 
-    Robusto a arrays vazios e a comprimentos diferentes entre t e mask.
+    Robusto a:
+      - arrays vazios
+      - comprimentos diferentes entre t e mask
     """
     if t is None or mask is None:
         return 0
     n = min(len(t), len(mask))
     if n <= 0:
         return 0
-
     t = t[:n]
     mask = mask[:n]
 
@@ -57,6 +54,7 @@ def count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
             t_start = float(t[i])
 
         if (not bool(mask[i])) and in_bout:
+            # bout termina em i-1
             dur = float(t[i - 1]) - float(t_start) if t_start is not None else 0.0
             if dur >= float(min_dur_s):
                 bouts += 1
@@ -177,24 +175,12 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
         return out
 
     dist_step = np.hypot(dx, dy)
-
-    # --- Anti-spike filter (plausibilidade) ---
-    # Remove passos com salto espacial excessivo ou velocidade instantânea impossível.
-    v = dist_step / dt
-    mask_plaus = (dist_step <= JUMP_HARD_M) & (v <= V_HARD_MPS)
-    if len(mask_plaus):
-        dist_step = dist_step[mask_plaus]
-        dt = dt[mask_plaus]
-        v = v[mask_plaus]
-
-    if len(dt) == 0 or len(dist_step) == 0:
-        return out
-
     dist_total = float(np.nansum(dist_step))
     dur_s = float(np.nansum(dt))
     dur_min = dur_s / 60.0 if dur_s > 0 else 0.0
     m_min = (dist_total / dur_min) if dur_min > 0 else np.nan
 
+    v = dist_step / dt
     vmax = float(np.nanmax(v)) if len(v) else np.nan
 
     # Active time (tempo em movimento)
