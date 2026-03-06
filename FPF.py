@@ -522,7 +522,7 @@ def _build_manual_metricas_txt():
     lines.append("- Total resulta da agregação das fases Warm-Up, 1P e 2P no motor atual.")
     lines.append("- Métricas de Performance devem ser interpretadas em conjunto com Disponibilidade / Integridade e QC / Confiabilidade.")
     lines.append("- Flags ou grades QC desfavoráveis podem justificar revisão manual ou exclusão analítica da fase.")
-TEMPJOINMARK
+    return "\n".join(lines)
 
 
 def _normalize_xy_canonical(df: pd.DataFrame, dist_x: float, dist_y: float):
