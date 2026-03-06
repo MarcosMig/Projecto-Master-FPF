@@ -286,142 +286,15 @@ def _reverse_geocode_city_country(lat: float, lon: float):
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
-def _processar_atletas_para_temp(
-    f_atleta_files, epsg, origin, R, aplicar_suav, janela, poly, temp_dir: Path
-):
-    trans = Transformer.from_crs("EPSG:4326", f"EPSG:{epsg}", always_xy=True)
-
-    groups = {}
-    for f in f_atleta_files:
-        aid = get_atleta_id(f.name)
-        groups.setdefault(aid, []).append(f)
-
-    temp_files = []
-    audit = {}  # aid -> list of fases
-    issues = []
-
-    for aid, files in groups.items():
-        atleta_data = []
-        audit[aid] = []
-        for uf in files:
-            try:
-                df = read_csv_upload(uf)
-                fase_n = infer_fase(uf.name)
-                audit[aid].append(fase_n)
-
-                if df.empty:
-                    continue
-                if COL_TIME not in df.columns:
-                    issues.append((aid, uf.name, "Sem coluna Time"))
-                    continue
-                if COL_LAT not in df.columns or COL_LON not in df.columns:
-                    issues.append((aid, uf.name, "Sem colunas Lat/Lon"))
-                    continue
-
-                lon = df[COL_LON].astype(float)
-                lat = df[COL_LAT].astype(float)
-                ux, uy = trans.transform(lon.values, lat.values)
-                p = np.vstack([ux, uy]).T
-                p_loc = (R @ (p - origin).T).T  # rotate around BL
-
-                df["X_UTM"] = p_loc[:, 0]
-                df["Y_UTM"] = p_loc[:, 1]
-
-                # Micro-gaps (≤1 amostra consecutiva): contagem + preenchimento
-                nan_before = int(df["X_UTM"].isna().sum() +
-                                 df["Y_UTM"].isna().sum())
-                df["X_UTM"] = df["X_UTM"].interpolate(
-                    limit=1, limit_direction="both")
-                df["Y_UTM"] = df["Y_UTM"].interpolate(
-                    limit=1, limit_direction="both")
-                nan_after = int(df["X_UTM"].isna().sum() +
-                                df["Y_UTM"].isna().sum())
-                df["_micro_gaps_corrigidos"] = max(0, nan_before - nan_after)
-                # Suavização opcional Savitzky–Golay
-
-                if aplicar_suavizacao and len(df) >= int(janela) and int(janela) % 2 == 1:
-                    x = pd.Series(df["X_UTM"]).interpolate()
-                    y = pd.Series(df["Y_UTM"]).interpolate()
-                    try:
-                        df["X_UTM"] = savgol_filter(x, int(janela), int(poly))
-                        df["Y_UTM"] = savgol_filter(y, int(janela), int(poly))
-                    except Exception:
-                        pass
-
-                df[COL_FASE] = fase_n
-                df["Atleta_ID"] = aid
-                atleta_data.append(
-                    df[
-                        [
-                            COL_TIME,
-                            "Atleta_ID",
-                            COL_FASE,
-                            COL_LAT,
-                            COL_LON,
-                            "X_UTM",
-                            "Y_UTM",
-                        ]
-                    ]
-                )
-            except Exception as e:
-                issues.append((aid, uf.name, f"Erro a processar: {e}"))
-
-        if atleta_data:
-            out = pd.concat(atleta_data, ignore_index=True)
-            out = out.sort_values(by=COL_TIME)
-            out_path = temp_dir / f"T_{aid}.csv"
-            out.to_csv(out_path, sep=";", index=False)
-            temp_files.append(out_path)
-
-    return temp_files, audit, issues
-
-
-def _sincronizar(temp_files, out_dir: Path):
-    fases_dict = {}
-    all_unique_times = set()
-
-    # Pass 1: collect times and phase windows
-    for f in temp_files:
-        df = pd.read_csv(f, sep=";", usecols=[COL_TIME, COL_FASE])
-        df = df.dropna(subset=[COL_TIME])
-        all_unique_times.update(df[COL_TIME].tolist())
-        for fs in df[COL_FASE].dropna().unique():
-            t_fase = df.loc[df[COL_FASE] == fs, COL_TIME]
-            t_s, t_e = t_fase.min(), t_fase.max()
-            if fs not in fases_dict:
-                fases_dict[fs] = [t_s, t_e]
-            else:
-                fases_dict[fs][0] = min(fases_dict[fs][0], t_s)
-                fases_dict[fs][1] = max(fases_dict[fs][1], t_e)
-
-    master_df = pd.DataFrame({COL_TIME: sorted(list(all_unique_times))})
-
-    out_files = []
-    for f in temp_files:
-        df_atl = pd.read_csv(f, sep=";")
-        df_sync = pd.merge(master_df, df_atl, on=COL_TIME, how="left")
-        aid = (
-            str(df_atl["Atleta_ID"].iloc[0])
-            if "Atleta_ID" in df_atl.columns
-            else f.stem.replace("T_", "")
-        )
-        df_sync["Atleta_ID"] = aid
-
-        # fill phase windows
-        for fase, (t_s, t_e) in fases_dict.items():
-            mask = (df_sync[COL_TIME] >= t_s) & (df_sync[COL_TIME] <= t_e)
-            df_sync.loc[mask, COL_FASE] = fase
-
-        out_path = out_dir / f"Player_{aid}_SYNC.csv"
-        df_sync.to_csv(out_path, sep=";", index=False, encoding="utf-8-sig")
-        out_files.append(out_path)
-
-    ordem_fases = {"Warm-Up": 0, "1P": 1, "2P": 2}
-    fases_ordenadas = sorted(
-        fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
-
-    return out_files, fases_ordenadas, fases_dict, len(master_df)
-
+def _fmt_match_clock(seconds):
+    if seconds is None or pd.isna(seconds):
+        return "—"
+    total = int(round(float(seconds)))
+    sign = "-" if total < 0 else ""
+    total = abs(total)
+    minutes = total // 60
+    secs = total % 60
+    return f"{sign}00:{minutes:02d}:{secs:02d}"
 
 
 def _normalize_xy_canonical(df: pd.DataFrame, dist_x: float, dist_y: float):
@@ -834,7 +707,7 @@ if btn:
 
             status.update(
                 label="Processamento e limpeza de dados GPS...", state="running")
-            temp_files, audit_proc, issues = _processar_atletas_para_temp(
+            temp_files, audit_proc, issues = processar_atletas_para_temp(
                 f_atleta,
                 int(epsg_used),
                 origin,
@@ -851,7 +724,7 @@ if btn:
                 st.stop()
 
             status.update(label="Sincronização temporal...", state="running")
-            out_files, fases_ordenadas, fases_dict, n_master = _sincronizar(
+            out_files, fases_ordenadas, fases_dict, n_master, event_clock = sincronizar(
                 temp_files, out_dir)
 
             # Session identifiers (auditoria/dedup)
@@ -1095,6 +968,31 @@ if btn:
                 report_lines.append(
                     f"    - {fase:8} | início: {t_s} | fim: {t_e}")
 
+            report_lines.append("-" * 70)
+            report_lines.append("Timeline do Jogo")
+            if event_clock:
+                if "1P" in event_clock:
+                    ec = event_clock["1P"]
+                    report_lines.append(
+                        f"  1P:    {_fmt_match_clock(ec['start_s'])} → {_fmt_match_clock(ec['reg_end_s'])}"
+                    )
+                    if ec.get("extra_s", 0.0) > 0:
+                        report_lines.append(
+                            f"  ET_1P: {_fmt_match_clock(ec['reg_end_s'])} → {_fmt_match_clock(ec['end_s'])}"
+                        )
+
+                if "2P" in event_clock:
+                    ec = event_clock["2P"]
+                    report_lines.append(
+                        f"  2P:    {_fmt_match_clock(ec['start_s'])} → {_fmt_match_clock(ec['reg_end_s'])}"
+                    )
+                    if ec.get("extra_s", 0.0) > 0:
+                        report_lines.append(
+                            f"  ET_2P: {_fmt_match_clock(ec['reg_end_s'])} → {_fmt_match_clock(ec['end_s'])}"
+                        )
+            else:
+                report_lines.append("  Sem event_clock disponível.")
+
             if issues:
                 report_lines.append("-" * 70)
                 report_lines.append("Avisos/Problemas (exemplos):")
@@ -1157,6 +1055,23 @@ if btn:
 
     st.success(
         "✅ Processamento concluído. Relatório e métricas disponíveis abaixo.")
+
+    try:
+        if out_files:
+            sample_sync = pd.read_csv(out_files[0], sep=";")
+            cols_preview = [
+                c for c in ["Time", "Fase", "Periodo_Jogo", "Time_Evento", "Minuto_Jogo"]
+                if c in sample_sync.columns
+            ]
+            if cols_preview:
+                st.subheader("Preview timeline sincronizada")
+                st.dataframe(
+                    sample_sync[cols_preview].head(30),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+    except Exception:
+        pass
 
 
 # ---------- UI (fora do if btn) ----------
