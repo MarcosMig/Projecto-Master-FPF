@@ -27,6 +27,9 @@ from fpf_modules.constants import (
     SELECOES_OPCOES
 )
 
+from fpf_modules.qc import qc_gps_df
+from fpf_modules.normalize import normalize_pitch_xy
+
 from fpf_modules.metrics import (
     time_to_seconds,
     count_bouts,
@@ -872,7 +875,11 @@ if btn:
 
                 for fase in fases_target:
                     df_f = df_sync[df_sync[COL_FASE] == fase].copy()
+                    # Normalização canónica do campo (rebase + clip) — melhora comparabilidade
+                    df_f, _norm_meta = normalize_pitch_xy(df_f, dist_x=float(dist_x), dist_y=float(dist_y), flip_x=False, clip=True)
                     met = compute_metrics_for_df(df_f)
+                    qc = qc_gps_df(df_f)
+
                     fase_mets[fase] = met
 
                     aud = audit_timebase(df_f, COL_TIME, expected_hz=10.0)
@@ -898,6 +905,11 @@ if btn:
                             "atleta_id": aid,
                             "fase": fase,
                             **met,
+                            "qc_grade": qc.get("qc_grade"),
+                            "qc_flags": qc.get("qc_flags"),
+                            "vmax_mps_qc": qc.get("vmax_mps_qc"),
+                            "n_jumps_gt15m": qc.get("n_jumps_gt15m"),
+                            "n_gaps_gt2s_qc": qc.get("n_gaps_gt2s"),
                             "engine_version": ENGINE_VERSION,
                         }
                     )
@@ -982,6 +994,11 @@ if btn:
                         "atleta_id": aid,
                         "fase": "Total",
                         **met_total,
+                        "qc_grade": None,
+                        "qc_flags": None,
+                        "vmax_mps_qc": None,
+                        "n_jumps_gt15m": None,
+                        "n_gaps_gt2s_qc": None,
                         "engine_version": ENGINE_VERSION,
                     }
                 )
@@ -1074,6 +1091,17 @@ if btn:
             report_lines.append("Qualidade do Sinal GPS")
             report_lines.append(
                 f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
+
+
+            # QC summary (PASS/WARN/FAIL) — por atleta×fase
+            try:
+                if df_metrics is not None and not df_metrics.empty and "qc_grade" in df_metrics.columns:
+                    vc = df_metrics["qc_grade"].value_counts(dropna=False).to_dict()
+                    report_lines.append("-" * 70)
+                    report_lines.append("QC (Data Quality) — resumo")
+                    report_lines.append(f"  PASS: {int(vc.get('PASS', 0))} | WARN: {int(vc.get('WARN', 0))} | FAIL: {int(vc.get('FAIL', 0))}")
+            except Exception:
+                pass
 
             # Auditoria de timestamp (resumo)
             try:
