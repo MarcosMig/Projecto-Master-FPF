@@ -1,12 +1,16 @@
-"""
-FPF - Data Quality (QC) utilities for GPS positional data.
+"""FPF - Data Quality (QC) utilities for GPS positional data.
 
-Objetivo:
-- Garantir consistência antes de métricas
-- Produzir flags + score simples (PASS/WARN/FAIL)
-- Ser rápido e sem dependências externas
+v2:
+- Separa 'fase não jogada' (NA) de falha de dados (FAIL)
+- Flags + score simples (PASS/WARN/FAIL/NA)
+- Rápido, sem dependências externas
 
-Este módulo não assume eventos; funciona com Time + X_UTM/Y_UTM (após normalização).
+Uso recomendado:
+  qc = qc_gps_df(df_f, phase_present=True/False)
+
+Onde:
+- phase_present=False significa que a fase não existia para aquele atleta (não entrou / não jogou)
+- phase_present=True significa que havia dados para a fase (mesmo que depois fiquem inválidos)
 """
 
 from __future__ import annotations
@@ -25,14 +29,26 @@ class QCThresholds:
     # mínimos de “dados úteis”
     min_points: int = 200
     min_pct_time_valid: float = 70.0  # %
-    # plausibilidade
-    vmax_hard_mps: float = 12.0        # acima disto quase sempre erro (para futebol)
-    jump_hard_m: float = 15.0          # salto entre amostras (10Hz) demasiado alto
+    # plausibilidade (futebol)
+    vmax_hard_mps: float = 11.0        # hard cap de plausibilidade
+    jump_hard_m: float = 12.0          # salto espacial demasiado alto
     gap_hard_s: float = 2.0            # gap temporal relevante
 
 
-def qc_gps_df(df: pd.DataFrame, thr: QCThresholds | None = None) -> Dict[str, Any]:
-    """QC por DataFrame (já filtrado por atleta/fase)."""
+def qc_gps_df(
+    df: pd.DataFrame,
+    phase_present: bool = True,
+    thr: QCThresholds | None = None
+) -> Dict[str, Any]:
+    """QC por DataFrame (já filtrado por atleta/fase).
+
+    Espera colunas: Time, X_UTM, Y_UTM
+
+    Retorna:
+      - qc_grade: PASS/WARN/FAIL/NA
+      - qc_flags: flags separadas por ';'
+      - n_points, pct_time_valid, vmax_mps_qc, n_jumps_gt15m, n_gaps_gt2s
+    """
     thr = thr or QCThresholds()
 
     out = {
@@ -44,6 +60,12 @@ def qc_gps_df(df: pd.DataFrame, thr: QCThresholds | None = None) -> Dict[str, An
         "n_jumps_gt15m": 0,
         "n_gaps_gt2s": 0,
     }
+
+    # Fase não existente (não jogou / não foi submetida): NA, não é erro de qualidade
+    if not phase_present:
+        out["qc_grade"] = "NA"
+        out["qc_flags"] = "fase_nao_jogada"
+        return out
 
     if df is None or df.empty:
         out["qc_flags"] = "empty_df"
@@ -89,10 +111,13 @@ def qc_gps_df(df: pd.DataFrame, thr: QCThresholds | None = None) -> Dict[str, An
 
     flags: List[str] = []
 
+    # FAIL (qualidade insuficiente para interpretar)
     if out["n_points"] < thr.min_points:
         flags.append("low_points")
     if np.isfinite(out["pct_time_valid"]) and out["pct_time_valid"] < thr.min_pct_time_valid:
         flags.append("low_valid_pct")
+
+    # WARN (utilizável com reservas / investigar)
     if np.isfinite(out["vmax_mps_qc"]) and out["vmax_mps_qc"] > thr.vmax_hard_mps:
         flags.append("vmax_implausible")
     if out["n_jumps_gt15m"] > 0:
@@ -102,7 +127,7 @@ def qc_gps_df(df: pd.DataFrame, thr: QCThresholds | None = None) -> Dict[str, An
 
     if ("low_points" in flags) or ("low_valid_pct" in flags):
         grade = "FAIL"
-    elif ("vmax_implausible" in flags) or ("teleport_jumps" in flags) or ("gaps_gt2s" in flags):
+    elif flags:
         grade = "WARN"
     else:
         grade = "PASS"
