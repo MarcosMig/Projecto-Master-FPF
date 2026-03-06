@@ -27,15 +27,14 @@ from fpf_modules.constants import (
     SELECOES_OPCOES
 )
 
-from fpf_modules.metrics_v2 import (
+from fpf_modules.metrics import (
     time_to_seconds,
     count_bouts,
     audit_timebase,
     compute_metrics_for_df
 )
 
-from fpf_modules.qc_v2 import qc_gps_df
-from fpf_modules.normalize import normalize_pitch_xy
+from fpf_modules.qc import qc_gps_df
 
 from fpf_modules.io_utils import (
     hash_session,
@@ -858,17 +857,17 @@ if btn:
                 for fase in fases_target:
                     df_f = df_sync[df_sync[COL_FASE] == fase].copy()
                     phase_present = not df_f.empty
+
                     if not phase_present:
                         # Fase não jogada / não submetida → NA (não é falha de qualidade)
-                        met = compute_metrics_for_df(df_f)  # defaults (0/NaN)
+                        met = compute_metrics_for_df(df_f)
                         qc = qc_gps_df(df_f, phase_present=False)
                     else:
-                        # Normalização canónica do campo (rebase + clip)
-                        df_f, _norm_meta = normalize_pitch_xy(
-                            df_f, dist_x=float(dist_x), dist_y=float(dist_y), flip_x=False, clip=True
-                        )
+                        # Normalização canónica (rebase + clip) para comparabilidade entre campos
+                        df_f = _normalize_xy_canonical(df_f, dist_x=float(dist_x), dist_y=float(dist_y))
                         met = compute_metrics_for_df(df_f)
                         qc = qc_gps_df(df_f, phase_present=True)
+
                     fase_mets[fase] = met
 
                     aud = audit_timebase(df_f, COL_TIME, expected_hz=10.0)
