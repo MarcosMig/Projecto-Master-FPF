@@ -423,6 +423,39 @@ def _sincronizar(temp_files, out_dir: Path):
     return out_files, fases_ordenadas, fases_dict, len(master_df)
 
 
+
+def _normalize_xy_canonical(df: pd.DataFrame, dist_x: float, dist_y: float):
+    """Rebase X/Y para iniciar em 0 e clip para [0,dist_x]/[0,dist_y]."""
+    if df is None or df.empty:
+        return df
+    if "X_UTM" not in df.columns or "Y_UTM" not in df.columns:
+        return df
+
+    out = df.copy()
+
+    x = pd.to_numeric(out["X_UTM"], errors="coerce")
+    y = pd.to_numeric(out["Y_UTM"], errors="coerce")
+
+    if x.notna().any():
+        x_min = float(x.min())
+        out["X_UTM"] = x - x_min
+
+    if y.notna().any():
+        y_min = float(y.min())
+        out["Y_UTM"] = y - y_min
+
+    try:
+        out["X_UTM"] = pd.to_numeric(out["X_UTM"], errors="coerce").clip(
+            lower=0.0, upper=float(dist_x)
+        )
+        out["Y_UTM"] = pd.to_numeric(out["Y_UTM"], errors="coerce").clip(
+            lower=0.0, upper=float(dist_y)
+        )
+    except Exception:
+        pass
+
+    return out
+
 # -------------------------------
 # Main flow
 # -------------------------------
