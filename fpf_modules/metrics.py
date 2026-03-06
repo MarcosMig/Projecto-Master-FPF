@@ -1,10 +1,6 @@
 import numpy as np
 import pandas as pd
 
-# --- Plausibility filters (futebol) ---
-V_HARD_MPS = 11.0   # ~39.6 km/h
-JUMP_HARD_M = 12.0  # salto espacial por amostra
-
 from .constants import (
     ACC_THR,
     COL_TIME,
@@ -34,26 +30,42 @@ def time_to_seconds(series: pd.Series) -> pd.Series:
 
 
 def count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
-    """Conta episódios consecutivos onde mask==True com duração >= min_dur_s."""
-    if len(t) == 0:
+    """Conta episódios consecutivos onde mask==True com duração >= min_dur_s.
+
+    Robusto a:
+      - arrays vazios
+      - comprimentos diferentes entre t e mask
+    """
+    if t is None or mask is None:
         return 0
+    n = min(len(t), len(mask))
+    if n <= 0:
+        return 0
+    t = t[:n]
+    mask = mask[:n]
+
     bouts = 0
     in_bout = False
     t_start = None
-    for i in range(len(t)):
-        if mask[i] and not in_bout:
+
+    for i in range(n):
+        if bool(mask[i]) and not in_bout:
             in_bout = True
-            t_start = t[i]
-        if (not mask[i]) and in_bout:
-            dur = t[i - 1] - t_start if t_start is not None else 0.0
-            if dur >= min_dur_s:
+            t_start = float(t[i])
+
+        if (not bool(mask[i])) and in_bout:
+            # bout termina em i-1
+            dur = float(t[i - 1]) - float(t_start) if t_start is not None else 0.0
+            if dur >= float(min_dur_s):
                 bouts += 1
             in_bout = False
             t_start = None
+
     if in_bout and t_start is not None:
-        dur = t[-1] - t_start
-        if dur >= min_dur_s:
+        dur = float(t[n - 1]) - float(t_start)
+        if dur >= float(min_dur_s):
             bouts += 1
+
     return bouts
 
 
@@ -163,21 +175,12 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
         return out
 
     dist_step = np.hypot(dx, dy)
-
-    # --- Anti-spike filter (plausibilidade) ---
-    # Remove passos com salto espacial excessivo ou velocidade instantânea impossível.
-    v = dist_step / dt
-    mask = (dist_step <= JUMP_HARD_M) & (v <= V_HARD_MPS)
-    if mask.size and mask.mean() < 1.0:
-        dist_step = dist_step[mask]
-        dt = dt[mask]
-        v = v[mask]
-
     dist_total = float(np.nansum(dist_step))
     dur_s = float(np.nansum(dt))
     dur_min = dur_s / 60.0 if dur_s > 0 else 0.0
     m_min = (dist_total / dur_min) if dur_min > 0 else np.nan
 
+    v = dist_step / dt
     vmax = float(np.nanmax(v)) if len(v) else np.nan
 
     # Active time (tempo em movimento)
