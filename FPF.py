@@ -79,6 +79,8 @@ if "df_metrics" not in st.session_state:
     st.session_state.df_metrics = None
 if "report_txt" not in st.session_state:
     st.session_state.report_txt = None
+if "manual_metricas_txt" not in st.session_state:
+    st.session_state.manual_metricas_txt = None
 if "process_done" not in st.session_state:
     st.session_state.process_done = False
 
@@ -295,6 +297,232 @@ def _fmt_match_clock(seconds):
     minutes = total // 60
     secs = total % 60
     return f"{sign}00:{minutes:02d}:{secs:02d}"
+
+
+def _build_metric_groups():
+    return {
+        "Performance": {
+            "Volume externo": ["duracao_min", "dist_m", "m_min"],
+            "Intensidade locomotora": ["vmax_mps", "peak_1m_m_min"],
+            "Alta intensidade": ["hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints"],
+            "Aceleração / travagem": ["n_acc_2_5", "n_dec_3_0"],
+            "Atividade motora": ["active_time_min", "active_pct"],
+        },
+        "Disponibilidade / Integridade": {
+            "Completude do sinal": ["n_points", "pct_time_valid", "n_gaps_gt2s"],
+        },
+        "QC / Confiabilidade": {
+            "QC": ["qc_grade", "qc_flags", "vmax_mps_qc", "n_jumps_gt15m", "n_gaps_gt2s_qc"],
+        },
+    }
+
+
+METRIC_INFO = {
+    "duracao_min": {
+        "categoria": "Performance",
+        "familia": "Volume externo",
+        "unidade": "min",
+        "definicao": "Duração útil da fase em minutos, calculada a partir dos intervalos temporais válidos.",
+        "calculo": "Soma dos dt válidos convertida para minutos.",
+        "interpretacao": "Representa o tempo efetivo de exposição analisado na fase.",
+    },
+    "dist_m": {
+        "categoria": "Performance",
+        "familia": "Volume externo",
+        "unidade": "m",
+        "definicao": "Distância total percorrida pelo atleta na fase.",
+        "calculo": "Soma dos deslocamentos ponto a ponto em X_UTM/Y_UTM.",
+        "interpretacao": "Mede o volume locomotor total; deve ser lida com duração e m/min.",
+    },
+    "m_min": {
+        "categoria": "Performance",
+        "familia": "Volume externo",
+        "unidade": "m/min",
+        "definicao": "Distância relativa por minuto.",
+        "calculo": "dist_m dividido por duracao_min.",
+        "interpretacao": "Resume a densidade locomotora da fase.",
+    },
+    "vmax_mps": {
+        "categoria": "Performance",
+        "familia": "Intensidade locomotora",
+        "unidade": "m/s",
+        "definicao": "Velocidade máxima instantânea estimada na fase.",
+        "calculo": "Máximo de distância por intervalo de tempo entre amostras válidas.",
+        "interpretacao": "Capta o pico de velocidade do atleta na fase.",
+    },
+    "peak_1m_m_min": {
+        "categoria": "Performance",
+        "familia": "Intensidade locomotora",
+        "unidade": "m/min",
+        "definicao": "Pico locomotor em janela contínua de 1 minuto.",
+        "calculo": "Maior distância acumulada em qualquer janela de 60 s.",
+        "interpretacao": "Resume o período mais exigente da fase.",
+    },
+    "hsr_dist_m": {
+        "categoria": "Performance",
+        "familia": "Alta intensidade",
+        "unidade": "m",
+        "definicao": "Distância percorrida acima do limiar de high-speed running.",
+        "calculo": f"Soma da distância quando v >= {HSR_MPS:.1f} m/s.",
+        "interpretacao": "Quantifica exposição a corrida de alta velocidade.",
+    },
+    "hsr_pct": {
+        "categoria": "Performance",
+        "familia": "Alta intensidade",
+        "unidade": "%",
+        "definicao": "Percentagem da distância total realizada em HSR.",
+        "calculo": "hsr_dist_m dividido por dist_m, multiplicado por 100.",
+        "interpretacao": "Mostra o peso relativo da alta velocidade no volume total.",
+    },
+    "sprint_dist_m": {
+        "categoria": "Performance",
+        "familia": "Alta intensidade",
+        "unidade": "m",
+        "definicao": "Distância percorrida acima do limiar de sprint.",
+        "calculo": f"Soma da distância quando v >= {SPRINT_MPS:.1f} m/s.",
+        "interpretacao": "Quantifica a exposição a corrida de sprint.",
+    },
+    "n_sprints": {
+        "categoria": "Performance",
+        "familia": "Alta intensidade",
+        "unidade": "contagem",
+        "definicao": "Número de episódios de sprint.",
+        "calculo": f"Conta bouts consecutivos com v >= {SPRINT_MPS:.1f} m/s e duração mínima de {SPRINT_BOUT_MIN_S:.1f} s.",
+        "interpretacao": "Evita contar picos isolados como sprint real.",
+    },
+    "n_acc_2_5": {
+        "categoria": "Performance",
+        "familia": "Aceleração / travagem",
+        "unidade": "contagem",
+        "definicao": "Número de instantes com aceleração acima do threshold operacional.",
+        "calculo": f"Conta amostras com aceleração >= {ACC_THR:.1f} m/s².",
+        "interpretacao": "Reflete a exigência de ações explosivas positivas.",
+    },
+    "n_dec_3_0": {
+        "categoria": "Performance",
+        "familia": "Aceleração / travagem",
+        "unidade": "contagem",
+        "definicao": "Número de instantes com desaceleração abaixo do threshold operacional.",
+        "calculo": f"Conta amostras com desaceleração <= {DEC_THR:.1f} m/s².",
+        "interpretacao": "Reflete a exigência de travagem e controlo neuromuscular.",
+    },
+    "active_time_min": {
+        "categoria": "Performance",
+        "familia": "Atividade motora",
+        "unidade": "min",
+        "definicao": "Tempo ativo em movimento durante a fase.",
+        "calculo": "Soma do tempo em que a velocidade estimada é >= 0.5 m/s.",
+        "interpretacao": "Distingue exposição total de tempo efetivamente ativo.",
+    },
+    "active_pct": {
+        "categoria": "Performance",
+        "familia": "Atividade motora",
+        "unidade": "%",
+        "definicao": "Percentagem do tempo da fase em atividade motora.",
+        "calculo": "active_time_min dividido pela duração da fase, multiplicado por 100.",
+        "interpretacao": "Permite comparar fases com diferente tempo de inatividade.",
+    },
+    "n_points": {
+        "categoria": "Disponibilidade / Integridade",
+        "familia": "Completude do sinal",
+        "unidade": "contagem",
+        "definicao": "Número de pontos válidos usados no cálculo das métricas.",
+        "calculo": "Conta linhas com Time, X_UTM e Y_UTM válidos.",
+        "interpretacao": "Quanto maior, mais robusta tende a ser a estimativa.",
+    },
+    "pct_time_valid": {
+        "categoria": "Disponibilidade / Integridade",
+        "familia": "Completude do sinal",
+        "unidade": "%",
+        "definicao": "Percentagem de amostras válidas na fase.",
+        "calculo": "Proporção de linhas com tempo e coordenadas válidos, multiplicada por 100.",
+        "interpretacao": "Resume a completude do sinal disponível para cálculo.",
+    },
+    "n_gaps_gt2s": {
+        "categoria": "Disponibilidade / Integridade",
+        "familia": "Completude do sinal",
+        "unidade": "contagem",
+        "definicao": "Número de gaps temporais superiores a 2 segundos.",
+        "calculo": "Conta intervalos dt > 2.0 s entre amostras válidas.",
+        "interpretacao": "Sinaliza perdas relevantes de continuidade temporal.",
+    },
+    "qc_grade": {
+        "categoria": "QC / Confiabilidade",
+        "familia": "QC",
+        "unidade": "categórica",
+        "definicao": "Classificação global da qualidade do sinal da fase.",
+        "calculo": "Resultado das regras de QC: PASS, WARN, FAIL ou NA.",
+        "interpretacao": "Apoia a decisão de aceitar, rever ou excluir a fase.",
+    },
+    "qc_flags": {
+        "categoria": "QC / Confiabilidade",
+        "familia": "QC",
+        "unidade": "texto",
+        "definicao": "Lista de flags de qualidade atribuídas à fase.",
+        "calculo": "Concatenação dos alertas ativados pelo motor de QC.",
+        "interpretacao": "Explica por que razão a fase recebeu o qc_grade observado.",
+    },
+    "vmax_mps_qc": {
+        "categoria": "QC / Confiabilidade",
+        "familia": "QC",
+        "unidade": "m/s",
+        "definicao": "Velocidade máxima observada para verificação de plausibilidade.",
+        "calculo": "Máximo de velocidade no módulo de QC.",
+        "interpretacao": "Ajuda a identificar picos implausíveis de velocidade.",
+    },
+    "n_jumps_gt15m": {
+        "categoria": "QC / Confiabilidade",
+        "familia": "QC",
+        "unidade": "contagem",
+        "definicao": "Número de saltos espaciais abruptos detetados entre amostras.",
+        "calculo": "Conta deslocamentos excessivos consecutivos segundo o threshold interno de QC.",
+        "interpretacao": "Ajuda a detetar teleports, ruído ou erro de posicionamento.",
+    },
+    "n_gaps_gt2s_qc": {
+        "categoria": "QC / Confiabilidade",
+        "familia": "QC",
+        "unidade": "contagem",
+        "definicao": "Número de gaps >2 s usado pelo módulo de QC.",
+        "calculo": "Conta intervalos temporais superiores a 2.0 s para classificação QC.",
+        "interpretacao": "Complementa a leitura da continuidade temporal no contexto de confiabilidade.",
+    },
+}
+
+
+def _build_manual_metricas_txt():
+    lines = []
+    lines.append("FPF Performance Hub — Manual de Métricas GPS")
+    lines.append("=" * 72)
+    lines.append("")
+    lines.append("Enquadramento")
+    lines.append("- Dados GPS processados por atleta e por fase: Warm-Up, 1P, 2P e Total.")
+    lines.append("- Organização das métricas em três blocos: Performance, Disponibilidade / Integridade e QC / Confiabilidade.")
+    lines.append(
+        f"- Thresholds operacionais atuais: HSR >= {HSR_MPS:.1f} m/s | Sprint >= {SPRINT_MPS:.1f} m/s | "
+        f"Acc >= {ACC_THR:.1f} m/s² | Dec <= {DEC_THR:.1f} m/s² | Sprint bout mínimo >= {SPRINT_BOUT_MIN_S:.1f} s."
+    )
+    lines.append("")
+
+    groups = _build_metric_groups()
+    for categoria, familias in groups.items():
+        lines.append(categoria)
+        lines.append("-" * len(categoria))
+        for familia, cols in familias.items():
+            lines.append(f"{familia}")
+            for col in cols:
+                info = METRIC_INFO[col]
+                lines.append(f"  • {col}")
+                lines.append(f"    Unidade: {info['unidade']}")
+                lines.append(f"    Definição: {info['definicao']}")
+                lines.append(f"    Cálculo: {info['calculo']}")
+                lines.append(f"    Interpretação: {info['interpretacao']}")
+            lines.append("")
+
+    lines.append("Notas metodológicas")
+    lines.append("- Total resulta da agregação das fases Warm-Up, 1P e 2P no motor atual.")
+    lines.append("- Métricas de Performance devem ser interpretadas em conjunto com Disponibilidade / Integridade e QC / Confiabilidade.")
+    lines.append("- Flags ou grades QC desfavoráveis podem justificar revisão manual ou exclusão analítica da fase.")
+TEMPJOINMARK
 
 
 def _normalize_xy_canonical(df: pd.DataFrame, dist_x: float, dist_y: float):
@@ -909,6 +1137,7 @@ if btn:
             df_metrics = pd.DataFrame(metrics_rows)
             df_time_audit = pd.DataFrame(audit_time_rows)
             st.session_state.df_time_audit = df_time_audit
+            st.session_state.manual_metricas_txt = _build_manual_metricas_txt()
 
             status.update(label="Construção do relatório...", state="running")
             # Build report (rotação mantida)
@@ -1117,17 +1346,49 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     else:
         df_display = df_display.sort_values(by=[col_inicio])
 
-    # 5️⃣ Mostrar
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
+    # 5️⃣ Organização vertical por blocos e famílias
+    id_cols = [c for c in [col_inicio, "fase"] if c in df_display.columns]
+    metric_groups = _build_metric_groups()
 
-    # 6️⃣ Download coerente com o display
+    ordered_metric_cols = []
+    for familias in metric_groups.values():
+        for cols in familias.values():
+            ordered_metric_cols.extend([c for c in cols if c in df_display.columns])
+
+    df_export = df_display[id_cols + ordered_metric_cols].copy()
+
+    st.subheader("Métricas organizadas por contexto")
+    for categoria, familias in metric_groups.items():
+        st.markdown(f"### {categoria}")
+        for familia, cols in familias.items():
+            cols_presentes = [c for c in cols if c in df_display.columns]
+            if not cols_presentes:
+                continue
+            st.markdown(f"**{familia}**")
+            st.dataframe(
+                df_display[id_cols + cols_presentes],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # 6️⃣ Downloads
     st.download_button(
         "⬇️ Download Métricas (.csv)",
-        data=df_display.to_csv(index=False).encode("utf-8"),
+        data=df_export.to_csv(index=False).encode("utf-8"),
         file_name="metricas_individuais_FPF.csv",
         mime="text/csv",
         use_container_width=True,
     )
+
+    manual_metricas_txt = st.session_state.get("manual_metricas_txt")
+    if manual_metricas_txt:
+        st.download_button(
+            "⬇️ Download Manual de Métricas (.txt)",
+            data=manual_metricas_txt.encode("utf-8"),
+            file_name="manual_metricas_FPF.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
 
     # Auditoria de timestamp (diagnóstico)
     if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
@@ -1153,5 +1414,6 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     if st.button("🧹 Limpar resultados", use_container_width=True):
         st.session_state.df_metrics = None
         st.session_state.report_txt = None
+        st.session_state.manual_metricas_txt = None
         st.session_state.process_done = False
         st.rerun()
