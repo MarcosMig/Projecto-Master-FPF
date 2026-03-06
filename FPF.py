@@ -669,7 +669,8 @@ try:
             f_campo, int(epsg_used)
         )
 
-    estadio, cidade, pais = reverse_geocode_place_city_country(clat, clon)
+    cidade, pais = _reverse_geocode_city_country(clat, clon)
+    estadio = None
 
 except Exception as e:
     st.error(f"❌ Erro na calibração do campo: {e}")
@@ -686,15 +687,15 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
 
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
-# Campo
-_, cidade_campo, pais_campo = reverse_geocode_place_city_country(clat, clon)
+# Campo (usa helper local cacheado, que era o comportamento funcional anterior)
+cidade_campo, pais_campo = _reverse_geocode_city_country(clat, clon)
 
 # Atletas (centro estimado)
 alat, alon = get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
 
 cidade_atl, pais_atl = None, None
 if alat is not None and alon is not None:
-    _, cidade_atl, pais_atl = reverse_geocode_place_city_country(alat, alon)
+    cidade_atl, pais_atl = _reverse_geocode_city_country(alat, alon)
 # ----- Campo -----
 campo_local = ", ".join([p for p in [cidade_campo, pais_campo] if p]) or "—"
 
@@ -889,7 +890,15 @@ if btn:
 
                 for fase in fases_target:
                     df_f = df_sync[df_sync[COL_FASE] == fase].copy()
-                    phase_present = not df_f.empty
+
+                    # Em ficheiros sincronizados, a fase pode existir na grelha temporal
+                    # mesmo sem participação real do atleta. Avaliar presença por XY válidos.
+                    has_xy = (
+                        ("X_UTM" in df_f.columns) and ("Y_UTM" in df_f.columns) and
+                        (pd.to_numeric(df_f["X_UTM"], errors="coerce").notna() &
+                         pd.to_numeric(df_f["Y_UTM"], errors="coerce").notna()).any()
+                    )
+                    phase_present = bool(has_xy)
 
                     if not phase_present:
                         # Fase não jogada / não submetida → NA (não é falha de qualidade)
