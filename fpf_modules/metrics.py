@@ -1,4 +1,9 @@
 import numpy as np
+
+# --- Anti-spike plausibility caps (futebol) ---
+V_HARD_MPS = 11.0   # ~39.6 km/h
+JUMP_HARD_M = 12.0  # salto espacial por amostra
+
 import pandas as pd
 
 from .constants import (
@@ -165,6 +170,15 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     m_min = (dist_total / dur_min) if dur_min > 0 else np.nan
 
     v = dist_step / dt
+
+    # --- filtro anti-spike (plausibilidade) ---
+    # remove passos com salto espacial excessivo ou velocidade instantânea impossível
+    mask_plausible = (dt > 0) & (dist_step <= JUMP_HARD_M) & (v <= V_HARD_MPS)
+    if mask_plausible.size and (mask_plausible.mean() < 1.0):
+        dist_step = dist_step[mask_plausible]
+        dt = dt[mask_plausible]
+        v = v[mask_plausible]
+
     vmax = float(np.nanmax(v)) if len(v) else np.nan
 
     # Active time (tempo em movimento)
