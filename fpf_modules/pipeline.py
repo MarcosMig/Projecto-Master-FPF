@@ -10,16 +10,15 @@ from .io_utils import get_atleta_id, infer_fase, read_csv_upload
 from .metrics import time_to_seconds
 
 
-def _format_clock(seconds: float) -> str:
+def _format_clock_mmss(seconds: float) -> str:
     if pd.isna(seconds):
         return ""
     total = int(round(float(seconds)))
     sign = "-" if total < 0 else ""
     total = abs(total)
-    h = total // 3600
-    m = (total % 3600) // 60
-    s = total % 60
-    return f"{sign}{h:02d}:{m:02d}:{s:02d}"
+    minutes = total // 60
+    secs = total % 60
+    return f"{sign}00:{minutes:02d}:{secs:02d}"
 
 
 def _build_event_clock(fases_dict_s: dict) -> dict:
@@ -31,6 +30,7 @@ def _build_event_clock(fases_dict_s: dict) -> dict:
         extra1 = max(0.0, dur1 - 45.0 * 60.0)
         event_clock["1P"] = {
             "start_s": 0.0,
+            "reg_end_s": 45.0 * 60.0,
             "end_s": 45.0 * 60.0 + extra1,
             "duration_s": dur1,
             "extra_s": extra1,
@@ -40,10 +40,10 @@ def _build_event_clock(fases_dict_s: dict) -> dict:
         s2, e2 = fases_dict_s["2P"]
         dur2 = max(0.0, float(e2 - s2))
         extra2 = max(0.0, dur2 - 45.0 * 60.0)
-        start_2p = event_clock.get("1P", {}).get("end_s", 45.0 * 60.0)
         event_clock["2P"] = {
-            "start_s": start_2p,
-            "end_s": start_2p + 45.0 * 60.0 + extra2,
+            "start_s": 45.0 * 60.0,
+            "reg_end_s": 90.0 * 60.0,
+            "end_s": 90.0 * 60.0 + extra2,
             "duration_s": dur2,
             "extra_s": extra2,
         }
@@ -53,6 +53,7 @@ def _build_event_clock(fases_dict_s: dict) -> dict:
         durw = max(0.0, float(ew - sw))
         event_clock["Warm-Up"] = {
             "start_s": -durw,
+            "reg_end_s": 0.0,
             "end_s": 0.0,
             "duration_s": durw,
             "extra_s": 0.0,
@@ -163,7 +164,6 @@ def sincronizar(temp_files, out_dir: Path):
     for f in temp_files:
         df_atl = pd.read_csv(f, sep=";")
         df_sync = pd.merge(master_df[[COL_TIME, "__time_s"]], df_atl, on=COL_TIME, how="left")
-        df_sync = pd.merge(master_df, df_atl, on=COL_TIME, how="left")
         aid = str(df_atl["Atleta_ID"].iloc[0]) if "Atleta_ID" in df_atl.columns else f.stem.replace("T_", "")
         df_sync["Atleta_ID"] = aid
 
@@ -172,16 +172,32 @@ def sincronizar(temp_files, out_dir: Path):
             df_sync.loc[mask, COL_FASE] = fase
 
         df_sync["Time_Evento_s"] = np.nan
+        df_sync["Periodo_Jogo"] = pd.NA
         for fase, win in fases_dict_s.items():
             if fase not in event_clock:
                 continue
             t_s, t_e = win
             if not np.isfinite(t_s) or not np.isfinite(t_e):
                 continue
-            mask = df_sync[COL_FASE] == fase
-            df_sync.loc[mask, "Time_Evento_s"] = event_clock[fase]["start_s"] + (df_sync.loc[mask, "__time_s"] - t_s)
 
-        df_sync["Time_Evento"] = df_sync["Time_Evento_s"].map(_format_clock)
+            mask = df_sync[COL_FASE] == fase
+            rel_s = df_sync.loc[mask, "__time_s"] - t_s
+            abs_s = event_clock[fase]["start_s"] + rel_s
+            df_sync.loc[mask, "Time_Evento_s"] = abs_s
+
+            if fase == "1P":
+                df_sync.loc[mask & (df_sync["Time_Evento_s"] <= 45.0 * 60.0), "Periodo_Jogo"] = "1P"
+                df_sync.loc[mask & (df_sync["Time_Evento_s"] > 45.0 * 60.0), "Periodo_Jogo"] = "ET_1P"
+            elif fase == "2P":
+                df_sync.loc[mask & (df_sync["Time_Evento_s"] <= 90.0 * 60.0), "Periodo_Jogo"] = "2P"
+                df_sync.loc[mask & (df_sync["Time_Evento_s"] > 90.0 * 60.0), "Periodo_Jogo"] = "ET_2P"
+            elif fase == "Warm-Up":
+                df_sync.loc[mask, "Periodo_Jogo"] = "Warm-Up"
+
+        df_sync["Time_Evento"] = df_sync["Time_Evento_s"].map(_format_clock_mmss)
+        df_sync["Minuto_Jogo"] = np.floor(df_sync["Time_Evento_s"] / 60.0)
+        df_sync.loc[df_sync["Time_Evento_s"].isna(), "Minuto_Jogo"] = np.nan
+        df_sync["Minuto_Jogo"] = df_sync["Minuto_Jogo"].astype("Int64")
         df_sync = df_sync.drop(columns=["__time_s"])
 
         out_path = out_dir / f"Player_{aid}_SYNC.csv"
@@ -191,4 +207,3 @@ def sincronizar(temp_files, out_dir: Path):
     ordem_fases = {"Warm-Up": 0, "1P": 1, "2P": 2}
     fases_ordenadas = sorted(fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
     return out_files, fases_ordenadas, fases_dict, len(master_df), event_clock
-    return out_files, fases_ordenadas, fases_dict, len(master_df)
