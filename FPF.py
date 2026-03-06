@@ -276,8 +276,7 @@ st.title("Validação de Dados")
 
 with st.sidebar:
     st.markdown(
-        f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {
-            st.session_state.login_user} | FPF</div>",
+        f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
         unsafe_allow_html=True
     )
     st.header("Dados da Sessão")
@@ -1129,11 +1128,9 @@ if btn:
 
             report_lines.append("Dados da Sessão")
             report_lines.append(
-                f"  Data: {data_sessao.strftime(
-                    '%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}"
+                f"Data: {data_sessao.strftime('%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}"
             )
-            report_lines.append(f"  Seleção: {selecao} | Género: {
-                                genero} | Contexto: {contexto}")
+            report_lines.append(f"  Seleção: {selecao} | Género: {genero} | Contexto: {contexto}")
             if contexto == "Jogo":
                 vs_txt = adversario.strip()
                 if vs_txt:
@@ -1145,27 +1142,23 @@ if btn:
             report_lines.append(f"EPSG (UTM): {epsg_used}")
             report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
             report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
-            report_lines.append(f"Rotação aplicada:    {
-                                rot_deg:.2f}° (alinhamento BL→BR com eixo X)")
+            report_lines.append(f"Rotação aplicada:    {rot_deg:.2f}° (alinhamento BL→BR com eixo X)")
 
             report_lines.append("-" * 70)
             report_lines.append("Validação geográfica")
             report_lines.append(
-                f"  Raio: {raio_validacao_m:.0f} m | Amostra: {
-                    amostra_geo_n} linhas/atleta | % OK: {pct_ok*100:.0f}% "
+                f"  Raio: {raio_validacao_m:.0f} m | Amostra: { amostra_geo_n} linhas/atleta | % OK: {pct_ok*100:.0f}% "
                 f"(mínimo {min_pct_atletas_ok*100:.0f}%)"
             )
             report_lines.append(
                 f"  Dentro do raio: {len({a for a, _ in ok_list})} atletas | "
-                f"Fora: {len({a for a, _ in fora_list})} atletas | Erros: {
-                    len(geo_errors)}"
+                f"Fora: {len({a for a, _ in fora_list})} atletas | Erros: {len(geo_errors)}"
             )
 
             report_lines.append("-" * 70)
             report_lines.append("Auditoria de atletas (submissão)")
             report_lines.append(
-                f"  Atletas totais: {
-                    len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
+                f"  Atletas totais: {len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
             )
 
             report_lines.append("-" * 70)
@@ -1216,8 +1209,7 @@ if btn:
                 f"Acc ≥ {ACC_THR:.1f} m/s² | Dec ≤ {DEC_THR:.1f} m/s²"
             )
             report_lines.append(f"  Session ID (hex): {session_id_hex}")
-            report_lines.append(f"  Session fingerprint (sha1): {
-                                session_fingerprint}")
+            report_lines.append(f"  Session fingerprint (sha1): {session_fingerprint}")
 
             if df_metrics is not None and not df_metrics.empty:
                 report_lines.append("  (Métricas calculadas com sucesso)")
@@ -1226,8 +1218,7 @@ if btn:
 
             report_lines.append("-" * 70)
             report_lines.append("Qualidade do Sinal GPS")
-            report_lines.append(
-                f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
+            report_lines.append(f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
 
             # Auditoria de timestamp (resumo)
             try:
