@@ -10,6 +10,18 @@ from .io_utils import get_atleta_id, infer_fase, read_csv_upload
 from .metrics import time_to_seconds
 
 
+HR_CANDIDATE_COLS = ["HR_bpm", "HR", "HeartRate", "Heart Rate", "Heart_Rate", "BPM", "Pulse"]
+
+
+def _detect_hr_col(df: pd.DataFrame):
+    if df is None or df.empty:
+        return None
+    for col in HR_CANDIDATE_COLS:
+        if col in df.columns:
+            return col
+    return None
+
+
 def _format_clock_mmss(seconds: float) -> str:
     if pd.isna(seconds):
         return ""
@@ -94,6 +106,10 @@ def processar_atletas_para_temp(
                     issues.append((aid, uf.name, "Sem colunas Lat/Lon"))
                     continue
 
+                hr_col = _detect_hr_col(df)
+                if hr_col:
+                    df["HR_bpm"] = pd.to_numeric(df[hr_col], errors="coerce")
+
                 lon = df[COL_LON].astype(float)
                 lat = df[COL_LAT].astype(float)
                 ux, uy = trans.transform(lon.values, lat.values)
@@ -119,7 +135,10 @@ def processar_atletas_para_temp(
 
                 df[COL_FASE] = fase_n
                 df["Atleta_ID"] = aid
-                atleta_data.append(df[[COL_TIME, "Atleta_ID", COL_FASE, COL_LAT, COL_LON, "X_UTM", "Y_UTM"]])
+                cols_keep = [COL_TIME, "Atleta_ID", COL_FASE, COL_LAT, COL_LON, "X_UTM", "Y_UTM"]
+                if "HR_bpm" in df.columns:
+                    cols_keep.append("HR_bpm")
+                atleta_data.append(df[cols_keep])
             except Exception as e:
                 issues.append((aid, uf.name, f"Erro a processar: {e}"))
 
