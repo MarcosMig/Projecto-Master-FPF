@@ -125,6 +125,26 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
         })
 
         sample_df["phase_id"] = sample_df["fase"].map(PHASE_MAP)
+
+        # Derivadas analíticas para evitar recálculo posterior
+        sample_df["x_norm"] = pd.to_numeric(sample_df["x_utm"], errors="coerce")
+        sample_df["y_norm"] = pd.to_numeric(sample_df["y_utm"], errors="coerce")
+        sample_df["time_evento_s"] = pd.to_numeric(sample_df["time_evento_s"], errors="coerce")
+
+        sample_df = sample_df.sort_values(["phase_id", "time_evento_s", "time"], kind="stable").reset_index(drop=True)
+
+        dt = sample_df.groupby("phase_id", dropna=False)["time_evento_s"].diff()
+        dx = sample_df.groupby("phase_id", dropna=False)["x_norm"].diff()
+        dy = sample_df.groupby("phase_id", dropna=False)["y_norm"].diff()
+        dist = np.sqrt(dx**2 + dy**2)
+
+        sample_df["speed_mps"] = dist / dt
+        dv = sample_df.groupby("phase_id", dropna=False)["speed_mps"].diff()
+        sample_df["acc_mps2"] = dv / dt
+
+        invalid_dt = dt <= 0
+        sample_df.loc[invalid_dt.fillna(True), ["speed_mps", "acc_mps2"]] = np.nan
+
         sample_frames.append(sample_df)
 
         fases_presentes = sorted([f for f in sample_df["fase"].dropna().astype(str).unique().tolist() if f in ["Warm-Up", "1P", "2P"]], key=lambda x: PHASE_MAP.get(x, 99))
@@ -280,16 +300,6 @@ with st.sidebar:
         f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
         unsafe_allow_html=True
     )
-
-    st.header("Dados de ATLETAS")
-    st.caption(
-        "CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
-    )
-    f_atleta = st.file_uploader(
-        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
-    )
-    st.divider()
-
     st.header("Dados da Sessão")
     # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
     estadio = None
@@ -327,6 +337,12 @@ with st.sidebar:
 
     f_campo = st.file_uploader(
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
+    )
+    st.caption(
+        "Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
+    )
+    f_atleta = st.file_uploader(
+        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
 
 st.divider()
