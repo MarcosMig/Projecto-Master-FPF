@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-FPF UTM Engine v11.1 (fix indent + report + metrics)
+FPF UTM Engine v16 (parquet downloads)
 Autor: Marcos (base) + ajustes de estabilidade/indentação
 """
 
@@ -146,7 +146,7 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
     return df_samples, df_athlete_session
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="FPF UTM Engine v16", layout="wide", initial_sidebar_state="collapsed")
 if "auth" not in st.session_state:
     st.session_state.auth = False
 if "login_user" not in st.session_state:
@@ -169,6 +169,14 @@ if "manual_metricas_txt" not in st.session_state:
     st.session_state.manual_metricas_txt = None
 if "process_done" not in st.session_state:
     st.session_state.process_done = False
+if "df_perf" not in st.session_state:
+    st.session_state.df_perf = None
+if "df_qc" not in st.session_state:
+    st.session_state.df_qc = None
+if "df_samples" not in st.session_state:
+    st.session_state.df_samples = None
+if "df_athlete_session" not in st.session_state:
+    st.session_state.df_athlete_session = None
 
 # --- Persistência para 'Pick no mapa' (cantos do campo) ---
 if "pick_corners" not in st.session_state:
@@ -496,6 +504,18 @@ def _normalize_xy_canonical(df: pd.DataFrame, dist_x: float, dist_y: float):
         pass
 
     return out
+
+
+def _df_to_parquet_bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    df.to_parquet(buf, index=False)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _file_to_bytes(pathlike) -> bytes:
+    with open(pathlike, "rb") as f:
+        return f.read()
 
 # -------------------------------
 # Main flow
@@ -1132,6 +1152,11 @@ if btn:
             append_dedup_parquet(df_samples, str(Path(CLEANDATA_DIR) / "samples.parquet"), ["session_sk", "athlete_sk", "phase_id", "time"])
             append_dedup_parquet(df_athlete_session, str(Path(CLEANDATA_DIR) / "athlete_session.parquet"), ["session_sk", "athlete_sk"])
 
+            st.session_state.df_perf = df_perf
+            st.session_state.df_qc = df_qc
+            st.session_state.df_samples = df_samples
+            st.session_state.df_athlete_session = df_athlete_session
+
             df_time_audit = pd.DataFrame(audit_time_rows)
             st.session_state.df_time_audit = df_time_audit
             st.session_state.manual_metricas_txt = _build_manual_metricas_txt()
@@ -1369,6 +1394,101 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
         use_container_width=True,
     )
 
+    st.subheader("Downloads Parquet")
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("**Sessão atual**")
+
+        if st.session_state.get("df_perf") is not None and not st.session_state.df_perf.empty:
+            st.download_button(
+                "⬇️ Performance sessão (.parquet)",
+                data=_df_to_parquet_bytes(st.session_state.df_perf),
+                file_name="performance_metrics_session.parquet",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key="dl_perf_session_parquet",
+            )
+
+        if st.session_state.get("df_qc") is not None and not st.session_state.df_qc.empty:
+            st.download_button(
+                "⬇️ Quality sessão (.parquet)",
+                data=_df_to_parquet_bytes(st.session_state.df_qc),
+                file_name="quality_metrics_session.parquet",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key="dl_qc_session_parquet",
+            )
+
+        if st.session_state.get("df_samples") is not None and not st.session_state.df_samples.empty:
+            st.download_button(
+                "⬇️ Samples sessão (.parquet)",
+                data=_df_to_parquet_bytes(st.session_state.df_samples),
+                file_name="samples_session.parquet",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key="dl_samples_session_parquet",
+            )
+
+        if st.session_state.get("df_athlete_session") is not None and not st.session_state.df_athlete_session.empty:
+            st.download_button(
+                "⬇️ Athlete session (.parquet)",
+                data=_df_to_parquet_bytes(st.session_state.df_athlete_session),
+                file_name="athlete_session_session.parquet",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key="dl_athlete_session_parquet",
+            )
+
+    with c2:
+        st.markdown("**Base acumulada**")
+
+        perf_path = Path(CLEANDATA_DIR) / "performance_metrics.parquet"
+        qc_path = Path(CLEANDATA_DIR) / "quality_metrics.parquet"
+        samples_path = Path(CLEANDATA_DIR) / "samples.parquet"
+        athlete_session_path = Path(CLEANDATA_DIR) / "athlete_session.parquet"
+
+        if perf_path.exists():
+            st.download_button(
+                "⬇️ Performance base (.parquet)",
+                data=_file_to_bytes(perf_path),
+                file_name="performance_metrics.parquet",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key="dl_perf_base_parquet",
+            )
+
+        if qc_path.exists():
+            st.download_button(
+                "⬇️ Quality base (.parquet)",
+                data=_file_to_bytes(qc_path),
+                file_name="quality_metrics.parquet",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key="dl_qc_base_parquet",
+            )
+
+        if samples_path.exists():
+            st.download_button(
+                "⬇️ Samples base (.parquet)",
+                data=_file_to_bytes(samples_path),
+                file_name="samples.parquet",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key="dl_samples_base_parquet",
+            )
+
+        if athlete_session_path.exists():
+            st.download_button(
+                "⬇️ Athlete session base (.parquet)",
+                data=_file_to_bytes(athlete_session_path),
+                file_name="athlete_session.parquet",
+                mime="application/octet-stream",
+                use_container_width=True,
+                key="dl_athlete_session_base_parquet",
+            )
+
     manual_metricas_txt = st.session_state.get("manual_metricas_txt")
     if manual_metricas_txt:
         st.download_button(
@@ -1404,5 +1524,9 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
         st.session_state.df_metrics = None
         st.session_state.report_txt = None
         st.session_state.manual_metricas_txt = None
+        st.session_state.df_perf = None
+        st.session_state.df_qc = None
+        st.session_state.df_samples = None
+        st.session_state.df_athlete_session = None
         st.session_state.process_done = False
         st.rerun()
