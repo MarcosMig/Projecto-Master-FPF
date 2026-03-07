@@ -280,6 +280,16 @@ with st.sidebar:
         f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
         unsafe_allow_html=True
     )
+
+    st.header("Dados de ATLETAS")
+    st.caption(
+        "CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
+    )
+    f_atleta = st.file_uploader(
+        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
+    )
+    st.divider()
+
     st.header("Dados da Sessão")
     # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
     estadio = None
@@ -317,12 +327,6 @@ with st.sidebar:
 
     f_campo = st.file_uploader(
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
-    )
-    st.caption(
-        "Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
-    )
-    f_atleta = st.file_uploader(
-        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
 
 st.divider()
@@ -491,8 +495,7 @@ def _normalize_xy_canonical(df: pd.DataFrame, dist_x: float, dist_y: float):
 # Main flow
 # -------------------------------
 if not f_atleta:
-    st.info("👋 Carrega os ficheiros de ATLETAS na barra lateral para iniciar.")
-    st.stop()
+    st.warning("⚠️ Ainda não carregaste ficheiros de atletas. Algumas funcionalidades podem não estar disponíveis.")
 
 have_upload_corners = bool(f_campo)
 have_picked_corners = st.session_state.get("pts_gps_picked") is not None
@@ -518,10 +521,14 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
         unsafe_allow_html=True,
     )
 
-    alat0, alon0 = get_atletas_centroid_latlon(
-        f_atleta, amostra_n=amostra_geo_n)
+    if f_atleta:
+        alat0, alon0 = get_atletas_centroid_latlon(
+            f_atleta, amostra_n=amostra_geo_n)
+    else:
+        alat0, alon0 = None, None
+
     if alat0 is None or alon0 is None:
-        pts_fallback = sample_athlete_track_latlon(f_atleta, max_points=10)
+        pts_fallback = sample_athlete_track_latlon(f_atleta, max_points=10) if f_atleta else []
         if pts_fallback:
             alat0, alon0 = pts_fallback[0]
         else:
@@ -849,6 +856,10 @@ report_txt = st.session_state.report_txt
 
 if btn:
     with st.status("A iniciar processamento...", expanded=True) as status:
+        if not f_atleta:
+            status.update(label="Faltam ficheiros de atletas. Processamento interrompido.", state="error")
+            st.error("Carrega os ficheiros de atletas antes de processar.")
+            st.stop()
         if not passed_geo:
             status.update(
                 label="Validação geográfica falhou. Processamento interrompido.", state="error")
