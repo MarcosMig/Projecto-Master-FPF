@@ -17,7 +17,6 @@ import requests
 import re
 import io
 
-# testing
 from streamlit_folium import st_folium
 from scipy.signal import savgol_filter
 
@@ -25,7 +24,7 @@ from scipy.signal import savgol_filter
 from fpf_modules.constants import (
     HSR_MPS, SPRINT_MPS, ACC_THR, DEC_THR, SPRINT_BOUT_MIN_S, ENGINE_VERSION,
     COL_LAT, COL_LON, COL_TIME, COL_FASE,
-    SELECOES_OPCOES, CLEANDATA_DIR
+    SELECOES_OPCOES
 )
 
 from fpf_modules.metrics import (
@@ -63,110 +62,13 @@ from fpf_modules.pipeline import (
 
 from fpf_modules.data_manager import (
     save_field_to_parquet,
-    read_field_from_parquet,
-    append_dedup_parquet,
-    resolve_athlete_sk,
-    resolve_session_sk,
+    read_field_from_parquet
 )
 
 GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 
-
-PHASE_MAP = {
-    "Warm-Up": 0,
-    "1P": 1,
-    "2P": 2,
-    "Total": 3,
-}
-
-HR_CANDIDATE_COLS = [
-    "HR_bpm", "HR", "HeartRate", "Heart Rate", "Heart_Rate", "BPM", "Pulse"
-]
-
-
-def _detect_hr_col(df: pd.DataFrame):
-    if df is None or df.empty:
-        return None
-    for col in HR_CANDIDATE_COLS:
-        if col in df.columns:
-            return col
-    return None
-
-
-def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
-    sample_frames = []
-    athlete_session_rows = []
-    processed_at = pd.Timestamp.utcnow()
-
-    for pth in out_files:
-        df_sync = pd.read_csv(pth, sep=";")
-        if df_sync.empty:
-            continue
-
-        athlete_id = str(df_sync["Atleta_ID"].dropna().iloc[0]) if "Atleta_ID" in df_sync.columns and df_sync["Atleta_ID"].dropna().any() else Path(pth).stem
-        athlete_sk = athlete_map.get(str(athlete_id))
-        hr_col = _detect_hr_col(df_sync)
-
-        sample_df = pd.DataFrame({
-            "session_sk": session_sk,
-            "athlete_sk": athlete_sk,
-            "atleta_id": str(athlete_id),
-            "fase": df_sync[COL_FASE] if COL_FASE in df_sync.columns else pd.NA,
-            "time": df_sync[COL_TIME] if COL_TIME in df_sync.columns else pd.NA,
-            "time_evento_s": df_sync["Time_Evento_s"] if "Time_Evento_s" in df_sync.columns else np.nan,
-            "time_evento": df_sync["Time_Evento"] if "Time_Evento" in df_sync.columns else pd.NA,
-            "periodo_jogo": df_sync["Periodo_Jogo"] if "Periodo_Jogo" in df_sync.columns else pd.NA,
-            "minuto_jogo": df_sync["Minuto_Jogo"] if "Minuto_Jogo" in df_sync.columns else pd.NA,
-            "lat": df_sync[COL_LAT] if COL_LAT in df_sync.columns else np.nan,
-            "lon": df_sync[COL_LON] if COL_LON in df_sync.columns else np.nan,
-            "x_utm": df_sync["X_UTM"] if "X_UTM" in df_sync.columns else np.nan,
-            "y_utm": df_sync["Y_UTM"] if "Y_UTM" in df_sync.columns else np.nan,
-            "hr_bpm": df_sync[hr_col] if hr_col else np.nan,
-        })
-
-        sample_df["phase_id"] = sample_df["fase"].map(PHASE_MAP)
-
-        # Derivadas analíticas para evitar recálculo posterior
-        sample_df["x_norm"] = pd.to_numeric(sample_df["x_utm"], errors="coerce")
-        sample_df["y_norm"] = pd.to_numeric(sample_df["y_utm"], errors="coerce")
-        sample_df["time_evento_s"] = pd.to_numeric(sample_df["time_evento_s"], errors="coerce")
-
-        sample_df = sample_df.sort_values(["phase_id", "time_evento_s", "time"], kind="stable").reset_index(drop=True)
-
-        dt = sample_df.groupby("phase_id", dropna=False)["time_evento_s"].diff()
-        dx = sample_df.groupby("phase_id", dropna=False)["x_norm"].diff()
-        dy = sample_df.groupby("phase_id", dropna=False)["y_norm"].diff()
-        dist = np.sqrt(dx**2 + dy**2)
-
-        sample_df["speed_mps"] = dist / dt
-        dv = sample_df.groupby("phase_id", dropna=False)["speed_mps"].diff()
-        sample_df["acc_mps2"] = dv / dt
-
-        invalid_dt = dt <= 0
-        sample_df.loc[invalid_dt.fillna(True), ["speed_mps", "acc_mps2"]] = np.nan
-
-        sample_frames.append(sample_df)
-
-        fases_presentes = sorted([f for f in sample_df["fase"].dropna().astype(str).unique().tolist() if f in ["Warm-Up", "1P", "2P"]], key=lambda x: PHASE_MAP.get(x, 99))
-        athlete_session_rows.append({
-            "session_sk": session_sk,
-            "athlete_sk": athlete_sk,
-            "atleta_id": str(athlete_id),
-            "participou_warmup": "Warm-Up" in fases_presentes,
-            "participou_1p": "1P" in fases_presentes,
-            "participou_2p": "2P" in fases_presentes,
-            "fases_disponiveis": ",".join(fases_presentes),
-            "n_samples": int(len(sample_df)),
-            "tem_hr": bool(hr_col is not None),
-            "processado_em": processed_at,
-        })
-
-    df_samples = pd.concat(sample_frames, ignore_index=True) if sample_frames else pd.DataFrame()
-    df_athlete_session = pd.DataFrame(athlete_session_rows)
-    return df_samples, df_athlete_session
-
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide")
+st.set_page_config(page_title="FPF UTM Engine v11.1", layout="wide", initial_sidebar_state="collapsed")
 if "auth" not in st.session_state:
     st.session_state.auth = False
 if "login_user" not in st.session_state:
@@ -177,8 +79,6 @@ if "df_metrics" not in st.session_state:
     st.session_state.df_metrics = None
 if "report_txt" not in st.session_state:
     st.session_state.report_txt = None
-if "manual_metricas_txt" not in st.session_state:
-    st.session_state.manual_metricas_txt = None
 if "process_done" not in st.session_state:
     st.session_state.process_done = False
 
@@ -297,7 +197,8 @@ st.title("Validação de Dados")
 
 with st.sidebar:
     st.markdown(
-        f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
+        f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {
+            st.session_state.login_user} | FPF</div>",
         unsafe_allow_html=True
     )
     st.header("Dados da Sessão")
@@ -313,6 +214,15 @@ with st.sidebar:
     adversario = ""
     if contexto == "Jogo":
         adversario = st.text_input("Adversário")
+    st.divider()
+
+    st.header("Dados de ATLETAS")
+    st.caption(
+        "Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
+    )
+    f_atleta = st.file_uploader(
+        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
+    )
     st.divider()
 
     st.header("🗺️ Calibração do Campo")
@@ -337,12 +247,6 @@ with st.sidebar:
 
     f_campo = st.file_uploader(
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
-    )
-    st.caption(
-        "Atletas: CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
-    )
-    f_atleta = st.file_uploader(
-        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
 
 st.divider()
@@ -396,85 +300,6 @@ def _fmt_match_clock(seconds):
     return f"{sign}00:{minutes:02d}:{secs:02d}"
 
 
-def _build_metric_groups():
-    return {
-        "Performance": {
-            "Volume externo": ["duracao_min", "dist_m", "m_min"],
-            "Intensidade locomotora": ["vmax_mps", "peak_1m_m_min"],
-            "Alta intensidade": ["hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints"],
-            "Aceleração / travagem": ["n_acc_2_5", "n_dec_3_0"],
-            "Atividade motora": ["active_time_min", "active_pct"],
-        },
-        "Disponibilidade / Integridade": {
-            "Completude do sinal": ["n_points", "pct_time_valid", "n_gaps_gt2s"],
-        },
-        "QC / Confiabilidade": {
-            "QC": ["qc_grade", "qc_flags", "vmax_mps_qc", "n_jumps_gt15m", "n_gaps_gt2s_qc"],
-        },
-    }
-
-
-METRIC_INFO = {
-    "duracao_min": {"unidade": "min", "definicao": "Duração útil da fase em minutos, calculada a partir dos intervalos temporais válidos.", "calculo": "Soma dos dt válidos convertida para minutos.", "interpretacao": "Representa o tempo efetivo de exposição analisado na fase."},
-    "dist_m": {"unidade": "m", "definicao": "Distância total percorrida pelo atleta na fase.", "calculo": "Soma dos deslocamentos ponto a ponto em X_UTM/Y_UTM.", "interpretacao": "Mede o volume locomotor total; deve ser lida com duração e m/min."},
-    "m_min": {"unidade": "m/min", "definicao": "Distância relativa por minuto.", "calculo": "dist_m dividido por duracao_min.", "interpretacao": "Resume a densidade locomotora da fase."},
-    "vmax_mps": {"unidade": "m/s", "definicao": "Velocidade máxima instantânea estimada na fase.", "calculo": "Máximo de distância por intervalo de tempo entre amostras válidas.", "interpretacao": "Capta o pico de velocidade do atleta na fase."},
-    "peak_1m_m_min": {"unidade": "m/min", "definicao": "Pico locomotor em janela contínua de 1 minuto.", "calculo": "Maior distância acumulada em qualquer janela de 60 s.", "interpretacao": "Resume o período mais exigente da fase."},
-    "hsr_dist_m": {"unidade": "m", "definicao": "Distância percorrida acima do limiar de high-speed running.", "calculo": f"Soma da distância quando v >= {HSR_MPS:.1f} m/s.", "interpretacao": "Quantifica exposição a corrida de alta velocidade."},
-    "hsr_pct": {"unidade": "%", "definicao": "Percentagem da distância total realizada em HSR.", "calculo": "hsr_dist_m dividido por dist_m, multiplicado por 100.", "interpretacao": "Mostra o peso relativo da alta velocidade no volume total."},
-    "sprint_dist_m": {"unidade": "m", "definicao": "Distância percorrida acima do limiar de sprint.", "calculo": f"Soma da distância quando v >= {SPRINT_MPS:.1f} m/s.", "interpretacao": "Quantifica a exposição a corrida de sprint."},
-    "n_sprints": {"unidade": "contagem", "definicao": "Número de episódios de sprint.", "calculo": f"Conta bouts consecutivos com v >= {SPRINT_MPS:.1f} m/s e duração mínima de {SPRINT_BOUT_MIN_S:.1f} s.", "interpretacao": "Evita contar picos isolados como sprint real."},
-    "n_acc_2_5": {"unidade": "contagem", "definicao": "Número de instantes com aceleração acima do threshold operacional.", "calculo": f"Conta amostras com aceleração >= {ACC_THR:.1f} m/s².", "interpretacao": "Reflete a exigência de ações explosivas positivas."},
-    "n_dec_3_0": {"unidade": "contagem", "definicao": "Número de instantes com desaceleração abaixo do threshold operacional.", "calculo": f"Conta amostras com desaceleração <= {DEC_THR:.1f} m/s².", "interpretacao": "Reflete a exigência de travagem e controlo neuromuscular."},
-    "active_time_min": {"unidade": "min", "definicao": "Tempo ativo em movimento durante a fase.", "calculo": "Soma do tempo em que a velocidade estimada é >= 0.5 m/s.", "interpretacao": "Distingue exposição total de tempo efetivamente ativo."},
-    "active_pct": {"unidade": "%", "definicao": "Percentagem do tempo da fase em atividade motora.", "calculo": "active_time_min dividido pela duração da fase, multiplicado por 100.", "interpretacao": "Permite comparar fases com diferente tempo de inatividade."},
-    "n_points": {"unidade": "contagem", "definicao": "Número de pontos válidos usados no cálculo das métricas.", "calculo": "Conta linhas com Time, X_UTM e Y_UTM válidos.", "interpretacao": "Quanto maior, mais robusta tende a ser a estimativa."},
-    "pct_time_valid": {"unidade": "%", "definicao": "Percentagem de amostras válidas na fase.", "calculo": "Proporção de linhas com tempo e coordenadas válidos, multiplicada por 100.", "interpretacao": "Resume a completude do sinal disponível para cálculo."},
-    "n_gaps_gt2s": {"unidade": "contagem", "definicao": "Número de gaps temporais superiores a 2 segundos.", "calculo": "Conta intervalos dt > 2.0 s entre amostras válidas.", "interpretacao": "Sinaliza perdas relevantes de continuidade temporal."},
-    "qc_grade": {"unidade": "categórica", "definicao": "Classificação global da qualidade do sinal da fase.", "calculo": "Resultado das regras de QC: PASS, WARN, FAIL ou NA.", "interpretacao": "Apoia a decisão de aceitar, rever ou excluir a fase."},
-    "qc_flags": {"unidade": "texto", "definicao": "Lista de flags de qualidade atribuídas à fase.", "calculo": "Concatenação dos alertas ativados pelo motor de QC.", "interpretacao": "Explica por que razão a fase recebeu o qc_grade observado."},
-    "vmax_mps_qc": {"unidade": "m/s", "definicao": "Velocidade máxima observada para verificação de plausibilidade.", "calculo": "Máximo de velocidade no módulo de QC.", "interpretacao": "Ajuda a identificar picos implausíveis de velocidade."},
-    "n_jumps_gt15m": {"unidade": "contagem", "definicao": "Número de saltos espaciais abruptos detetados entre amostras.", "calculo": "Conta deslocamentos excessivos consecutivos segundo o threshold interno de QC.", "interpretacao": "Ajuda a detetar teleports, ruído ou erro de posicionamento."},
-    "n_gaps_gt2s_qc": {"unidade": "contagem", "definicao": "Número de gaps >2 s usado pelo módulo de QC.", "calculo": "Conta intervalos temporais superiores a 2.0 s para classificação QC.", "interpretacao": "Complementa a leitura da continuidade temporal no contexto de confiabilidade."},
-}
-
-
-def _build_manual_metricas_txt():
-    lines = []
-    lines.append("FPF Performance Hub — Manual de Métricas GPS")
-    lines.append("=" * 72)
-    lines.append("")
-    lines.append("Enquadramento")
-    lines.append("- Dados GPS processados por atleta e por fase: Warm-Up, 1P, 2P e Total.")
-    lines.append("- Organização das métricas em três blocos: Performance, Disponibilidade / Integridade e QC / Confiabilidade.")
-    lines.append(
-        f"- Thresholds operacionais atuais: HSR >= {HSR_MPS:.1f} m/s | Sprint >= {SPRINT_MPS:.1f} m/s | "
-        f"Acc >= {ACC_THR:.1f} m/s² | Dec <= {DEC_THR:.1f} m/s² | Sprint bout mínimo >= {SPRINT_BOUT_MIN_S:.1f} s."
-    )
-    lines.append("")
-
-    groups = _build_metric_groups()
-    for categoria, familias in groups.items():
-        lines.append(categoria)
-        lines.append("-" * len(categoria))
-        for familia, cols in familias.items():
-            lines.append(f"{familia}")
-            for col in cols:
-                info = METRIC_INFO[col]
-                lines.append(f"  • {col}")
-                lines.append(f"    Unidade: {info['unidade']}")
-                lines.append(f"    Definição: {info['definicao']}")
-                lines.append(f"    Cálculo: {info['calculo']}")
-                lines.append(f"    Interpretação: {info['interpretacao']}")
-            lines.append("")
-
-    lines.append("Notas metodológicas")
-    lines.append("- Total resulta da agregação das fases Warm-Up, 1P e 2P no motor atual.")
-    lines.append("- Métricas de Performance devem ser interpretadas em conjunto com Disponibilidade / Integridade e QC / Confiabilidade.")
-    lines.append("- Flags ou grades QC desfavoráveis podem justificar revisão manual ou exclusão analítica da fase.")
-    return "\n".join(lines)
-
-
 def _normalize_xy_canonical(df: pd.DataFrame, dist_x: float, dist_y: float):
     """Rebase X/Y para iniciar em 0 e clip para [0,dist_x]/[0,dist_y]."""
     if df is None or df.empty:
@@ -518,7 +343,6 @@ have_picked_corners = st.session_state.get("pts_gps_picked") is not None
 
 if metodo_campo == "Upload (BL/BR/TL/TR)" and not have_upload_corners:
     st.info("👋 Selecionaste 'Upload', mas ainda não carregaste os 4 CSVs do campo (BL/BR/TL/TR).")
-    st.stop()
 
 if metodo_campo == "Pick no mapa (clicar 4 cantos)" and not have_picked_corners:
     st.warning(
@@ -542,7 +366,6 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
             f_atleta, amostra_n=amostra_geo_n)
     else:
         alat0, alon0 = None, None
-
     if alat0 is None or alon0 is None:
         pts_fallback = sample_athlete_track_latlon(f_atleta, max_points=10) if f_atleta else []
         if pts_fallback:
@@ -732,6 +555,10 @@ except Exception as e:
 except Exception as e:
 
     st.error(f"❌ Erro na calibração do campo: {e}")
+    st.stop()
+
+if not f_atleta:
+    st.info("👋 Carrega os ficheiros de atletas para avançar para a validação e processamento.")
     st.stop()
 
 passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
@@ -1092,59 +919,8 @@ if btn:
                 )
 
             df_metrics = pd.DataFrame(metrics_rows)
-
-            # -------------------------------
-            # Persistência parquet analítica
-            # -------------------------------
-            session_payload = {
-                "session_id_hex": session_id_hex,
-                "session_fingerprint": session_fingerprint,
-                "data": data_sessao,
-                "selecao": selecao,
-                "genero": genero,
-                "contexto": contexto,
-                "jogo": adversario.strip() if contexto == "Jogo" else "",
-                "estadio": estadio,
-                "cidade": cidade,
-                "pais": pais,
-                "epsg": int(epsg_used),
-                "dist_x": float(dist_x),
-                "dist_y": float(dist_y),
-                "rotation_rad": float(angulo_rad),
-                "engine_version": ENGINE_VERSION,
-            }
-            session_sk = resolve_session_sk(session_fingerprint, session_payload, CLEANDATA_DIR)
-            athlete_map = resolve_athlete_sk(df_metrics, CLEANDATA_DIR, genero=genero)
-
-            df_metrics["session_sk"] = session_sk
-            df_metrics["athlete_sk"] = df_metrics["atleta_id"].astype(str).map(athlete_map)
-            df_metrics["phase_id"] = df_metrics["fase"].map(PHASE_MAP)
-
-            perf_cols = [
-                "duracao_min", "dist_m", "m_min",
-                "vmax_mps", "peak_1m_m_min",
-                "hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints",
-                "n_acc_2_5", "n_dec_3_0",
-                "active_time_min", "active_pct",
-            ]
-            qc_cols = [
-                "n_points", "pct_time_valid", "n_gaps_gt2s",
-                "qc_grade", "qc_flags", "vmax_mps_qc", "n_jumps_gt15m", "n_gaps_gt2s_qc",
-            ]
-            base_cols = ["session_sk", "athlete_sk", "atleta_id", "phase_id", "fase", "data", "selecao", "genero", "contexto", "jogo"]
-
-            df_perf = df_metrics[base_cols + perf_cols].copy()
-            df_qc = df_metrics[["session_sk", "athlete_sk", "atleta_id", "phase_id", "fase"] + qc_cols].copy()
-            df_samples, df_athlete_session = _build_samples_export(out_files, session_sk, athlete_map)
-
-            append_dedup_parquet(df_perf, str(Path(CLEANDATA_DIR) / "performance_metrics.parquet"), ["session_sk", "athlete_sk", "phase_id"])
-            append_dedup_parquet(df_qc, str(Path(CLEANDATA_DIR) / "quality_metrics.parquet"), ["session_sk", "athlete_sk", "phase_id"])
-            append_dedup_parquet(df_samples, str(Path(CLEANDATA_DIR) / "samples.parquet"), ["session_sk", "athlete_sk", "phase_id", "time"])
-            append_dedup_parquet(df_athlete_session, str(Path(CLEANDATA_DIR) / "athlete_session.parquet"), ["session_sk", "athlete_sk"])
-
             df_time_audit = pd.DataFrame(audit_time_rows)
             st.session_state.df_time_audit = df_time_audit
-            st.session_state.manual_metricas_txt = _build_manual_metricas_txt()
 
             status.update(label="Construção do relatório...", state="running")
             # Build report (rotação mantida)
@@ -1156,9 +932,11 @@ if btn:
 
             report_lines.append("Dados da Sessão")
             report_lines.append(
-                f"Data: {data_sessao.strftime('%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}"
+                f"  Data: {data_sessao.strftime(
+                    '%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}"
             )
-            report_lines.append(f"  Seleção: {selecao} | Género: {genero} | Contexto: {contexto}")
+            report_lines.append(f"  Seleção: {selecao} | Género: {
+                                genero} | Contexto: {contexto}")
             if contexto == "Jogo":
                 vs_txt = adversario.strip()
                 if vs_txt:
@@ -1170,23 +948,27 @@ if btn:
             report_lines.append(f"EPSG (UTM): {epsg_used}")
             report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
             report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
-            report_lines.append(f"Rotação aplicada:    {rot_deg:.2f}° (alinhamento BL→BR com eixo X)")
+            report_lines.append(f"Rotação aplicada:    {
+                                rot_deg:.2f}° (alinhamento BL→BR com eixo X)")
 
             report_lines.append("-" * 70)
             report_lines.append("Validação geográfica")
             report_lines.append(
-                f"  Raio: {raio_validacao_m:.0f} m | Amostra: { amostra_geo_n} linhas/atleta | % OK: {pct_ok*100:.0f}% "
+                f"  Raio: {raio_validacao_m:.0f} m | Amostra: {
+                    amostra_geo_n} linhas/atleta | % OK: {pct_ok*100:.0f}% "
                 f"(mínimo {min_pct_atletas_ok*100:.0f}%)"
             )
             report_lines.append(
                 f"  Dentro do raio: {len({a for a, _ in ok_list})} atletas | "
-                f"Fora: {len({a for a, _ in fora_list})} atletas | Erros: {len(geo_errors)}"
+                f"Fora: {len({a for a, _ in fora_list})} atletas | Erros: {
+                    len(geo_errors)}"
             )
 
             report_lines.append("-" * 70)
             report_lines.append("Auditoria de atletas (submissão)")
             report_lines.append(
-                f"  Atletas totais: {len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
+                f"  Atletas totais: {
+                    len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
             )
 
             report_lines.append("-" * 70)
@@ -1237,7 +1019,9 @@ if btn:
                 f"Acc ≥ {ACC_THR:.1f} m/s² | Dec ≤ {DEC_THR:.1f} m/s²"
             )
             report_lines.append(f"  Session ID (hex): {session_id_hex}")
-            report_lines.append(f"  Session fingerprint (sha1): {session_fingerprint}")
+            report_lines.append(f"  Session fingerprint (sha1): {
+                                session_fingerprint}")
+            report_lines.append("  Samples enriquecidos no parquet analítico: x_norm, y_norm, speed_mps, acc_mps2")
 
             if df_metrics is not None and not df_metrics.empty:
                 report_lines.append("  (Métricas calculadas com sucesso)")
@@ -1246,7 +1030,8 @@ if btn:
 
             report_lines.append("-" * 70)
             report_lines.append("Qualidade do Sinal GPS")
-            report_lines.append(f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
+            report_lines.append(
+                f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
 
             # Auditoria de timestamp (resumo)
             try:
@@ -1345,49 +1130,17 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     else:
         df_display = df_display.sort_values(by=[col_inicio])
 
-    # 5️⃣ Organização vertical por blocos e famílias
-    id_cols = [c for c in [col_inicio, "fase"] if c in df_display.columns]
-    metric_groups = _build_metric_groups()
+    # 5️⃣ Mostrar
+    st.dataframe(df_display, use_container_width=True, hide_index=True)
 
-    ordered_metric_cols = []
-    for familias in metric_groups.values():
-        for cols in familias.values():
-            ordered_metric_cols.extend([c for c in cols if c in df_display.columns])
-
-    df_export = df_display[id_cols + ordered_metric_cols].copy()
-
-    st.subheader("Métricas organizadas por contexto")
-    for categoria, familias in metric_groups.items():
-        st.markdown(f"### {categoria}")
-        for familia, cols in familias.items():
-            cols_presentes = [c for c in cols if c in df_display.columns]
-            if not cols_presentes:
-                continue
-            st.markdown(f"**{familia}**")
-            st.dataframe(
-                df_display[id_cols + cols_presentes],
-                use_container_width=True,
-                hide_index=True,
-            )
-
-    # 6️⃣ Downloads
+    # 6️⃣ Download coerente com o display
     st.download_button(
         "⬇️ Download Métricas (.csv)",
-        data=df_export.to_csv(index=False).encode("utf-8"),
+        data=df_display.to_csv(index=False).encode("utf-8"),
         file_name="metricas_individuais_FPF.csv",
         mime="text/csv",
         use_container_width=True,
     )
-
-    manual_metricas_txt = st.session_state.get("manual_metricas_txt")
-    if manual_metricas_txt:
-        st.download_button(
-            "⬇️ Download Manual de Métricas (.txt)",
-            data=manual_metricas_txt.encode("utf-8"),
-            file_name="manual_metricas_FPF.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
 
     # Auditoria de timestamp (diagnóstico)
     if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
@@ -1413,6 +1166,5 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     if st.button("🧹 Limpar resultados", use_container_width=True):
         st.session_state.df_metrics = None
         st.session_state.report_txt = None
-        st.session_state.manual_metricas_txt = None
         st.session_state.process_done = False
         st.rerun()
