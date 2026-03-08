@@ -69,6 +69,9 @@ from fpf_modules.data_manager import (
     resolve_session_sk,
 )
 
+from fpf_modules.normalize import (
+    normalize_tracking_data
+)
 GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 
 
@@ -1147,10 +1150,17 @@ if btn:
             df_qc = df_metrics[["session_sk", "athlete_sk", "atleta_id", "phase_id", "fase"] + qc_cols].copy()
             df_samples, df_athlete_session = _build_samples_export(out_files, session_sk, athlete_map)
 
+            # Normalizar coordenadas StatsBomb
+            df_tracking = normalize_tracking_data(
+                df_samples,
+                dist_x=field_data['dist_x'][0],
+                dist_y=field_data['dist_y'][0]
+            )
             append_dedup_parquet(df_perf, str(Path(CLEANDATA_DIR) / "performance_metrics.parquet"), ["session_sk", "athlete_sk", "phase_id"])
             append_dedup_parquet(df_qc, str(Path(CLEANDATA_DIR) / "quality_metrics.parquet"), ["session_sk", "athlete_sk", "phase_id"])
             append_dedup_parquet(df_samples, str(Path(CLEANDATA_DIR) / "samples.parquet"), ["session_sk", "athlete_sk", "phase_id", "time"])
             append_dedup_parquet(df_athlete_session, str(Path(CLEANDATA_DIR) / "athlete_session.parquet"), ["session_sk", "athlete_sk"])
+            append_dedup_parquet(df_tracking, str(Path(CLEANDATA_DIR) / "tracking.parquet"), ["session_sk", "athlete_sk", "phase_id", "time"])
 
             st.session_state.df_perf = df_perf
             st.session_state.df_qc = df_qc

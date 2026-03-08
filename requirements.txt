@@ -6,3 +6,4 @@ streamlit-folium
 pyproj
 scipy
 geopy
+mplsoccer
