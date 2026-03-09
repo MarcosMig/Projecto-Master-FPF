@@ -99,19 +99,20 @@ def audit_timebase(df: pd.DataFrame, col_time: str, expected_hz: float = 10.0) -
             "n_gaps_gt_2s": 0,
         }
 
-    t = t.sort_values().to_numpy(dtype=float)
-    dt = np.diff(t)
-    n_dt_neg = int((dt < 0).sum())
-    n_dt_zero = int((dt == 0).sum())
-    dt_pos = dt[dt > 0]
+    t_raw = t.to_numpy(dtype=float)
+    dt_raw = np.diff(t_raw)
+    n_dt_neg = int((dt_raw < 0).sum())
+    n_dt_zero = int((dt_raw == 0).sum())
+    dt_pos = dt_raw[dt_raw > 0]
 
     dt_median = float(np.median(dt_pos)) if dt_pos.size else np.nan
     hz_est = float(1.0 / dt_median) if (dt_median and dt_median > 0) else np.nan
 
-    n_gaps_0_2 = int((dt_pos > 0.2).sum())  # para 10Hz: >0.2s é gap relevante
+    gap_relevant_s = (2.0 / float(expected_hz)) if expected_hz > 0 else 0.2
+    n_gaps_0_2 = int((dt_pos > gap_relevant_s).sum())
     n_gaps_2 = int((dt_pos > 2.0).sum())
 
-    wallclock_s = float(t[-1] - t[0])
+    wallclock_s = float(np.nanmax(t_raw) - np.nanmin(t_raw))
     return {
         "n_rows": int(len(df)),
         "n_valid_t": int(len(t)),
