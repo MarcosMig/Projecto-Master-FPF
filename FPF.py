@@ -400,11 +400,27 @@ def _fmt_match_clock(seconds):
 def _build_metric_groups():
     return {
         "Performance": {
-            "Volume externo": ["duracao_min", "dist_m", "m_min"],
-            "Intensidade locomotora": ["vmax_mps", "peak_1m_m_min"],
-            "Alta intensidade": ["hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints"],
-            "Aceleração / travagem": ["n_acc_2_5", "n_dec_3_0"],
-            "Atividade motora": ["active_time_min", "active_pct"],
+            "Volume": [
+                "duracao_min",
+                "dist_m",
+                "hsr_dist_m",
+                "sprint_dist_m",
+                "active_time_min",
+            ],
+            "Intensidade": [
+                "m_min",
+                "hsr_pct",
+                "active_pct",
+            ],
+            "Eventos": [
+                "n_sprints",
+                "n_acc_2_5",
+                "n_dec_3_0",
+            ],
+            "Picos de Fase": [
+                "vmax_mps",
+                "peak_1m_m_min",
+            ],
         },
         "Disponibilidade / Integridade": {
             "Completude do sinal": ["n_points", "pct_time_valid", "n_gaps_gt2s"],
@@ -417,16 +433,16 @@ def _build_metric_groups():
 
 METRIC_INFO = {
     "duracao_min": {"unidade": "min", "definicao": "Duração útil da fase em minutos, calculada a partir dos intervalos temporais válidos.", "calculo": "Soma dos dt válidos convertida para minutos.", "interpretacao": "Representa o tempo efetivo de exposição analisado na fase."},
-    "dist_m": {"unidade": "m", "definicao": "Distância total percorrida pelo atleta na fase.", "calculo": "Soma dos deslocamentos ponto a ponto em X_UTM/Y_UTM.", "interpretacao": "Mede o volume locomotor total; deve ser lida com duração e m/min."},
-    "m_min": {"unidade": "m/min", "definicao": "Distância relativa por minuto.", "calculo": "dist_m dividido por duracao_min.", "interpretacao": "Resume a densidade locomotora da fase."},
-    "vmax_mps": {"unidade": "m/s", "definicao": "Velocidade máxima instantânea estimada na fase.", "calculo": "Máximo de distância por intervalo de tempo entre amostras válidas.", "interpretacao": "Capta o pico de velocidade do atleta na fase."},
-    "peak_1m_m_min": {"unidade": "m/min", "definicao": "Pico locomotor em janela contínua de 1 minuto.", "calculo": "Maior distância acumulada em qualquer janela de 60 s.", "interpretacao": "Resume o período mais exigente da fase."},
-    "hsr_dist_m": {"unidade": "m", "definicao": "Distância percorrida acima do limiar de high-speed running.", "calculo": f"Soma da distância quando v >= {HSR_MPS:.1f} m/s.", "interpretacao": "Quantifica exposição a corrida de alta velocidade."},
-    "hsr_pct": {"unidade": "%", "definicao": "Percentagem da distância total realizada em HSR.", "calculo": "hsr_dist_m dividido por dist_m, multiplicado por 100.", "interpretacao": "Mostra o peso relativo da alta velocidade no volume total."},
+    "dist_m": {"unidade": "m", "definicao": "Distância total percorrida pelo atleta na fase.", "calculo": "Soma dos deslocamentos ponto a ponto em X_UTM/Y_UTM.", "interpretacao": "Mede o volume locomotor total da fase."},
+    "m_min": {"unidade": "m/min", "definicao": "Distância relativa por minuto.", "calculo": "dist_m dividido por duracao_min.", "interpretacao": "Representa a intensidade média locomotora da fase."},
+    "vmax_mps": {"unidade": "m/s", "definicao": "Velocidade máxima instantânea estimada na fase.", "calculo": "Máximo de distância por intervalo de tempo entre amostras válidas.", "interpretacao": "Representa o pico de velocidade do atleta na fase."},
+    "peak_1m_m_min": {"unidade": "m", "definicao": "Maior distância percorrida em qualquer janela contínua de 60 segundos dentro da fase.", "calculo": "Maior distância acumulada em qualquer janela móvel de 60 s.", "interpretacao": "Representa o pico locomotor da fase; não é volume acumulado nem média."},
+    "hsr_dist_m": {"unidade": "m", "definicao": "Distância percorrida acima do limiar de high-speed running.", "calculo": f"Soma da distância quando v >= {HSR_MPS:.1f} m/s.", "interpretacao": "Quantifica a exposição a corrida de alta velocidade."},
+    "hsr_pct": {"unidade": "%", "definicao": "Percentagem da distância total realizada em HSR.", "calculo": "hsr_dist_m dividido por dist_m, multiplicado por 100.", "interpretacao": "Representa o peso relativo da alta velocidade no volume total."},
     "sprint_dist_m": {"unidade": "m", "definicao": "Distância percorrida acima do limiar de sprint.", "calculo": f"Soma da distância quando v >= {SPRINT_MPS:.1f} m/s.", "interpretacao": "Quantifica a exposição a corrida de sprint."},
-    "n_sprints": {"unidade": "contagem", "definicao": "Número de episódios de sprint.", "calculo": f"Conta bouts consecutivos com v >= {SPRINT_MPS:.1f} m/s e duração mínima de {SPRINT_BOUT_MIN_S:.1f} s.", "interpretacao": "Evita contar picos isolados como sprint real."},
-    "n_acc_2_5": {"unidade": "contagem", "definicao": "Número de instantes com aceleração acima do threshold operacional.", "calculo": f"Conta amostras com aceleração >= {ACC_THR:.1f} m/s².", "interpretacao": "Reflete a exigência de ações explosivas positivas."},
-    "n_dec_3_0": {"unidade": "contagem", "definicao": "Número de instantes com desaceleração abaixo do threshold operacional.", "calculo": f"Conta amostras com desaceleração <= {DEC_THR:.1f} m/s².", "interpretacao": "Reflete a exigência de travagem e controlo neuromuscular."},
+    "n_sprints": {"unidade": "contagem", "definicao": "Número de episódios de sprint.", "calculo": f"Conta bouts consecutivos com v >= {SPRINT_MPS:.1f} m/s e duração mínima de {SPRINT_BOUT_MIN_S:.1f} s.", "interpretacao": "Conta sprints válidos e evita picos isolados como sprint real."},
+    "n_acc_2_5": {"unidade": "contagem", "definicao": "Número de instantes com aceleração acima do threshold operacional.", "calculo": f"Conta amostras com aceleração >= {ACC_THR:.1f} m/s².", "interpretacao": "Reflete a exigência de ações de aceleração."},
+    "n_dec_3_0": {"unidade": "contagem", "definicao": "Número de instantes com desaceleração abaixo do threshold operacional.", "calculo": f"Conta amostras com desaceleração <= {DEC_THR:.1f} m/s².", "interpretacao": "Reflete a exigência de ações de desaceleração e controlo neuromuscular."},
     "active_time_min": {"unidade": "min", "definicao": "Tempo ativo em movimento durante a fase.", "calculo": "Soma do tempo em que a velocidade estimada é >= 0.5 m/s.", "interpretacao": "Distingue exposição total de tempo efetivamente ativo."},
     "active_pct": {"unidade": "%", "definicao": "Percentagem do tempo da fase em atividade motora.", "calculo": "active_time_min dividido pela duração da fase, multiplicado por 100.", "interpretacao": "Permite comparar fases com diferente tempo de inatividade."},
     "n_points": {"unidade": "contagem", "definicao": "Número de pontos válidos usados no cálculo das métricas.", "calculo": "Conta linhas com Time, X_UTM e Y_UTM válidos.", "interpretacao": "Quanto maior, mais robusta tende a ser a estimativa."},
@@ -1015,7 +1031,11 @@ if btn:
                         }
                     )
 
-                # -------- TOTAL POR SOMA DAS FASES --------
+                # -------- TOTAL POR AGREGAÇÃO DAS FASES --------
+                # Regras:
+                # - Soma: volume e eventos
+                # - Recalcular: métricas relativas / percentuais
+                # - Máximo: picos de fase
                 met_total = {}
                 met_total["dist_m"] = sum(fase_mets.get(f, {}).get(
                     "dist_m", 0.0) for f in fases_target)
@@ -1105,6 +1125,7 @@ if btn:
                 )
 
             df_metrics = pd.DataFrame(metrics_rows)
+            df_metrics = _round_metrics_dataframe(df_metrics)
 
             # -------------------------------
             # Persistência parquet analítica
