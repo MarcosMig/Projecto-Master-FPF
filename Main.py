@@ -1127,7 +1127,7 @@ if btn:
                 )
 
             df_metrics = pd.DataFrame(metrics_rows)
-            df_metrics = _round_metrics_dataframe(df_metrics)
+            df_metrics = round_metrics_dataframe(df_metrics)
 
             # -------------------------------
             # Persistência parquet analítica
