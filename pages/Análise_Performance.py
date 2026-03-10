@@ -3,7 +3,51 @@ import streamlit as st
 import mplsoccer as mpl
 import matplotlib.pyplot as plt
 from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
-from fpf_modules.metrics import calcular_compactacao
+from scipy.spatial import ConvexHull
+
+# TODO 1. Inserir exception handling para quando dados de treino estão selecionados
+# TODO 2. Acabar aplicação do Convex Hull
+
+# Estilo para as métricas
+st.markdown("""
+    <style>
+    /* Estilo exclusivo para as nossas cartas de topo */
+    .fpt-kpi-container {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 20px;
+    }
+    .fpt-kpi-card {
+        background-color: #1e1e1e; /* Fundo escuro premium */
+        border-left: 5px solid #E30613; /* Linha vermelha FPF */
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
+        flex: 1;
+    }
+    .fpt-kpi-label {
+        color: #9aa0a6;
+        font-size: 14px;
+        font-weight: bold;
+        text-transform: uppercase;
+        margin-bottom: 5px;
+    }
+    .fpt-kpi-value {
+        color: #ffffff;
+        font-size: 24px;
+        font-weight: 800;
+    }
+</style>
+    """, unsafe_allow_html=True)
+
+def kpi_card(label, value):
+    st.markdown(f"""
+        <div class="fpt-kpi-card">
+            <div class="fpt-kpi-label">{label}</div>
+            <div class="fpt-kpi-value">{value}</div>
+        </div>
+    """, unsafe_allow_html=True)
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="FPF | Positional Analysis", layout="wide")
@@ -146,55 +190,19 @@ with tab_metrics:
 
 with tab_visual:
 
+    st.subheader('Métricas da Partida')
+
     df_compactacao = calcular_compactacao(df_fase)
     avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
-    # Estilo para as métricas
-
-    st.markdown("""
-    <style>
-        /* Estilo exclusivo para as nossas cartas de topo */
-        .fpt-kpi-container {
-            display: flex;
-            justify-content: space-between;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-        .fpt-kpi-card {
-            background-color: #1e1e1e; /* Fundo escuro premium */
-            border-left: 5px solid #E30613; /* Linha vermelha FPF */
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
-            flex: 1;
-        }
-        .fpt-kpi-label {
-            color: #9aa0a6;
-            font-size: 14px;
-            font-weight: bold;
-            text-transform: uppercase;
-            margin-bottom: 5px;
-        }
-        .fpt-kpi-value {
-            color: #ffffff;
-            font-size: 24px;
-            font-weight: 800;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-
-    def kpi_card(label, value):
-        st.markdown(f"""
-            <div class="fpt-kpi-card">
-                <div class="fpt-kpi-label">{label}</div>
-                <div class="fpt-kpi-value">{value}</div>
-            </div>
-        """, unsafe_allow_html=True)
+    avg_comp_hor = df_compactacao['comp_horizontal'].mean().round(2)
 
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        kpi_card("Compactação Vertical", f"{avg_comp_vert:.1f} m")
+        kpi_card("Compactação Vertical", f"{avg_comp_vert:.1f}")
 
+    with col2:
+        kpi_card("Compactação Horizontal", f"{avg_comp_hor:.1f}")
     st.divider()
 
     if selected_time is not None:
@@ -208,8 +216,10 @@ with tab_visual:
         col_map, col_info = st.columns([3, 1])
 
         with col_map:
+
+            campo = st.selectbox(label='Visualização Campo', options=['Convex Hull', 'Teste'])
+
             # 2. Configurar Pitch
-            # DICA: Se o seu x_tr vai até 105, o pitch_type deve ser 'custom' ou 'uefa'
             pitch = mpl.Pitch(
                 pitch_type='statsbomb', # Se escalou para 120x80
                 pitch_color='#22312b',
@@ -235,10 +245,9 @@ with tab_visual:
 
             st.pyplot(fig)
 
-
-
         with col_info:
 
+            st.subheader("Analise de Frame")
             st.metric("Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s")
             st.metric("Compactação Vertical", compactacao_frame['comp_vertical'])
             st.metric("Compactação Horizontal", compactacao_frame['comp_horizontal'])
