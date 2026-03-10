@@ -3,9 +3,7 @@ import streamlit as st
 import mplsoccer as mpl
 import matplotlib.pyplot as plt
 from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
-
-# TODO 2. Aplicar filtro dados da sessão aos dados de tracking
-
+from fpf_modules.metrics import calcular_compactacao
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="FPF | Positional Analysis", layout="wide")
@@ -35,6 +33,33 @@ try:
 except Exception as e:
     st.error(f"Erro ao processar dados: {e}")
     st.stop()
+
+@st.cache_data
+def calcular_compactacao(tracking_df):
+    """Calcula compactação Vertical e Horizontal por Frame.
+
+    Args:
+        tracking_df (_type_): DataFrame que contem tracking data.
+
+    Returns:
+        pd.DataFrame: DataFrame com o vol
+    """
+    if 'time_evento_s' in tracking_df.columns:
+
+        # Agrupar por tempo
+        frame_data = tracking_df.groupby('time_evento_s').agg(
+            x_min=('x_tr', 'min'),
+            x_max=('x_tr', 'max'),
+            y_min=('y_tr', 'min'),
+            y_max=('y_tr', 'max')
+        )
+
+        frame_data['comp_vertical'] = round( frame_data['x_max'] - frame_data['x_min'], 2)
+        frame_data['comp_horizontal'] = round( frame_data['y_max'] - frame_data['y_min'], 2)
+
+        frame_data = frame_data.drop(columns={'x_min', 'x_max', 'y_min', 'y_max'}).reset_index()
+
+        return frame_data
 
 # --- SIDEBAR: FILTROS E CONTROLES ---
 def converter_para_relogio_fpf(segundos_totais):
@@ -93,12 +118,12 @@ with st.sidebar:
     ]
 
     if not df_fase.empty:
-        timestamps = sorted(df_fase['time'].unique())
+        timestamps = sorted(df_fase['time_evento_s'].unique())
         # Slider para navegar no tempo
         selected_time = st.sidebar.select_slider(
             "Momento do Jogo (s)",
             options=timestamps,
-       #  format_func=converter_para_relogio_fpf
+         format_func=converter_para_relogio_fpf
         )
     else:
         st.sidebar.warning(f"Sem dados de tracking para a fase {fase_selected}")
@@ -121,9 +146,64 @@ with tab_metrics:
 
 with tab_visual:
 
+    df_compactacao = calcular_compactacao(df_fase)
+    avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
+    # Estilo para as métricas
+
+    st.markdown("""
+    <style>
+        /* Estilo exclusivo para as nossas cartas de topo */
+        .fpt-kpi-container {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .fpt-kpi-card {
+            background-color: #1e1e1e; /* Fundo escuro premium */
+            border-left: 5px solid #E30613; /* Linha vermelha FPF */
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
+            flex: 1;
+        }
+        .fpt-kpi-label {
+            color: #9aa0a6;
+            font-size: 14px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .fpt-kpi-value {
+            color: #ffffff;
+            font-size: 24px;
+            font-weight: 800;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+    def kpi_card(label, value):
+        st.markdown(f"""
+            <div class="fpt-kpi-card">
+                <div class="fpt-kpi-label">{label}</div>
+                <div class="fpt-kpi-value">{value}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        kpi_card("Compactação Vertical", f"{avg_comp_vert:.1f} m")
+
+    st.divider()
+
     if selected_time is not None:
+
         # 1. Obter snapshot
-        snapshot = df_fase[df_fase['time'] == selected_time]
+        snapshot = df_fase[df_fase['time_evento_s'] == selected_time]
+
+        # Obter metricas para o frame
+        compactacao_frame = df_compactacao.loc[ df_compactacao['time_evento_s'] == selected_time]
 
         col_map, col_info = st.columns([3, 1])
 
@@ -155,8 +235,13 @@ with tab_visual:
 
             st.pyplot(fig)
 
+
+
         with col_info:
-            st.metric("Tempo Selecionado", f"{selected_time}s")
+
+            st.metric("Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s")
+            st.metric("Compactação Vertical", compactacao_frame['comp_vertical'])
+            st.metric("Compactação Horizontal", compactacao_frame['comp_horizontal'])
     else:
         st.info("Selecione uma fase com dados para visualizar o campo.")
 
