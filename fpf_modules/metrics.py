@@ -22,7 +22,17 @@ def time_to_seconds(series: pd.Series) -> pd.Series:
             return s_num.astype(float)
         return s_num.astype(float)
 
-    dt = pd.to_datetime(s, errors="coerce", utc=True)
+    # Tenta formatos de duração (ex: "MM:SS", "HH:MM:SS", com frações)
+    td = pd.to_timedelta(s.astype(str).str.strip(), errors="coerce")
+    if td.notna().any():
+        return td.dt.total_seconds()
+
+    # Fallback para timestamps absolutos
+    try:
+        dt = pd.to_datetime(s, errors="coerce", utc=True, format="mixed")
+    except TypeError:
+        dt = pd.to_datetime(s, errors="coerce", utc=True)
+
     if dt.notna().any():
         t0 = dt.dropna().iloc[0]
         return (dt - t0).dt.total_seconds()
@@ -126,6 +136,13 @@ def audit_timebase(df: pd.DataFrame, col_time: str, expected_hz: float = 10.0) -
     }
 
 
+def _pick_col(df: pd.DataFrame, candidates: list[str]):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
 def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     """Calcula métricas para um atleta numa fase (df filtrado)."""
     default = {
@@ -147,12 +164,19 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
         "active_pct": np.nan,
     }
 
-    if df.empty:
+    if df is None or df.empty:
         return default.copy()
 
-    t_sec = time_to_seconds(df[COL_TIME])
-    x = pd.to_numeric(df["X_UTM"], errors="coerce")
-    y = pd.to_numeric(df["Y_UTM"], errors="coerce")
+    col_time = _pick_col(df, [COL_TIME, COL_TIME.lower(), "time"])
+    col_x = _pick_col(df, ["X_UTM", "x_utm", "x"])
+    col_y = _pick_col(df, ["Y_UTM", "y_utm", "y"])
+
+    if col_time is None or col_x is None or col_y is None:
+        return default.copy()
+
+    t_sec = time_to_seconds(df[col_time])
+    x = pd.to_numeric(df[col_x], errors="coerce")
+    y = pd.to_numeric(df[col_y], errors="coerce")
     valid = t_sec.notna() & x.notna() & y.notna()
     dfv = pd.DataFrame({"t": t_sec[valid], "x": x[valid], "y": y[valid]}).sort_values("t")
 

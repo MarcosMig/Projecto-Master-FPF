@@ -50,7 +50,7 @@ def kpi_card(label, value):
     """, unsafe_allow_html=True)
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="FPF | Positional Analysis", layout="wide")
+# set_page_config é definido em Main.py (deve ser chamado apenas uma vez por app).
 
 # Incializar Paineis
 tab_metrics, tab_visual = st.tabs(["📊 Métricas de Performance", "📍 Análise Posicional"])
@@ -88,7 +88,11 @@ def calcular_compactacao(tracking_df):
     Returns:
         pd.DataFrame: DataFrame com o vol
     """
-    if 'time_evento_s' in tracking_df.columns:
+    if tracking_df is None or tracking_df.empty:
+        return pd.DataFrame(columns=['time_evento_s', 'comp_vertical', 'comp_horizontal'])
+
+    required_cols = {'time_evento_s', 'x_tr', 'y_tr'}
+    if required_cols.issubset(tracking_df.columns):
 
         # Agrupar por tempo
         frame_data = tracking_df.groupby('time_evento_s').agg(
@@ -104,6 +108,27 @@ def calcular_compactacao(tracking_df):
         frame_data = frame_data.drop(columns={'x_min', 'x_max', 'y_min', 'y_max'}).reset_index()
 
         return frame_data
+
+    return pd.DataFrame(columns=['time_evento_s', 'comp_vertical', 'comp_horizontal'])
+
+
+def _safe_metric_value(df, col):
+    """Extrai um valor escalar para usar em st.metric."""
+    if df is None or df.empty or col not in df.columns:
+        return "N/A"
+    value = df[col].iloc[0]
+    if pd.isna(value):
+        return "N/A"
+    return round(float(value), 2)
+
+
+def _safe_mean(series):
+    if series is None or len(series) == 0:
+        return "N/A"
+    value = pd.to_numeric(series, errors="coerce").mean()
+    if pd.isna(value):
+        return "N/A"
+    return f"{float(value):.1f}"
 
 # --- SIDEBAR: FILTROS E CONTROLES ---
 def converter_para_relogio_fpf(segundos_totais):
@@ -141,11 +166,13 @@ with st.sidebar:
             st.warning("Nenhum jogo registado para esta seleção.")
 
     # Filtrar sessões disponíveis para o slider ou seleção
-    sessoes_disponiveis = df_perf.loc[
+    filtro_sessoes = (
         (df_perf.selecao == selecao)
         & (df_perf.contexto == contexto)
-        & (df_perf.jogo == jogo)
-    ]
+    )
+    if contexto == 'Jogo':
+        filtro_sessoes &= (df_perf.jogo == jogo)
+    sessoes_disponiveis = df_perf.loc[filtro_sessoes]
 
     st.divider()
 
@@ -154,12 +181,14 @@ with st.sidebar:
     fase_selected = st.sidebar.radio("Fase", ["Warm-Up", "1P", "2P"], index=1)
 
     # Filtrar tracking pela fase para pegar os timestamps
-    df_fase = tracking_df.loc[
+    filtro_fase = (
         (tracking_df.selecao == selecao)
         & (tracking_df.contexto == contexto)
-        & (tracking_df.jogo == jogo)
         & (tracking_df['fase'] == fase_selected)
-    ]
+    )
+    if contexto == 'Jogo':
+        filtro_fase &= (tracking_df.jogo == jogo)
+    df_fase = tracking_df.loc[filtro_fase]
 
     if not df_fase.empty:
         timestamps = sorted(df_fase['time_evento_s'].unique())
@@ -193,16 +222,16 @@ with tab_visual:
     st.subheader('Métricas da Partida')
 
     df_compactacao = calcular_compactacao(df_fase)
-    avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
-    avg_comp_hor = df_compactacao['comp_horizontal'].mean().round(2)
+    avg_comp_vert = _safe_mean(df_compactacao.get('comp_vertical'))
+    avg_comp_hor = _safe_mean(df_compactacao.get('comp_horizontal'))
 
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        kpi_card("Compactação Vertical", f"{avg_comp_vert:.1f}")
+        kpi_card("Compactação Vertical", avg_comp_vert)
 
     with col2:
-        kpi_card("Compactação Horizontal", f"{avg_comp_hor:.1f}")
+        kpi_card("Compactação Horizontal", avg_comp_hor)
     st.divider()
 
     if selected_time is not None:
@@ -249,8 +278,8 @@ with tab_visual:
 
             st.subheader("Analise de Frame")
             st.metric("Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s")
-            st.metric("Compactação Vertical", compactacao_frame['comp_vertical'])
-            st.metric("Compactação Horizontal", compactacao_frame['comp_horizontal'])
+            st.metric("Compactação Vertical", _safe_metric_value(compactacao_frame, 'comp_vertical'))
+            st.metric("Compactação Horizontal", _safe_metric_value(compactacao_frame, 'comp_horizontal'))
     else:
         st.info("Selecione uma fase com dados para visualizar o campo.")
 
