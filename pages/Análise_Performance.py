@@ -1,9 +1,10 @@
 import pandas as pd
+import numpy as np
 import streamlit as st
 import mplsoccer as mpl
 import matplotlib.pyplot as plt
 from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
-from scipy.spatial import ConvexHull
+from scipy.spatial import ConvexHull, QhullError
 
 # TODO 1. Inserir exception handling para quando dados de treino estão selecionados
 # TODO 2. Acabar aplicação do Convex Hull
@@ -11,7 +12,7 @@ from scipy.spatial import ConvexHull
 # Estilo para as métricas
 st.markdown("""
     <style>
-    /* Estilo exclusivo para as nossas cartas de topo */
+    /* Estilo Cartas Métricas Partida */
     .fpt-kpi-container {
         display: flex;
         justify-content: space-between;
@@ -19,7 +20,7 @@ st.markdown("""
         margin-bottom: 20px;
     }
     .fpt-kpi-card {
-        background-color: #1e1e1e; /* Fundo escuro premium */
+        background-color: #1e1e1e;
         border-left: 5px solid #E30613; /* Linha vermelha FPF */
         padding: 20px;
         border-radius: 8px;
@@ -86,7 +87,7 @@ def calcular_compactacao(tracking_df):
         tracking_df (_type_): DataFrame que contem tracking data.
 
     Returns:
-        pd.DataFrame: DataFrame com o vol
+        pd.DataFrame: DataFrame com a compactação vertical e horizontal por frame.
     """
     if 'time_evento_s' in tracking_df.columns:
 
@@ -104,6 +105,30 @@ def calcular_compactacao(tracking_df):
         frame_data = frame_data.drop(columns={'x_min', 'x_max', 'y_min', 'y_max'}).reset_index()
 
         return frame_data
+
+
+@st.cache_data
+def calcular_area_media(tracking_df, dist_x, dist_y):
+    df = tracking_df.copy()
+
+   # fator_conversao = (dist_x * dist_y) / (120 * 80)  # StatsBomb → m²
+    areas = []
+
+    for _, frame in df.groupby('time'):
+        pts = frame[['x_tr', 'y_tr']].dropna().values
+
+        if len(pts) >= 3:
+            try:
+                hull = ConvexHull(pts)
+                areas.append(hull.volume) # * fator_conversao)
+            except QhullError:
+                continue
+
+    return {
+        'mean': round(np.mean(areas), 2),
+        'median': round(np.median(areas), 2),
+        'std': round(np.std(areas), 2)
+    } if areas else None
 
 # --- SIDEBAR: FILTROS E CONTROLES ---
 def converter_para_relogio_fpf(segundos_totais):
@@ -184,7 +209,7 @@ with tab_metrics:
     if sessoes_disponiveis.empty:
         st.warning("Nenhuma métrica encontrada para estes filtros.")
     else:
-        st.dataframe(sessoes_disponiveis, use_container_width=True, hide_index=True)
+        st.dataframe(sessoes_disponiveis, width='stretch', hide_index=True)
 
 # TAB 2: VISUALIZAÇÃO DO CAMPO
 
@@ -193,31 +218,44 @@ with tab_visual:
     st.subheader('Métricas da Partida')
 
     df_compactacao = calcular_compactacao(df_fase)
-    avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
-    avg_comp_hor = df_compactacao['comp_horizontal'].mean().round(2)
+    area_dict = calcular_area_media(df_fase, 0, 0)
 
-    col1, col2, col3, col4 = st.columns(4)
+    if not df_compactacao.empty:
 
-    with col1:
-        kpi_card("Compactação Vertical", f"{avg_comp_vert:.1f}")
+        avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
+        avg_comp_hor = df_compactacao['comp_horizontal'].mean().round(2)
 
-    with col2:
-        kpi_card("Compactação Horizontal", f"{avg_comp_hor:.1f}")
-    st.divider()
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            kpi_card("Compactação Vertical", f"{avg_comp_vert:.1f}")
+
+        with col2:
+            kpi_card("Compactação Horizontal", f"{avg_comp_hor:.1f}")
+
+        with col3:
+            kpi_card("Área Ocupada", f"{area_dict['median']:.1f}")
+
+        st.divider()
+
 
     if selected_time is not None:
 
         # 1. Obter snapshot
-        snapshot = df_fase[df_fase['time_evento_s'] == selected_time]
+        snapshot = df_fase[
+            (df_fase['time_evento_s'] == selected_time)
+            & (df_fase['x_tr'].notna())
+            & (df_fase['y_tr'].notna())
+        ]
 
         # Obter metricas para o frame
         compactacao_frame = df_compactacao.loc[ df_compactacao['time_evento_s'] == selected_time]
 
+        campo = st.selectbox(label='Visualização Campo', options=['Convex Hull', 'Teste'])
+
         col_map, col_info = st.columns([3, 1])
 
         with col_map:
-
-            campo = st.selectbox(label='Visualização Campo', options=['Convex Hull', 'Teste'])
 
             # 2. Configurar Pitch
             pitch = mpl.Pitch(
@@ -225,6 +263,7 @@ with tab_visual:
                 pitch_color='#22312b',
                 line_color='#c7d5cc'
             )
+
             fig, ax = pitch.draw(figsize=(10, 7))
 
             # 3. Desenhar Jogadores
@@ -243,6 +282,27 @@ with tab_visual:
                     va='center', ha='center'
                 )
 
+            # 5. Calculo do Convex Hull (inicializamos antes para calculo da area por frame)
+            convex_hull = pitch.convexhull(
+                    snapshot.x_tr,
+                    snapshot.y_tr,
+            )
+
+            # Shape is (1, n, 2) — index accordingly
+            vertices = convex_hull[0]  # shape (n, 2)
+            x = vertices[:, 0]
+            y = vertices[:, 1]
+            area = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
+
+            # Visualizar Convex Hull
+            if campo == 'Convex Hull':
+
+                polygon = pitch.polygon(
+                    convex_hull, ax=ax,
+                    edgecolor='E30613',
+                    color='#E30613', alpha=0.3
+                )
+
             st.pyplot(fig)
 
         with col_info:
@@ -251,6 +311,7 @@ with tab_visual:
             st.metric("Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s")
             st.metric("Compactação Vertical", compactacao_frame['comp_vertical'])
             st.metric("Compactação Horizontal", compactacao_frame['comp_horizontal'])
+            st.metric("Area", round(area, 2))
     else:
         st.info("Selecione uma fase com dados para visualizar o campo.")
 
