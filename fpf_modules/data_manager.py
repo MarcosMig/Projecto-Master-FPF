@@ -61,6 +61,22 @@ def append_dedup_parquet(df_new, filename, subset_keys):
 
     if os.path.exists(filename):
         df_old = pd.read_parquet(filename)
+        # Ensure consistent dtypes between old and new data
+        for col in df_new.columns:
+            if col in df_old.columns:
+                if df_old[col].dtype != df_new[col].dtype:
+                    # Convert new data to match old data dtype
+                    if df_old[col].dtype == 'datetime64[ns, UTC]' or df_old[col].dtype == 'datetime64[ns]':
+                        df_new[col] = pd.to_datetime(df_new[col], errors='coerce')
+                    elif df_old[col].dtype == 'object':
+                        df_new[col] = df_new[col].astype(str)
+                    elif df_old[col].dtype == 'int64':
+                        df_new[col] = pd.to_numeric(df_new[col], errors='coerce').astype('Int64')
+                    elif df_old[col].dtype == 'float64':
+                        df_new[col] = pd.to_numeric(df_new[col], errors='coerce')
+                    elif df_old[col].dtype == 'bool':
+                        df_new[col] = df_new[col].astype(bool)
+        
         df_final = pd.concat([df_old, df_new], ignore_index=True)
         df_final = df_final.drop_duplicates(subset=subset_keys, keep="last")
     else:
@@ -144,3 +160,128 @@ def resolve_session_sk(session_fingerprint, session_payload, base_dir=CLEANDATA_
     df.to_parquet(path, index=False)
 
     return next_id
+
+
+# ==== DuckDB helpers for analytic schema =====
+from .duckdb_utils import connect as _ddb_connect, initialize_schema as _ddb_init, insert_metrics as _ddb_insert
+
+
+def resolve_game_sk(game_payload, base_dir=CLEANDATA_DIR):
+    """Resolve game_sk persistente a partir dos dados de um jogo.
+
+    `game_payload` deve conter os campos únicos que identificam uma partida
+    (por exemplo, data + adversário). A função devolve a chave surrogate e
+    grava um parquet "games.parquet" no `base_dir`.
+    """
+    path = os.path.join(base_dir, "games.parquet")
+    os.makedirs(base_dir, exist_ok=True)
+
+    if os.path.exists(path):
+        df = pd.read_parquet(path)
+    else:
+        df = pd.DataFrame()
+
+    # se já existir manifestação idêntica retorna a chave
+    if not df.empty:
+        mask = pd.Series([True] * len(df))
+        for k, v in game_payload.items():
+            if k in df.columns:
+                mask &= df[k] == v
+        if mask.any():
+            return int(df.loc[mask, "game_sk"].iloc[0])
+
+    next_id = 1 if df.empty else int(pd.to_numeric(df["game_sk"], errors="coerce").max()) + 1
+
+    rec = dict(game_payload)
+    rec["game_sk"] = next_id
+    if "game_date" in rec and pd.isna(rec.get("game_date")):
+        rec["game_date"] = pd.NaT
+
+    df_new = pd.DataFrame([rec])
+    df = pd.concat([df, df_new], ignore_index=True)
+    df.to_parquet(path, index=False)
+
+    return next_id
+
+
+def ensure_duckdb(db_file=None):
+    """Return an open DuckDB connection with schema initialised.
+
+    Args:
+        db_file: optional path to duckdb file; defaults to CLEANDATA_DIR/fpf.duckdb.
+    """
+    if db_file is None:
+        db_file = os.path.join(CLEANDATA_DIR, "fpf.duckdb")
+    con = _ddb_connect(db_file)
+    _ddb_init(con)
+    return con
+
+
+def write_metrics(metrics_df, db_file=None):
+    """Persist a metrics dataframe into the DuckDB analytics schema."""
+    con = ensure_duckdb(db_file)
+    _ddb_insert(con, metrics_df)
+    # optional: close connection
+    con.close()
+    return None
+
+
+def write_session_data(
+    df_perf, df_qc, df_samples, df_athlete_session,
+    db_file=None
+):
+    """Persist performance, quality, samples, and athlete_session DataFrames to DuckDB.
+    
+    This is the main integration point for the analytic pipeline.
+    Uses upsert logic (update if exists via PK, insert if new) to avoid duplicates.
+    
+    Returns:
+        dict with integration stats
+    """
+    from .duckdb_utils import create_analytics_tables, insert_table
+    
+    try:
+        con = ensure_duckdb(db_file)
+    except ImportError as e:
+        raise ImportError(
+            f"DuckDB não está instalado. Execute no terminal:\n"
+            f"pip install duckdb\n\n"
+            f"Erro original: {str(e)}"
+        )
+    
+    create_analytics_tables(con)
+    
+    stats = {
+        'performance_metrics': None,
+        'quality_metrics': None,
+        'samples': None,
+        'athlete_session': None,
+    }
+    
+    # Insert into analytics tables with upsert logic
+    if df_perf is not None and not df_perf.empty:
+        stats['performance_metrics'] = insert_table(
+            con, "performance_metrics", df_perf,
+            pk_columns=["session_sk", "athlete_sk", "phase_id"]
+        )
+    
+    if df_qc is not None and not df_qc.empty:
+        stats['quality_metrics'] = insert_table(
+            con, "quality_metrics", df_qc,
+            pk_columns=["session_sk", "athlete_sk", "phase_id"]
+        )
+    
+    if df_samples is not None and not df_samples.empty:
+        stats['samples'] = insert_table(
+            con, "samples", df_samples,
+            pk_columns=["session_sk", "athlete_sk", "phase_id", "time"]
+        )
+    
+    if df_athlete_session is not None and not df_athlete_session.empty:
+        stats['athlete_session'] = insert_table(
+            con, "athlete_session", df_athlete_session,
+            pk_columns=["session_sk", "athlete_sk"]
+        )
+    
+    con.close()
+    return stats

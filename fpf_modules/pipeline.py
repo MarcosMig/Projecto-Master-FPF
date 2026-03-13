@@ -7,7 +7,15 @@ from scipy.signal import savgol_filter
 
 from .constants import COL_FASE, COL_LAT, COL_LON, COL_TIME
 from .io_utils import get_atleta_id, infer_fase, read_csv_upload
-from .metrics import time_to_seconds
+from .metrics import time_to_seconds, compute_metrics_for_df
+
+# helpers for analytic schema
+from .data_manager import (
+    resolve_athlete_sk,
+    resolve_session_sk,
+    resolve_game_sk,
+    write_metrics,
+)
 
 
 HR_CANDIDATE_COLS = ["HR_bpm", "HR", "HeartRate", "Heart Rate", "Heart_Rate", "BPM", "Pulse"]
@@ -199,6 +207,7 @@ def sincronizar(temp_files, out_dir: Path):
             if not np.isfinite(t_s) or not np.isfinite(t_e):
                 continue
 
+            # compute event time and period for rows in this phase
             mask = df_sync[COL_FASE] == fase
             rel_s = df_sync.loc[mask, "__time_s"] - t_s
             abs_s = event_clock[fase]["start_s"] + rel_s
@@ -226,3 +235,67 @@ def sincronizar(temp_files, out_dir: Path):
     ordem_fases = {"Warm-Up": 0, "1P": 1, "2P": 2}
     fases_ordenadas = sorted(fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
     return out_files, fases_ordenadas, fases_dict, len(master_df), event_clock
+
+
+# ------------------------------------------------
+# analytic pipeline helpers
+# ------------------------------------------------
+
+def compute_and_save_metrics(
+    temp_files: list,
+    game_payload: dict = None,
+    session_payload: dict = None,
+    db_file: str = None,
+):
+    """Compute metrics from the temporary csv files and persist them.
+
+    Parameters
+    ----------
+    temp_files : list of pathlib.Path
+        CSV files produced by :func:`processar_atletas_para_temp`.
+    game_payload : dict, optional
+        Identifiers for the current game (e.g. date, opponent).  Used to
+        resolve a game_sk.
+    session_payload : dict, optional
+        Metadata about the session.  Used to resolve a session_sk.
+    db_file : str, optional
+        Path to the duckdb file; forwarded to :func:`write_metrics`.
+    """
+    if game_payload is None:
+        game_payload = {}
+    if session_payload is None:
+        session_payload = {}
+
+    # resolve dimensions
+    game_sk = resolve_game_sk(game_payload) if game_payload else None
+    session_sk = resolve_session_sk(
+        session_payload.get("fingerprint", None), session_payload
+    )
+
+    all_metrics = []
+    for f in temp_files:
+        df = pd.read_csv(f, sep=";")
+        if df.empty:
+            continue
+        athlete_id = str(df["Atleta_ID"].iloc[0])
+        athlete_sk_map = resolve_athlete_sk(df)
+        athlete_sk = athlete_sk_map.get(athlete_id)
+
+        # compute metrics per phase
+        for fase, grp in df.groupby(COL_FASE):
+            m = compute_metrics_for_df(grp)
+            # flatten into a single row
+            row = {
+                "athlete_sk": athlete_sk,
+                "session_sk": session_sk,
+                "game_sk": game_sk,
+                "phase": fase,
+                **m,
+            }
+            all_metrics.append(row)
+
+    if all_metrics:
+        metrics_df = pd.DataFrame(all_metrics)
+        write_metrics(metrics_df, db_file=db_file)
+    return all_metrics
+

@@ -129,6 +129,25 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
             "hr_bpm": df_sync[hr_col] if hr_col else np.nan,
         })
 
+        # Convert time column to proper timestamp format for DuckDB
+        if "time" in sample_df.columns and not sample_df["time"].isna().all():
+            # Handle relative time format (HH:MM:SS.s) by combining with a base date
+            try:
+                # If time is already a full timestamp, use it as-is
+                if sample_df["time"].astype(str).str.contains('-').any():
+                    sample_df["time"] = pd.to_datetime(sample_df["time"], errors="coerce")
+                else:
+                    # Handle relative time format by adding a base date (e.g., 2023-01-01)
+                    base_date = pd.Timestamp('2023-01-01')
+                    # Parse time strings and add to base date
+                    time_parsed = pd.to_datetime(sample_df["time"], format='%H:%M:%S.%f', errors='coerce')
+                    sample_df["time"] = base_date + (time_parsed - time_parsed.dt.normalize())
+            except:
+                # Fallback: try direct conversion
+                sample_df["time"] = pd.to_datetime(sample_df["time"], errors="coerce")
+            
+            # Keep as datetime for DuckDB TIMESTAMP compatibility (don't convert to string)
+
         sample_df["phase_id"] = sample_df["fase"].map(PHASE_MAP)
         sample_frames.append(sample_df)
 
@@ -148,6 +167,14 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
 
     df_samples = pd.concat(sample_frames, ignore_index=True) if sample_frames else pd.DataFrame()
     df_athlete_session = pd.DataFrame(athlete_session_rows)
+    
+    # Ensure timestamp columns are properly formatted for DuckDB and parquet
+    if not df_athlete_session.empty and "processado_em" in df_athlete_session.columns:
+        # Ensure processado_em is datetime type - recreate if necessary
+        current_time = pd.Timestamp.utcnow()
+        df_athlete_session["processado_em"] = current_time
+        # Keep as datetime for parquet compatibility (don't convert to string)
+    
     return df_samples, df_athlete_session
 
 # --- CONFIGURAÇÃO ---
@@ -259,8 +286,13 @@ def _get_auth_from_secrets():
     """
     try:
         auth = st.secrets["auth"]
-        return auth.get("username"), auth.get("password")
-    except Exception:
+        u = auth.get("username")
+        p = auth.get("password")
+        # DEBUG: remove isto depois
+        print(f"[DEBUG] Auth from secrets: username={repr(u)}, password={'*' * len(p) if p else None}")
+        return u, p
+    except Exception as e:
+        print(f"[DEBUG] Secrets error: {e}")
         return None, None
 
 
@@ -1427,112 +1459,44 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
         use_container_width=True,
     )
 
-    st.subheader("Downloads Parquet")
 
-    c1, c2 = st.columns(2)
+    st.subheader("Integração na Base de Dados")
 
-    with c1:
-        st.markdown("**Sessão atual**")
-
-        if st.session_state.get("df_perf") is not None and not st.session_state.df_perf.empty:
-            st.download_button(
-                "⬇️ Performance sessão (.parquet)",
-                data=_df_to_parquet_bytes(st.session_state.df_perf),
-                file_name="performance_metrics_session.parquet",
-                mime="application/octet-stream",
-                use_container_width=True,
-                key="dl_perf_session_parquet",
-            )
-
-        if st.session_state.get("df_qc") is not None and not st.session_state.df_qc.empty:
-            st.download_button(
-                "⬇️ Quality sessão (.parquet)",
-                data=_df_to_parquet_bytes(st.session_state.df_qc),
-                file_name="quality_metrics_session.parquet",
-                mime="application/octet-stream",
-                use_container_width=True,
-                key="dl_qc_session_parquet",
-            )
-
-        if st.session_state.get("df_samples") is not None and not st.session_state.df_samples.empty:
-            st.download_button(
-                "⬇️ Samples sessão (.parquet)",
-                data=_df_to_parquet_bytes(st.session_state.df_samples),
-                file_name="samples_session.parquet",
-                mime="application/octet-stream",
-                use_container_width=True,
-                key="dl_samples_session_parquet",
-            )
-
-        if st.session_state.get("df_athlete_session") is not None and not st.session_state.df_athlete_session.empty:
-            st.download_button(
-                "⬇️ Athlete session (.parquet)",
-                data=_df_to_parquet_bytes(st.session_state.df_athlete_session),
-                file_name="athlete_session_session.parquet",
-                mime="application/octet-stream",
-                use_container_width=True,
-                key="dl_athlete_session_parquet",
-            )
-
-    with c2:
-        st.markdown("**Base acumulada**")
-
-        perf_path = Path(CLEANDATA_DIR) / "performance_metrics.parquet"
-        qc_path = Path(CLEANDATA_DIR) / "quality_metrics.parquet"
-        samples_path = Path(CLEANDATA_DIR) / "samples.parquet"
-        athlete_session_path = Path(CLEANDATA_DIR) / "athlete_session.parquet"
-
-        if perf_path.exists():
-            st.download_button(
-                "⬇️ Performance base (.parquet)",
-                data=_file_to_bytes(perf_path),
-                file_name="performance_metrics.parquet",
-                mime="application/octet-stream",
-                use_container_width=True,
-                key="dl_perf_base_parquet",
-            )
-
-        if qc_path.exists():
-            st.download_button(
-                "⬇️ Quality base (.parquet)",
-                data=_file_to_bytes(qc_path),
-                file_name="quality_metrics.parquet",
-                mime="application/octet-stream",
-                use_container_width=True,
-                key="dl_qc_base_parquet",
-            )
-
-        if samples_path.exists():
-            st.download_button(
-                "⬇️ Samples base (.parquet)",
-                data=_file_to_bytes(samples_path),
-                file_name="samples.parquet",
-                mime="application/octet-stream",
-                use_container_width=True,
-                key="dl_samples_base_parquet",
-            )
-
-        if athlete_session_path.exists():
-            st.download_button(
-                "⬇️ Athlete session base (.parquet)",
-                data=_file_to_bytes(athlete_session_path),
-                file_name="athlete_session.parquet",
-                mime="application/octet-stream",
-                use_container_width=True,
-                key="dl_athlete_session_base_parquet",
-            )
-
-    manual_metricas_txt = st.session_state.get("manual_metricas_txt")
-    if manual_metricas_txt:
-        st.download_button(
-            "⬇️ Download Manual de Métricas (.txt)",
-            data=manual_metricas_txt.encode("utf-8"),
-            file_name="manual_metricas_FPF.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
+    if st.session_state.get("df_perf") is not None and not st.session_state.df_perf.empty:
+        from fpf_modules.data_manager import write_session_data
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.info("✅ Dados processados e prontos para serem integrados na base de dados DuckDB.")
+        
+        with col2:
+            if st.button("💾 Gravar na Base", key="btn_save_duckdb", use_container_width=True):
+                try:
+                    stats = write_session_data(
+                        st.session_state.df_perf,
+                        st.session_state.df_qc,
+                        st.session_state.df_samples,
+                        st.session_state.df_athlete_session,
+                        db_file=str(Path(CLEANDATA_DIR) / "fpf.duckdb")
+                    )
+                    
+                    # Build stats message
+                    stats_msg = "📊 **Resumo da Integração:**\n\n"
+                    for table, table_stats in stats.items():
+                        if table_stats is not None:
+                            inserted = table_stats.get('inserted', 0)
+                            updated = table_stats.get('updated', 0)
+                            stats_msg += f"• **{table}**: {inserted} inseridos, {updated} atualizados\n"
+                    
+                    st.success("✅ Dados gravados com sucesso na base DuckDB!")
+                    st.markdown(stats_msg)
+                except Exception as e:
+                    st.error(f"❌ Erro ao gravar: {str(e)}")
+    else:
+        st.warning("📊 Processa a sessão primeiro para gravar os dados.")
 
     # Auditoria de timestamp (diagnóstico)
+
     if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
         dfta = st.session_state.df_time_audit
         if isinstance(dfta, pd.DataFrame) and not dfta.empty:
