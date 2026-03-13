@@ -186,8 +186,14 @@ def insert_table(con, table_name: str, df, pk_columns: list = None) -> dict:
                 # Check if strings contain date separators
                 has_dates = time_strs.str.contains('-', na=False)
                 if has_dates.any():
-                    # Some values have dates, try direct conversion
-                    df_processed[col] = pd.to_datetime(df_processed[col], errors='coerce')
+                    # Some values have dates, try full timestamp format first
+                    df_processed[col] = pd.to_datetime(df_processed[col], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
+                    # Fill any NaT values with time-only parsing
+                    still_nat = df_processed[col].isna()
+                    if still_nat.any():
+                        time_only = pd.to_datetime(df_processed[col].astype(str), format='%H:%M:%S.%f', errors='coerce')
+                        base_date = pd.Timestamp('2023-01-01')
+                        df_processed.loc[still_nat, col] = base_date + (time_only.loc[still_nat] - time_only.loc[still_nat].dt.normalize())
                 else:
                     # Handle relative time format by prepending base date
                     full_timestamps = '2023-01-01 ' + time_strs
@@ -199,8 +205,13 @@ def insert_table(con, table_name: str, df, pk_columns: list = None) -> dict:
         elif ('timestamp' in col.lower() or 'processado_em' in col.lower()) and df_processed[col].dtype in ['object', 'datetime64[ns]']:
             # Handle other timestamp columns - keep as datetime for DuckDB compatibility
             try:
-                df_processed[col] = pd.to_datetime(df_processed[col], errors='coerce')
+                # Try full timestamp format first
+                df_processed[col] = pd.to_datetime(df_processed[col], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
+                # If many values are still NaT, try without format
+                if df_processed[col].isna().mean() > 0.5:
+                    df_processed[col] = pd.to_datetime(df_processed[col], errors='coerce')
             except Exception:
+                # Fallback conversion
                 df_processed[col] = pd.to_datetime(df_processed[col], errors='coerce')
     
     con.register(f"_tmp_{table_name}", df_processed)

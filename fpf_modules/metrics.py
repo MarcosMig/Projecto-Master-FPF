@@ -12,6 +12,10 @@ from .constants import (
 
 
 def time_to_seconds(series: pd.Series) -> pd.Series:
+    """Converte série temporal para segundos desde o início.
+
+    Tenta formatos específicos antes de usar parsing genérico para evitar warnings.
+    """
     s = series.copy()
     s_num = pd.to_numeric(s, errors="coerce")
     if s_num.notna().mean() > 0.8:
@@ -22,7 +26,34 @@ def time_to_seconds(series: pd.Series) -> pd.Series:
             return s_num.astype(float)
         return s_num.astype(float)
 
-    dt = pd.to_datetime(s, errors="coerce", utc=True)
+    # Try specific datetime formats first to avoid warnings
+    dt = None
+
+    # Try full timestamp format first (YYYY-MM-DD HH:MM:SS.ffffff)
+    try:
+        dt = pd.to_datetime(s, format='%Y-%m-%d %H:%M:%S.%f', errors='coerce', utc=True)
+        if dt.notna().mean() > 0.5:  # If more than 50% parsed successfully
+            pass  # Use this result
+        else:
+            dt = None
+    except:
+        dt = None
+
+    # If full timestamp didn't work well, try time-only format (HH:MM:SS.ffffff)
+    if dt is None or dt.notna().mean() < 0.5:
+        try:
+            dt = pd.to_datetime(s, format='%H:%M:%S.%f', errors='coerce', utc=True)
+            if dt.notna().mean() > 0.5:
+                pass  # Use this result
+            else:
+                dt = None
+        except:
+            dt = None
+
+    # If specific formats didn't work, fall back to generic parsing (with warning suppressed)
+    if dt is None or dt.notna().mean() < 0.5:
+        dt = pd.to_datetime(s, errors="coerce", utc=True)
+
     if dt.notna().any():
         t0 = dt.dropna().iloc[0]
         return (dt - t0).dt.total_seconds()

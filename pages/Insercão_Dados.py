@@ -133,9 +133,19 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
         if "time" in sample_df.columns and not sample_df["time"].isna().all():
             # Handle relative time format (HH:MM:SS.s) by combining with a base date
             try:
-                # If time is already a full timestamp, use it as-is
-                if sample_df["time"].astype(str).str.contains('-').any():
-                    sample_df["time"] = pd.to_datetime(sample_df["time"], errors="coerce")
+                # Check if time values contain date separators
+                time_strs = sample_df["time"].astype(str)
+                has_dates = time_strs.str.contains('-', na=False)
+                
+                if has_dates.any():
+                    # Some values have dates, try full timestamp format first
+                    sample_df["time"] = pd.to_datetime(sample_df["time"], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
+                    # Fill any NaT values with time-only parsing
+                    still_nat = sample_df["time"].isna()
+                    if still_nat.any():
+                        time_only = pd.to_datetime(sample_df.loc[still_nat, "time"], format='%H:%M:%S.%f', errors='coerce')
+                        base_date = pd.Timestamp('2023-01-01')
+                        sample_df.loc[still_nat, "time"] = base_date + (time_only - time_only.dt.normalize())
                 else:
                     # Handle relative time format by adding a base date (e.g., 2023-01-01)
                     base_date = pd.Timestamp('2023-01-01')
@@ -143,8 +153,17 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
                     time_parsed = pd.to_datetime(sample_df["time"], format='%H:%M:%S.%f', errors='coerce')
                     sample_df["time"] = base_date + (time_parsed - time_parsed.dt.normalize())
             except:
-                # Fallback: try direct conversion
-                sample_df["time"] = pd.to_datetime(sample_df["time"], errors="coerce")
+                # Fallback: try direct conversion with specific formats
+                try:
+                    sample_df["time"] = pd.to_datetime(sample_df["time"], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
+                except:
+                    try:
+                        sample_df["time"] = pd.to_datetime(sample_df["time"], format='%H:%M:%S.%f', errors='coerce')
+                        base_date = pd.Timestamp('2023-01-01')
+                        sample_df["time"] = base_date + (sample_df["time"] - sample_df["time"].dt.normalize())
+                    except:
+                        # Final fallback
+                        sample_df["time"] = pd.to_datetime(sample_df["time"], errors="coerce")
             
             # Keep as datetime for DuckDB TIMESTAMP compatibility (don't convert to string)
 
