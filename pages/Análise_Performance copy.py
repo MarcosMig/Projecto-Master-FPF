@@ -3,34 +3,15 @@ import numpy as np
 import streamlit as st
 import mplsoccer as mpl
 import matplotlib.pyplot as plt
-from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
 from scipy.spatial import ConvexHull, QhullError
 import plotly.graph_objects as go
 import numpy as np
+
+from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
+import fpf_modules.visualization as visual
 # TODO 1. Inserir exception handling para quando dados de treino estão selecionados
 # TODO 2. Acabar aplicação do Convex Hull
 
-def draw_statsbomb_pitch_horizontal():
-    shapes = [
-        # Pitch outline
-        dict(type="rect", x0=0, y0=0, x1=120, y1=80, line=dict(color="white", width=2)),
-        # Halfway line
-        dict(type="line", x0=60, y0=0, x1=60, y1=80, line=dict(color="white", width=2)),
-        # Centre circle
-        dict(type="circle", x0=51, y0=31, x1=69, y1=49, line=dict(color="white", width=2)),
-        # Centre dot
-        dict(type="circle", x0=59.5, y0=39.5, x1=60.5, y1=40.5, fillcolor="white", line=dict(color="white")),
-        # Penalty areas
-        dict(type="rect", x0=0, y0=18, x1=18, y1=62, line=dict(color="white", width=2)),
-        dict(type="rect", x0=102, y0=18, x1=120, y1=62, line=dict(color="white", width=2)),
-        # 6-yard boxes
-        dict(type="rect", x0=0, y0=30, x1=6, y1=50, line=dict(color="white", width=2)),
-        dict(type="rect", x0=114, y0=30, x1=120, y1=50, line=dict(color="white", width=2)),
-        # Goals
-        dict(type="rect", x0=-2, y0=36, x1=0, y1=44, line=dict(color="white", width=2)),
-        dict(type="rect", x0=120, y0=36, x1=122, y1=44, line=dict(color="white", width=2)),
-    ]
-    return shapes
 
 # Estilo para as métricas
 st.markdown("""
@@ -277,7 +258,7 @@ with tab_visual:
         col1, col2 = st.columns(2)
 
         with col1:
-            campo = st.selectbox(label='Visualização Campo', options=['Convex Hull', 'Teste'],index=None, placeholder='Seleciona outro metodo de visualizar o campo')
+            campo = st.selectbox(label='Visualização Campo', options=['Convex Hull'],index=None, placeholder='Seleciona outro metodo de visualizar o campo')
 
         if 'selected_player' not in st.session_state:
             st.session_state.selected_player = None
@@ -294,36 +275,63 @@ with tab_visual:
                 with st.popover(texto_popup, width=500):
 
                     if st.session_state.selected_player:
+
                         # Filter that player's tracking data across all frames
                         player_frames = tracking_df[tracking_df['atleta_id'] == player_name]
 
-                        st.markdown(f"### 🔥 {player_name} — Position Heatmap")
+                        st.markdown(f"### {player_name} — Heatmap")
 
-
+                        # Vamos usar Plotly, pois o kdeplot do mplsoccer
+                        # Demora muito tempo a carregar
                         fig_heat = go.Figure()
                         fig_heat.update_layout(
-                            shapes=draw_statsbomb_pitch_horizontal(),
-                            plot_bgcolor="#538032",
-                            paper_bgcolor="#538032",
+                            shapes=visual.draw_statsbomb_pitch_horizontal(),
+                            plot_bgcolor="#22312b",
+                            paper_bgcolor="#22312b",
                             xaxis=dict(range=[0, 120], visible=False),
-                            yaxis=dict(range=[0, 80], visible=False, scaleanchor="x"),
+                            yaxis=dict(range=[0, 80], visible=False),
                             margin=dict(l=0, r=0, t=0, b=0),
-                            height=500,
+                            height=300,
                         )
 
+                        # Cores do Heatmap
+                        custom_hot = [
+                            [0.0,  "rgba(34, 49, 43, 0)"],      # transparente — campo limpo
+                            [0.08, "rgba(34, 49, 43, 0.5)"],    # verde campo — densidade muito baixa
+                            [0.2,  "rgba(80, 80, 20, 0.8)"],    # transição rápida para quente
+                            [0.35, "rgba(180, 160, 0, 0.9)"],   # amarelo escuro
+                            [0.5,  "rgba(240, 220, 0, 1.0)"],   # amarelo brilhante
+                            [0.65, "rgba(255, 140, 0, 1.0)"],   # laranja
+                            [0.8,  "rgba(220, 50, 0, 1.0)"],    # vermelho alaranjado
+                            [1.0,  "rgba(120, 0, 0, 1.0)"],     # vermelho escuro
+                        ]
+
+                        # Calcular Histograma de Posição
                         fig_heat.add_trace(go.Histogram2dContour(
                             x=player_frames['x_tr'],
                             y=player_frames['y_tr'],
-                            colorscale='Hot',
-                            reversescale=True,
+                            colorscale=custom_hot,
+                            reversescale=False,
                             showscale=False,
                             ncontours=20,
-                            opacity=0.7,
-                            xaxis='x',
-                            yaxis='y',
+                            opacity=1,
+                            contours=dict(
+                                coloring='fill',
+                            ),
+                            line=dict(width=0),
                         ))
 
-                        st.plotly_chart(fig_heat, use_container_width=True)
+
+                        # Render Heatmap
+                        st.plotly_chart(
+                            fig_heat,
+                            config = {
+                                'scrollZoom': False,
+                                'displayModeBar': False,
+                                'staticPlot': True
+                            },
+                            use_container_width=True
+                        )
 
                     else:
                         st.warning('Selecione um jogador no campo, para verificar a sua posição durante o jogo!')
@@ -335,29 +343,89 @@ with tab_visual:
 
             # --- Main pitch ---
             fig_pitch = go.Figure()
+
+            # Configurar Campo
             fig_pitch.update_layout(
-                shapes=draw_statsbomb_pitch_horizontal(),
-                plot_bgcolor="#538032",
-                paper_bgcolor="#538032",
-                xaxis=dict(range=[-4, 124], visible=False),
+                shapes=visual.draw_statsbomb_pitch_horizontal(),
+                plot_bgcolor="#22312b",
+                paper_bgcolor="#22312b",
+                xaxis=dict(range=[-2, 122], visible=False),
                 yaxis=dict(range=[-2, 82], visible=False, scaleanchor="x"),
                 margin=dict(l=0, r=0, t=0, b=0),
-                height=500,
+                height=450
             )
 
+            # Desenhar Jogadores
             fig_pitch.add_trace(go.Scatter(
                 x=snapshot['x_tr'],
                 y=snapshot['y_tr'],
                 mode='markers',
                 marker=dict(size=14, color='red', line=dict(color='white', width=1)),
                 customdata=snapshot[['atleta_id']].values,
-                hovertemplate="<b>%{customdata[0]}</b>",
+                hovertemplate="<b>%{customdata[0]}</b>"
             ))
 
-            # Capture clicks
-            clicked = st.plotly_chart(fig_pitch, on_select='rerun')
-            if clicked and clicked['selection']['points']:
-                st.session_state.selected_player = clicked['selection']['points'][0]['customdata'][0]
+            # Campo Default
+            if campo is None:
+                # Capture clicks
+                clicked = st.plotly_chart(
+                    fig_pitch,
+                    on_select='rerun',
+                    config = {
+                        'scrollZoom': False,
+                        'responsive': True,
+                        'displayModeBar': False
+                    }
+                )
+
+                if clicked and clicked['selection']['points']:
+                    st.session_state.selected_player = clicked['selection']['points'][0]['customdata'][0]
+
+            # Calculo do Convex Hull
+
+            pts = snapshot[['x_tr', 'y_tr']].dropna().values
+
+            if len(pts) >= 3:
+                try:
+                    hull = ConvexHull(pts)
+                    area = hull.volume
+                except QhullError:
+                    area = 0.00
+
+            # Visualizar Convex Hull
+            if campo == 'Convex Hull' and len(pts) >= 3:
+                try:
+                    hull = ConvexHull(pts)
+
+                    # Get hull vertices in order and close the polygon by repeating the first point
+                    hull_pts = pts[hull.vertices]
+                    hull_pts_closed = np.vstack([hull_pts, hull_pts[0]])
+
+                    fig_pitch.add_trace(go.Scatter(
+                        x=hull_pts_closed[:, 0],
+                        y=hull_pts_closed[:, 1],
+                        mode='lines',
+                        fill='toself',
+                        fillcolor='rgba(227, 6, 19, 0.3)',
+                        line=dict(color='#E30613', width=2),
+                        hoverinfo='skip',
+                        showlegend=False
+                    ))
+
+                    fig_pitch.update_layout(showlegend=False)
+
+                except QhullError:
+                    pass
+
+                st.plotly_chart(
+                    fig_pitch,
+                    config = {
+                        'scrollZoom': False,
+                        'responsive': True,
+                        'displayModeBar': False,
+                        'staticPlot': True
+                    }
+            )
 
         # INFO FRAME
         with col_info:
