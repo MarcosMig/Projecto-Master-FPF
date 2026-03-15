@@ -8,12 +8,11 @@ import plotly.graph_objects as go
 import numpy as np
 
 from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
+from fpf_modules.metrics import calcular_area
 import fpf_modules.visualization as visual
-# TODO 1. Inserir exception handling para quando dados de treino estão selecionados
-# TODO 2. Acabar aplicação do Convex Hull
 
 
-# Estilo para as métricas
+# Estilo para as métricas de partida
 st.markdown("""
     <style>
     /* Estilo Cartas Métricas Partida */
@@ -25,7 +24,7 @@ st.markdown("""
     }
     .fpt-kpi-card {
         background-color: #1e1e1e;
-        border-left: 5px solid #E30613; /* Linha vermelha FPF */
+        border-left: 5px solid #E30613; /* Linha vermelha */
         padding: 20px;
         border-radius: 8px;
         box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
@@ -35,7 +34,6 @@ st.markdown("""
         color: #9aa0a6;
         font-size: 14px;
         font-weight: bold;
-        text-transform: uppercase;
         margin-bottom: 5px;
     }
     .fpt-kpi-value {
@@ -68,7 +66,7 @@ def load_and_merge_data():
     sessions = pd.read_parquet(f"{CLEANDATA_DIR}/sessions.parquet")
 
     # Merge de metadados no tracking
-    cols_meta = ['data', 'selecao', 'contexto', 'jogo', 'session_sk']
+    cols_meta = ['data', 'selecao', 'contexto', 'jogo', 'session_sk', 'dist_x', 'dist_y']
     df_merged = pd.merge(
         tracking,
         sessions[cols_meta],
@@ -84,14 +82,17 @@ except Exception as e:
     st.stop()
 
 @st.cache_data
-def calcular_compactacao(tracking_df):
-    """Calcula compactação Vertical e Horizontal por Frame.
+def calcular_compactacao(tracking_df, dist_x, dist_y, pitch_x=120, pitch_y=80):
+    """Calcula compactação Vertical e Horizontal por Frame, converte de campo (default StatsBomb) para metros.
 
     Args:
-        tracking_df (_type_): DataFrame que contem tracking data.
-
+        tracking_df (DataFrame): DataFrame que contem tracking data.
+        dist_x (Float): Comprimento original do campo
+        dist_y (Float): Largura original do campo.
+        pitch_x (Integer): Comprimento do campo, default 120 (Statsbomb)
+        pitch_y (Integer): Largura do campo, default 80 (Statsbomb)
     Returns:
-        pd.DataFrame: DataFrame com a compactação vertical e horizontal por frame.
+        pd.DataFrame: DataFrame com a compactação vertical e horizontal por frame em metros.
     """
     if 'time_evento_s' in tracking_df.columns:
 
@@ -103,8 +104,8 @@ def calcular_compactacao(tracking_df):
             y_max=('y_tr', 'max')
         )
 
-        frame_data['comp_vertical'] = round( frame_data['x_max'] - frame_data['x_min'], 2)
-        frame_data['comp_horizontal'] = round( frame_data['y_max'] - frame_data['y_min'], 2)
+        frame_data['comp_vertical'] = round( (frame_data['x_max'] - frame_data['x_min']) * (pitch_x / dist_x), 2)
+        frame_data['comp_horizontal'] = round( (frame_data['y_max'] - frame_data['y_min']) * (pitch_y / dist_y), 2)
 
         frame_data = frame_data.drop(columns={'x_min', 'x_max', 'y_min', 'y_max'}).reset_index()
 
@@ -112,27 +113,43 @@ def calcular_compactacao(tracking_df):
 
 
 @st.cache_data
-def calcular_area_media(tracking_df, dist_x, dist_y):
+def calcular_area_media(tracking_df, dist_x, dist_y, pitch_x=120, pitch_y=80):
+    """Calcula a area ocupada média da partida, convertendo de campo (default StatsBomb) em m², usando as distancias originais do campo.
+
+    Args:
+        tracking_df (DataFrame): DataFrame que contem tracking data.
+        dist_x (Float): Comprimento original do campo
+        dist_y (Float): Largura original do campo.
+        pitch_x (Integer): Comprimento do campo, default 120 (Statsbomb)
+        pitch_y (Integer): Largura do campo, default 80 (Statsbomb)
+
+    Returns:
+        Dictionary: Média e Mediana da Área Ocupada.
+    """
     df = tracking_df.copy()
 
-   # fator_conversao = (dist_x * dist_y) / (120 * 80)  # StatsBomb → m²
+    fator_conversao = (dist_x * dist_y) / (pitch_x * pitch_y)
     areas = []
 
-    for _, frame in df.groupby('time'):
+    for time, frame in df.groupby('time_evento_s'):
         pts = frame[['x_tr', 'y_tr']].dropna().values
 
         if len(pts) >= 3:
             try:
                 hull = ConvexHull(pts)
-                areas.append(hull.volume) # * fator_conversao)
+                areas.append(
+                    {
+                        'time_evento_s':time,
+                        'area': round(hull.volume * fator_conversao, 2)
+                     }
+                )
+
             except QhullError:
                 continue
 
-    return {
-        'mean': round(np.mean(areas), 2),
-        'median': round(np.median(areas), 2),
-        'std': round(np.std(areas), 2)
-    } if areas else None
+    areas_df = pd.DataFrame(areas)
+
+    return areas_df if not areas_df.empty else None
 
 # --- SIDEBAR: FILTROS E CONTROLES ---
 def converter_para_relogio_fpf(segundos_totais):
@@ -187,8 +204,12 @@ with st.sidebar:
         (tracking_df.selecao == selecao)
         & (tracking_df.contexto == contexto)
         & (tracking_df.jogo == jogo)
-        & (tracking_df['fase'] == fase_selected)
+        & (tracking_df.fase == fase_selected)
     ]
+
+    # Obter dimensões originais do campo
+    dist_x = df_fase['dist_x'].unique()[0].squeeze()
+    dist_y = df_fase['dist_y'].unique()[0].squeeze()
 
     if not df_fase.empty:
         timestamps = sorted(df_fase['time_evento_s'].unique())
@@ -198,6 +219,7 @@ with st.sidebar:
             options=timestamps,
          format_func=converter_para_relogio_fpf
         )
+
     else:
         st.sidebar.warning(f"Sem dados de tracking para a fase {fase_selected}")
         selected_time = None
@@ -221,26 +243,41 @@ with tab_visual:
 
     st.subheader('Métricas da Partida')
 
-    df_compactacao = calcular_compactacao(df_fase)
-    area_dict = calcular_area_media(df_fase, 0, 0)
+    if fase_selected != 'Warm-Up':
 
-    if not df_compactacao.empty:
+        df_compactacao = calcular_compactacao(
+            df_fase,
+            dist_x,
+            dist_y
+            )
 
-        avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
-        avg_comp_hor = df_compactacao['comp_horizontal'].mean().round(2)
+        df_area = calcular_area_media(
+            df_fase,
+            dist_x,
+            dist_y
+            )
 
-        col1, col2, col3, col4 = st.columns(4)
+        if not df_compactacao.empty:
 
-        with col1:
-            kpi_card("Compactação Vertical", f"{avg_comp_vert:.1f}")
+            avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
+            avg_comp_hor = df_compactacao['comp_horizontal'].mean().round(2)
+            avg_area = df_area['area'].mean().round(2)
 
-        with col2:
-            kpi_card("Compactação Horizontal", f"{avg_comp_hor:.1f}")
+            col1, col2, col3, col4 = st.columns([1.2,1.2,1,1])
 
-        with col3:
-            kpi_card("Área Ocupada", f"{area_dict['median']:.1f}")
+            with col1:
+                kpi_card("COMPACTAÇÃO VERTICAL (m)", f"{avg_comp_vert:.1f}")
 
-        st.divider()
+            with col2:
+                kpi_card("COMPACTAÇÃO HORIZONTAL (m)", f"{avg_comp_hor:.1f}")
+
+            with col3:
+                kpi_card("ÁREA OCUPADA (m²)", f"{avg_area:.1f}")
+
+            st.divider()
+
+    else:
+        st.info('Métricas calculadas apenas para fase de jogo!')
 
 
     if selected_time is not None:
@@ -252,8 +289,10 @@ with tab_visual:
             & (df_fase['y_tr'].notna())
         ]
 
-        # Obter metricas para o frame
-        compactacao_frame = df_compactacao.loc[ df_compactacao['time_evento_s'] == selected_time]
+        if fase_selected != 'Warm-Up':
+            # Obter metricas para o frame
+            compactacao_frame = df_compactacao.loc[ df_compactacao['time_evento_s'] == selected_time]
+            area_frame = df_area.loc[ df_area['time_evento_s'] == selected_time]
 
         col1, col2 = st.columns(2)
 
@@ -328,7 +367,7 @@ with tab_visual:
                             config = {
                                 'scrollZoom': False,
                                 'displayModeBar': False,
-                                'staticPlot': True
+                                'staticPlot': True,
                             },
                             use_container_width=True
                         )
@@ -349,10 +388,11 @@ with tab_visual:
                 shapes=visual.draw_statsbomb_pitch_horizontal(),
                 plot_bgcolor="#22312b",
                 paper_bgcolor="#22312b",
-                xaxis=dict(range=[-2, 122], visible=False),
-                yaxis=dict(range=[-2, 82], visible=False, scaleanchor="x"),
+                xaxis=dict(range=[-2, 122], visible=False, fixedrange=True),
+                yaxis=dict(range=[-2, 82], visible=False, scaleanchor="x", fixedrange=True),
                 margin=dict(l=0, r=0, t=0, b=0),
-                height=450
+                height=450,
+                dragmode=False,
             )
 
             # Desenhar Jogadores
@@ -362,7 +402,7 @@ with tab_visual:
                 mode='markers',
                 marker=dict(size=14, color='red', line=dict(color='white', width=1)),
                 customdata=snapshot[['atleta_id']].values,
-                hovertemplate="<b>%{customdata[0]}</b>"
+                hovertemplate="<b>Jogador: %{customdata[0]}</b><extra></extra>"
             ))
 
             # Campo Default
@@ -374,7 +414,7 @@ with tab_visual:
                     config = {
                         'scrollZoom': False,
                         'responsive': True,
-                        'displayModeBar': False
+                        'displayModeBar': False,
                     }
                 )
 
@@ -382,19 +422,17 @@ with tab_visual:
                     st.session_state.selected_player = clicked['selection']['points'][0]['customdata'][0]
 
             # Calculo do Convex Hull
-
-            pts = snapshot[['x_tr', 'y_tr']].dropna().values
-
-            if len(pts) >= 3:
-                try:
-                    hull = ConvexHull(pts)
-                    area = hull.volume
-                except QhullError:
-                    area = 0.00
+            area = calcular_area(
+                snapshot,
+                df_fase['dist_x'].unique()[0].squeeze(),
+                df_fase['dist_y'].unique()[0].squeeze()
+            )
 
             # Visualizar Convex Hull
-            if campo == 'Convex Hull' and len(pts) >= 3:
+            if campo == 'Convex Hull':
                 try:
+                    pts = snapshot[['x_tr', 'y_tr']].dropna().values
+
                     hull = ConvexHull(pts)
 
                     # Get hull vertices in order and close the polygon by repeating the first point
@@ -423,18 +461,20 @@ with tab_visual:
                         'scrollZoom': False,
                         'responsive': True,
                         'displayModeBar': False,
-                        'staticPlot': True
+                    #    'staticPlot': True
                     }
-            )
+                )
 
         # INFO FRAME
         with col_info:
 
             st.subheader("Analise de Frame")
             st.metric("Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s")
-            st.metric("Compactação Vertical", compactacao_frame['comp_vertical'])
-            st.metric("Compactação Horizontal", compactacao_frame['comp_horizontal'])
-            st.metric("Area", round(area, 2))
+
+            if fase_selected != 'Warm-Up':
+                st.metric("Compactação Vertical (m)", compactacao_frame['comp_vertical'])
+                st.metric("Compactação Horizontal (m)", compactacao_frame['comp_horizontal'])
+                st.metric("Área Ocupada (m²)", area_frame['area'])
     else:
         st.info("Selecione uma fase com dados para visualizar o campo.")
 
