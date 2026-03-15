@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from scipy.spatial import ConvexHull, QhullError
 
 from .constants import (
     ACC_THR,
@@ -241,3 +242,33 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
         "active_time_min": active_time_min,
         "active_pct": active_pct,
     }
+
+##### TRACKING DATA #####
+
+def calcular_area(snapshot, dist_x, dist_y):
+    """Calcula a area ocupada pelo frame, convertendo em m², usando as distancias originais do campo.
+
+    Args:
+        snapshot (DataFrame): DataFrame que contem tracking data, para um frame.
+        dist_x (Float): Comprimento original do campo
+        dist_y (Float): Largura original do campo.
+
+    Returns:
+        Dictionary: Média e Mediana da Área Ocupada.
+    """
+    df = snapshot.copy()
+
+    fator_conversao = (dist_x * dist_y) / (120 * 80)  # StatsBomb → m²
+
+    pts = df[['x_tr', 'y_tr']].dropna().values
+
+    if len(pts) >= 3:
+        try:
+
+            hull = ConvexHull(pts)
+            area = hull.volume * fator_conversao
+
+            return area
+
+        except QhullError:
+            return 0.0
