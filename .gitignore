@@ -19,3 +19,6 @@ Thumbs.db
 
 # VS Code
 .vscode/
+
+# Data outputs (do not version large generated files)
+Data/clean_data/
