@@ -7,4 +7,4 @@ pyproj
 scipy
 geopy
 mplsoccer
-duckdb
+supabase

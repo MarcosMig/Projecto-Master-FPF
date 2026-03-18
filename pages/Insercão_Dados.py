@@ -63,12 +63,13 @@ from fpf_modules.pipeline import (
     sincronizar
 )
 
-from fpf_modules.data_manager import (
+from fpf_modules.supabase_manager import (
     save_field_to_parquet,
     read_field_from_parquet,
     append_dedup_parquet,
     resolve_athlete_sk,
     resolve_session_sk,
+    write_session_data,
 )
 
 from fpf_modules.normalize import (
@@ -1482,11 +1483,9 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     st.subheader("Integração na Base de Dados")
 
     if st.session_state.get("df_perf") is not None and not st.session_state.df_perf.empty:
-        from fpf_modules.data_manager import write_session_data
-        
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.info("✅ Dados processados e prontos para serem integrados na base de dados DuckDB.")
+            st.info("✅ Dados processados e prontos para serem integrados no Supabase.")
         
         with col2:
             if st.button("💾 Gravar na Base", key="btn_save_duckdb", use_container_width=True):
@@ -1496,7 +1495,6 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                         st.session_state.df_qc,
                         st.session_state.df_samples,
                         st.session_state.df_athlete_session,
-                        db_file=str(Path(CLEANDATA_DIR) / "fpf.duckdb")
                     )
                     
                     # Build stats message

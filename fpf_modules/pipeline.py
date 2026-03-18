@@ -9,8 +9,8 @@ from .constants import COL_FASE, COL_LAT, COL_LON, COL_TIME
 from .io_utils import get_atleta_id, infer_fase, read_csv_upload
 from .metrics import time_to_seconds, compute_metrics_for_df
 
-# helpers for analytic schema
-from .data_manager import (
+# helpers for analytic schema  
+from .supabase_manager import (
     resolve_athlete_sk,
     resolve_session_sk,
     resolve_game_sk,
