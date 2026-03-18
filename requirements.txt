@@ -7,3 +7,4 @@ pyproj
 scipy
 geopy
 mplsoccer
+plotly
