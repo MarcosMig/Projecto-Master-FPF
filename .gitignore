@@ -21,4 +21,8 @@ Thumbs.db
 .vscode/
 
 # Data outputs (do not version large generated files)
+Data/raw_data/
 Data/clean_data/
+
+# Database files
+Data/*.duckdb
