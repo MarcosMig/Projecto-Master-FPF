@@ -8,8 +8,15 @@ Maintains the same interface as the previous duckdb_utils/data_manager modules.
 import os
 import pandas as pd
 import streamlit as st
-from typing import Optional, List, Dict
-from datetime import datetime
+from typing import Optional, List, Dict, Callable
+from datetime import date, datetime
+import math
+from .constants import CAMPOS_DIR, CLEANDATA_DIR
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 try:
     from supabase import create_client, Client
@@ -181,6 +188,8 @@ def insert_or_update_table(
     table_name: str,
     df: pd.DataFrame,
     pk_columns: List[str] = None,
+    batch_size: Optional[int] = None,
+    batch_progress_callback: Optional[Callable] = None,
 ) -> Dict:
     """Insert or update DataFrame into Supabase table (upsert).
     
@@ -190,35 +199,140 @@ def insert_or_update_table(
         pk_columns: list of column names forming the primary key
     
     Returns:
-        dict with stats: {'inserted': int, 'updated': int}
+        dict with stats: {'inserted': int, 'updated': int, 'success': bool, 'error': str | None}
     """
     if df.empty:
-        return {'inserted': 0, 'updated': 0}
+        return {'inserted': 0, 'updated': 0, 'success': True, 'error': None}
     
     client = get_supabase_client()
-    stats = {'inserted': 0, 'updated': 0}
+    stats = {'inserted': 0, 'updated': 0, 'success': True, 'error': None}
     
-    # Convert DataFrame to list of dicts
-    records = df.replace({pd.NaT: None, float('nan'): None}).to_dict('records')
+    records = _dataframe_to_supabase_records(df)
+
+    if batch_size is None or batch_size <= 0:
+        batches = [records]
+    else:
+        batches = [records[i:i + batch_size] for i in range(0, len(records), batch_size)]
     
     try:
-        if pk_columns is None or len(pk_columns) == 0:
-            # Simple INSERT
-            response = client.table(table_name).insert(records).execute()
-            stats['inserted'] = len(response.data) if response.data else len(records)
-        else:
-            # UPSERT: use Supabase upsert method (requires primary key)
-            response = client.table(table_name).upsert(
-                records,
-                ignore_duplicates=False
-            ).execute()
-            stats['inserted'] = len(response.data) if response.data else len(records)
+        total_batches = len(batches)
+        for batch_index, batch in enumerate(batches, start=1):
+            if batch_progress_callback is not None and total_batches > 1:
+                batch_progress_callback(batch_index, total_batches, len(batch))
+
+            if pk_columns is None or len(pk_columns) == 0:
+                response = client.table(table_name).insert(batch).execute()
+                stats['inserted'] += len(response.data) if response.data else len(batch)
+            else:
+                response = client.table(table_name).upsert(
+                    batch,
+                    on_conflict=",".join(pk_columns),
+                    ignore_duplicates=False
+                ).execute()
+                stats['inserted'] += len(response.data) if response.data else len(batch)
     
     except Exception as e:
+        stats['success'] = False
+        stats['error'] = str(e)
         st.error(f"Error writing to {table_name}: {str(e)}")
         return stats
     
     return stats
+
+
+def _json_safe_value(value):
+    """Convert pandas/numpy/date values to JSON-serializable Python primitives."""
+    if value is None or value is pd.NA:
+        return None
+
+    if pd.isna(value):
+        return None
+
+    if isinstance(value, pd.Timestamp):
+        return value.isoformat()
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    if np is not None:
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+
+    if isinstance(value, float) and math.isnan(value):
+        return None
+
+    return value
+
+
+def _dataframe_to_supabase_records(df: pd.DataFrame) -> List[Dict]:
+    """Serialize a DataFrame into Supabase-safe records."""
+    records = []
+    for record in df.to_dict("records"):
+        serialized = {key: _json_safe_value(value) for key, value in record.items()}
+        records.append(serialized)
+    return records
+
+
+def _sync_dimension_tables(session_sks: List[int], athlete_sks: List[int], base_dir=None) -> None:
+    """Ensure referenced sessions and athletes exist in Supabase before fact inserts."""
+    base_dir = base_dir or CLEANDATA_DIR
+
+    if athlete_sks:
+        athletes_path = os.path.join(base_dir, "athletes.parquet")
+        if os.path.exists(athletes_path):
+            df_athletes = pd.read_parquet(athletes_path)
+            if not df_athletes.empty and "athlete_sk" in df_athletes.columns:
+                df_athletes = df_athletes[df_athletes["athlete_sk"].isin(athlete_sks)].copy()
+                allowed_cols = ["athlete_sk", "atleta_id", "genero", "ativo", "created_at", "updated_at"]
+                df_athletes = df_athletes[[c for c in allowed_cols if c in df_athletes.columns]]
+                if not df_athletes.empty:
+                    insert_or_update_table(
+                        "athletes",
+                        df_athletes,
+                        pk_columns=["athlete_sk"],
+                    )
+
+    if session_sks:
+        sessions_path = os.path.join(base_dir, "sessions.parquet")
+        if os.path.exists(sessions_path):
+            df_sessions = pd.read_parquet(sessions_path)
+            if not df_sessions.empty and "session_sk" in df_sessions.columns:
+                df_sessions = df_sessions[df_sessions["session_sk"].isin(session_sks)].copy()
+                if "session_fingerprint" not in df_sessions.columns:
+                    return
+
+                if "started_at" not in df_sessions.columns:
+                    if "data" in df_sessions.columns:
+                        df_sessions["started_at"] = pd.to_datetime(df_sessions["data"], errors="coerce")
+                    else:
+                        df_sessions["started_at"] = pd.NaT
+
+                if "device" not in df_sessions.columns:
+                    df_sessions["device"] = None
+
+                allowed_cols = ["session_sk", "session_fingerprint", "started_at", "device"]
+                df_sessions = df_sessions[[c for c in allowed_cols if c in df_sessions.columns]]
+                if not df_sessions.empty:
+                    insert_or_update_table(
+                        "sessions",
+                        df_sessions,
+                        pk_columns=["session_sk"],
+                    )
+
+
+def _emit_progress(progress_callback: Optional[Callable], step: int, total_steps: int, message: str, table: Optional[str] = None) -> None:
+    """Send progress updates to the UI when a callback is provided."""
+    if progress_callback is None:
+        return
+
+    progress_callback({
+        "step": step,
+        "total_steps": total_steps,
+        "message": message,
+        "table": table,
+    })
 
 
 def read_table(table_name: str, filters: Dict = None) -> pd.DataFrame:
@@ -256,7 +370,8 @@ def read_table(table_name: str, filters: Dict = None) -> pd.DataFrame:
 
 def write_session_data(
     df_perf, df_qc, df_samples, df_athlete_session,
-    db_file=None  # ignored in Supabase mode, kept for compatibility
+    db_file=None,  # ignored in Supabase mode, kept for compatibility
+    progress_callback: Optional[Callable] = None,
 ):
     """Persist performance, quality, samples, and athlete_session DataFrames to Supabase.
     
@@ -273,6 +388,13 @@ def write_session_data(
     Returns:
         dict with integration stats
     """
+    total_steps = 2 + sum(
+        1 for df in [df_perf, df_qc, df_samples, df_athlete_session]
+        if df is not None and not df.empty
+    )
+
+    current_step = 1
+    _emit_progress(progress_callback, current_step, total_steps, "A validar esquema e preparar ligação ao Supabase...")
     initialize_schema()
     
     stats = {
@@ -281,30 +403,74 @@ def write_session_data(
         'samples': None,
         'athlete_session': None,
     }
+
+    session_sks = set()
+    athlete_sks = set()
+    for df in [df_perf, df_qc, df_samples, df_athlete_session]:
+        if df is None or df.empty:
+            continue
+        if "session_sk" in df.columns:
+            session_sks.update(pd.to_numeric(df["session_sk"], errors="coerce").dropna().astype(int).tolist())
+        if "athlete_sk" in df.columns:
+            athlete_sks.update(pd.to_numeric(df["athlete_sk"], errors="coerce").dropna().astype(int).tolist())
+
+    current_step += 1
+    _emit_progress(progress_callback, current_step, total_steps, "A sincronizar atletas e sessões de referência...")
+    _sync_dimension_tables(
+        session_sks=sorted(session_sks),
+        athlete_sks=sorted(athlete_sks),
+        base_dir=CLEANDATA_DIR,
+    )
     
     if df_perf is not None and not df_perf.empty:
+        current_step += 1
+        _emit_progress(progress_callback, current_step, total_steps, f"A gravar performance_metrics ({len(df_perf)} linhas)...", "performance_metrics")
         stats['performance_metrics'] = insert_or_update_table(
             "performance_metrics", df_perf,
-            pk_columns=["session_sk", "athlete_sk", "phase_id"]
+            pk_columns=["session_sk", "athlete_sk", "phase_id"],
         )
+        if not stats['performance_metrics'].get("success", False):
+            raise RuntimeError(f"Falha ao gravar performance_metrics: {stats['performance_metrics'].get('error')}")
     
     if df_qc is not None and not df_qc.empty:
+        current_step += 1
+        _emit_progress(progress_callback, current_step, total_steps, f"A gravar quality_metrics ({len(df_qc)} linhas)...", "quality_metrics")
         stats['quality_metrics'] = insert_or_update_table(
             "quality_metrics", df_qc,
-            pk_columns=["session_sk", "athlete_sk", "phase_id"]
+            pk_columns=["session_sk", "athlete_sk", "phase_id"],
         )
+        if not stats['quality_metrics'].get("success", False):
+            raise RuntimeError(f"Falha ao gravar quality_metrics: {stats['quality_metrics'].get('error')}")
     
     if df_samples is not None and not df_samples.empty:
+        current_step += 1
+        _emit_progress(progress_callback, current_step, total_steps, f"A gravar samples ({len(df_samples)} linhas)...", "samples")
         stats['samples'] = insert_or_update_table(
             "samples", df_samples,
-            pk_columns=["session_sk", "athlete_sk", "phase_id", "time"]
+            pk_columns=["session_sk", "athlete_sk", "phase_id", "time"],
+            batch_size=1000,
+            batch_progress_callback=lambda idx, total, size: _emit_progress(
+                progress_callback,
+                current_step,
+                total_steps,
+                f"A gravar samples: lote {idx}/{total} ({size} linhas)...",
+                "samples",
+            ),
         )
+        if not stats['samples'].get("success", False):
+            raise RuntimeError(f"Falha ao gravar samples: {stats['samples'].get('error')}")
     
     if df_athlete_session is not None and not df_athlete_session.empty:
+        current_step += 1
+        _emit_progress(progress_callback, current_step, total_steps, f"A gravar athlete_session ({len(df_athlete_session)} linhas)...", "athlete_session")
         stats['athlete_session'] = insert_or_update_table(
             "athlete_session", df_athlete_session,
             pk_columns=["session_sk", "athlete_sk"]
         )
+        if not stats['athlete_session'].get("success", False):
+            raise RuntimeError(f"Falha ao gravar athlete_session: {stats['athlete_session'].get('error')}")
+
+    _emit_progress(progress_callback, total_steps, total_steps, "Transferência concluída com sucesso.")
     
     return stats
 
@@ -327,9 +493,6 @@ def write_metrics(metrics_df, db_file=None):
 
 
 # ==================== Parquet utilities (maintained for field/athlete/session dimensions) ====================
-
-from .constants import CAMPOS_DIR, CLEANDATA_DIR
-
 
 def save_field_to_parquet(df_new, filename=f"{CAMPOS_DIR}/fields_database.parquet"):
     """

@@ -1489,13 +1489,30 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
         
         with col2:
             if st.button("💾 Gravar na Base", key="btn_save_duckdb", use_container_width=True):
+                progress_bar = st.progress(0, text="A iniciar transferência para o Supabase...")
+                progress_text = st.empty()
+                status_box = st.status("Transferência em curso", expanded=True)
+
+                def _on_db_progress(event: dict):
+                    step = max(int(event.get("step", 0)), 0)
+                    total_steps = max(int(event.get("total_steps", 1)), 1)
+                    message = str(event.get("message", "A processar..."))
+                    pct = min(step / total_steps, 1.0)
+                    progress_bar.progress(pct, text=message)
+                    progress_text.caption(f"Passo {step}/{total_steps}: {message}")
+                    status_box.write(message)
+
                 try:
                     stats = write_session_data(
                         st.session_state.df_perf,
                         st.session_state.df_qc,
                         st.session_state.df_samples,
                         st.session_state.df_athlete_session,
+                        progress_callback=_on_db_progress,
                     )
+                    progress_bar.progress(1.0, text="Transferência concluída.")
+                    progress_text.caption("Passo finalizado: todos os envios terminaram.")
+                    status_box.update(label="Transferência concluída", state="complete", expanded=False)
                     
                     # Build stats message
                     stats_msg = "📊 **Resumo da Integração:**\n\n"
@@ -1505,9 +1522,12 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                             updated = table_stats.get('updated', 0)
                             stats_msg += f"• **{table}**: {inserted} inseridos, {updated} atualizados\n"
                     
-                    st.success("✅ Dados gravados com sucesso na base DuckDB!")
+                    st.success("✅ Dados gravados com sucesso no Supabase.")
                     st.markdown(stats_msg)
                 except Exception as e:
+                    progress_bar.progress(1.0, text="Transferência interrompida.")
+                    progress_text.caption("A transferência foi interrompida por um erro.")
+                    status_box.update(label="Erro na transferência", state="error", expanded=True)
                     st.error(f"❌ Erro ao gravar: {str(e)}")
     else:
         st.warning("📊 Processa a sessão primeiro para gravar os dados.")
