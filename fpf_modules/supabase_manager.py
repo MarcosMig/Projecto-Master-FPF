@@ -11,6 +11,7 @@ import streamlit as st
 from typing import Optional, List, Dict, Callable
 from datetime import date, datetime
 import math
+import time
 from .constants import CAMPOS_DIR, CLEANDATA_DIR
 
 try:
@@ -179,9 +180,7 @@ def initialize_schema() -> None:
     """
     
     # Execute via RPC or direct SQL (if your Supabase tier supports it)
-    # For now, we'll assume tables exist or will be created via Supabase dashboard
-    # This is a fallback message
-    st.info("✅ Supabase schema initialized (tables auto-created on first use)")
+    # For now, we assume the schema was created beforehand in Supabase.
 
 
 def insert_or_update_table(
@@ -190,6 +189,7 @@ def insert_or_update_table(
     pk_columns: List[str] = None,
     batch_size: Optional[int] = None,
     batch_progress_callback: Optional[Callable] = None,
+    max_retries: int = 0,
 ) -> Dict:
     """Insert or update DataFrame into Supabase table (upsert).
     
@@ -220,16 +220,35 @@ def insert_or_update_table(
             if batch_progress_callback is not None and total_batches > 1:
                 batch_progress_callback(batch_index, total_batches, len(batch))
 
-            if pk_columns is None or len(pk_columns) == 0:
-                response = client.table(table_name).insert(batch).execute()
-                stats['inserted'] += len(response.data) if response.data else len(batch)
-            else:
-                response = client.table(table_name).upsert(
-                    batch,
-                    on_conflict=",".join(pk_columns),
-                    ignore_duplicates=False
-                ).execute()
-                stats['inserted'] += len(response.data) if response.data else len(batch)
+            attempt = 0
+            while True:
+                try:
+                    if pk_columns is None or len(pk_columns) == 0:
+                        response = client.table(table_name).insert(batch).execute()
+                        stats['inserted'] += len(response.data) if response.data else len(batch)
+                    else:
+                        response = client.table(table_name).upsert(
+                            batch,
+                            on_conflict=",".join(pk_columns),
+                            ignore_duplicates=False
+                        ).execute()
+                        stats['inserted'] += len(response.data) if response.data else len(batch)
+                    break
+                except Exception as e:
+                    if attempt >= max_retries or not _is_transient_supabase_error(e):
+                        raise
+
+                    attempt += 1
+                    wait_seconds = min(2 ** attempt, 10)
+                    if batch_progress_callback is not None:
+                        batch_progress_callback(
+                            batch_index,
+                            total_batches,
+                            len(batch),
+                            retry_attempt=attempt,
+                            retry_wait_seconds=wait_seconds,
+                        )
+                    time.sleep(wait_seconds)
     
     except Exception as e:
         stats['success'] = False
@@ -238,6 +257,23 @@ def insert_or_update_table(
         return stats
     
     return stats
+
+
+def _is_transient_supabase_error(error: Exception) -> bool:
+    """Detect transient API/proxy failures worth retrying."""
+    message = str(error).lower()
+    transient_markers = [
+        "'code': 520",
+        '"code": 520',
+        "error code 520",
+        "cloudflare",
+        "timed out",
+        "timeout",
+        "connection reset",
+        "temporarily unavailable",
+        "server is returning an unknown error",
+    ]
+    return any(marker in message for marker in transient_markers)
 
 
 def _json_safe_value(value):
@@ -448,12 +484,17 @@ def write_session_data(
         stats['samples'] = insert_or_update_table(
             "samples", df_samples,
             pk_columns=["session_sk", "athlete_sk", "phase_id", "time"],
-            batch_size=1000,
-            batch_progress_callback=lambda idx, total, size: _emit_progress(
+            batch_size=250,
+            max_retries=3,
+            batch_progress_callback=lambda idx, total, size, retry_attempt=0, retry_wait_seconds=0: _emit_progress(
                 progress_callback,
                 current_step,
                 total_steps,
-                f"A gravar samples: lote {idx}/{total} ({size} linhas)...",
+                (
+                    f"A gravar samples: lote {idx}/{total} ({size} linhas)..."
+                    if retry_attempt == 0
+                    else f"A repetir samples: lote {idx}/{total}, tentativa {retry_attempt}/3 em {retry_wait_seconds}s..."
+                ),
                 "samples",
             ),
         )
