@@ -68,3 +68,18 @@ def round_metrics_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 def file_to_bytes(pathlike) -> bytes:
     with open(pathlike, "rb") as f:
         return f.read()
+
+
+def converter_para_relogio_fpf(segundos_totais):
+    """
+    Exemplo: 4150.3s -> '69:10.3'
+    (Minuto 69, Segundo 10, Frame 3)
+    """
+    minutos = int(segundos_totais // 60)
+    segundos = int(segundos_totais % 60)
+    frame = int(round((segundos_totais % 1) * 10))
+    if frame == 10:
+        frame = 0
+        segundos += 1  # Ajuste de arredondamento
+
+    return f"{minutos:02d}:{segundos:02d}.{frame}"
