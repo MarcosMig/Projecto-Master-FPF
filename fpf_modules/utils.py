@@ -83,3 +83,12 @@ def converter_para_relogio_fpf(segundos_totais):
         segundos += 1  # Ajuste de arredondamento
 
     return f"{minutos:02d}:{segundos:02d}.{frame}"
+
+
+def fmt(value, col):
+    """Format a metric value for display, return '—' if missing."""
+    if value is None or (isinstance(value, float) and value != value):
+        return "—"
+    if col in ("dist_m", "n_sprints", "n_acc_2_5"):
+        return f"{value:.0f}"
+    return f"{value:.1f}"

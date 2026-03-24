@@ -8,8 +8,8 @@ from scipy.spatial import ConvexHull, QhullError
 
 import fpf_modules.visualization as visual
 from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
-from fpf_modules.metrics import calcular_area
-from fpf_modules.utils import converter_para_relogio_fpf
+from fpf_modules.metrics import calcular_area_cache, calcular_compactacao_cache
+from fpf_modules.utils import converter_para_relogio_fpf, fmt
 
 # Fixar max largura da pagina, de forma ao campo não esticar em demasia
 st.markdown(
@@ -61,25 +61,10 @@ st.markdown(
 )
 
 
-def kpi_card(label, value):
-    st.markdown(
-        f"""
-        <div class="fpt-kpi-card">
-            <div class="fpt-kpi-label">{label}</div>
-            <div class="fpt-kpi-value">{value}</div>
-        </div>
-    """,
-        unsafe_allow_html=True,
-    )
-
-
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="FPF | Positional Analysis", layout="wide")
+st.set_page_config(page_title="FPF | Análise Performance", layout="wide")
 
-# Incializar Paineis
-tab_metrics, tab_visual, tab_fisico = st.tabs(
-    ["📊 Métricas de Performance", "📍 Análise Posicional", "Análise Fisica"]
-)
+st.title("Análise Performance")
 
 
 # --- CARREGAMENTO E PROCESSAMENTO ---
@@ -111,82 +96,6 @@ try:
 except Exception as e:
     st.error(f"Erro ao processar dados: {e}")
     st.stop()
-
-
-@st.cache_data
-def calcular_compactacao(tracking_df, dist_x, dist_y, pitch_x=120, pitch_y=80):
-    """Calcula compactação Vertical e Horizontal por Frame, converte de campo (default StatsBomb) para metros.
-
-    Args:
-        tracking_df (DataFrame): DataFrame que contem tracking data.
-        dist_x (Float): Comprimento original do campo
-        dist_y (Float): Largura original do campo.
-        pitch_x (Integer): Comprimento do campo, default 120 (Statsbomb)
-        pitch_y (Integer): Largura do campo, default 80 (Statsbomb)
-    Returns:
-        pd.DataFrame: DataFrame com a compactação vertical e horizontal por frame em metros.
-    """
-    if "time_evento_s" in tracking_df.columns:
-        # Agrupar por tempo
-        frame_data = tracking_df.groupby("time_evento_s").agg(
-            x_min=("x_tr", "min"),
-            x_max=("x_tr", "max"),
-            y_min=("y_tr", "min"),
-            y_max=("y_tr", "max"),
-        )
-
-        frame_data["comp_vertical"] = round(
-            (frame_data["x_max"] - frame_data["x_min"]) * (pitch_x / dist_x), 2
-        )
-        frame_data["comp_horizontal"] = round(
-            (frame_data["y_max"] - frame_data["y_min"]) * (pitch_y / dist_y), 2
-        )
-
-        frame_data = frame_data.drop(
-            columns={"x_min", "x_max", "y_min", "y_max"}
-        ).reset_index()
-
-        return frame_data
-
-
-@st.cache_data
-def calcular_area_media(tracking_df, dist_x, dist_y, pitch_x=120, pitch_y=80):
-    """Calcula a area ocupada média da partida, convertendo de campo (default StatsBomb) em m², usando as distancias originais do campo.
-
-    Args:
-        tracking_df (DataFrame): DataFrame que contem tracking data.
-        dist_x (Float): Comprimento original do campo
-        dist_y (Float): Largura original do campo.
-        pitch_x (Integer): Comprimento do campo, default 120 (Statsbomb)
-        pitch_y (Integer): Largura do campo, default 80 (Statsbomb)
-
-    Returns:
-        Dictionary: Média e Mediana da Área Ocupada.
-    """
-    df = tracking_df.copy()
-
-    fator_conversao = (dist_x * dist_y) / (pitch_x * pitch_y)
-    areas = []
-
-    for time, frame in df.groupby("time_evento_s"):
-        pts = frame[["x_tr", "y_tr"]].dropna().values
-
-        if len(pts) >= 3:
-            try:
-                hull = ConvexHull(pts)
-                areas.append(
-                    {
-                        "time_evento_s": time,
-                        "area": round(hull.volume * fator_conversao, 2),
-                    }
-                )
-
-            except QhullError:
-                continue
-
-    areas_df = pd.DataFrame(areas)
-
-    return areas_df if not areas_df.empty else None
 
 
 # -------------------------------------------------------------------------
@@ -224,7 +133,7 @@ with st.sidebar:
         df_ano["jogo_label"] = (
             df_ano["jogo"].astype(str)
             + " ("
-            + df_ano["data"].dt.strftime("%Y-%m-%d")
+            + df_ano["data"].dt.strftime("%d-%m-%Y")
             + ")"
         )
         jogos_disponiveis = df_ano["jogo_label"].unique()
@@ -248,7 +157,7 @@ with st.sidebar:
         data = st.selectbox(
             "Data da Sessão",
             options=datas_disponiveis,
-            format_func=lambda d: pd.Timestamp(d).strftime("%Y-%m-%d"),
+            format_func=lambda d: pd.Timestamp(d).strftime("%d-%m-%Y"),
         )
 
     # --- 3. SESSÕES DISPONÍVEIS para a seleção actual --- #
@@ -290,14 +199,29 @@ with st.sidebar:
             format_func=converter_para_relogio_fpf,
         )
 
+# -------------------------------------------------------------------------
+# PAGINA
+# -------------------------------------------------------------------------
 
-def fmt(value, col):
-    """Format a metric value for display, return '—' if missing."""
-    if value is None or (isinstance(value, float) and value != value):
-        return "—"
-    if col in ("dist_m", "n_sprints", "n_acc_2_5"):
-        return f"{value:.0f}"
-    return f"{value:.1f}"
+# Info sessão
+st.markdown(
+    f"""
+<div style="margin-bottom:24px; border-left:3px solid #E30613; padding-left:12px;">
+    <div style="font-size:0.75rem; color:#9aa0a6; letter-spacing:1px; text-transform:uppercase;">
+        {selecao} · {contexto} · {data.strftime("%d-%m-%Y") if contexto == "Jogo" else ""}
+    </div>
+    <div style="font-size:1.4rem; font-weight:600; color:#ffffff; margin-top:2px;">
+        {jogo if jogo else data.strftime("%d-%m-%Y")}
+    </div>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+
+# Incializar Paineis
+tab_metrics, tab_visual = st.tabs(
+    ["📊 Métricas de Performance", "📍 Análise Posicional"]
+)
 
 
 # -------------------------------------------------------------------------
@@ -320,9 +244,8 @@ METRICS_CONFIG = {
 # ── Pagina ─────────────────────────────────────────────────────
 
 with tab_metrics:
-    st.subheader(f"📈 Análise Física — {selecao} | {contexto}")
+    # ── Remover linhas sem atividade ─────────────────────────────────
 
-    # ── Clean: drop players with no activity ─────────────────────────────────
     df_clean = perf_df[
         perf_df["duracao_min"].notna() & (perf_df["duracao_min"] > 0)
     ].copy()
@@ -331,10 +254,12 @@ with tab_metrics:
         st.info("Sem dados de performance para a sessão selecionada.")
         st.stop()
 
-    # ── Comparison chart ─────────────────────────────────────────────────────
-    st.markdown("#### Comparação entre Jogadores")
+    # ── Filtros ─────────────────────────────────────────────────────
+
+    st.subheader("Comparação de Métricas")
 
     c1, c2 = st.columns([1, 2])
+
     with c1:
         fase_chart = st.selectbox("Fase", FASES, key="chart_fase2")
     with c2:
@@ -343,7 +268,10 @@ with tab_metrics:
         )
 
     metric_col = next(k for k, v in METRICS_CONFIG.items() if v == metric_label)
+
     df_chart = df_clean[df_clean["fase"] == fase_chart].dropna(subset=[metric_col])
+
+    # ── KPI Cards ─────────────────────────────────────────────────────
 
     if not df_chart.empty:
         n_players = df_chart["atleta_id"].nunique()
@@ -363,9 +291,11 @@ with tab_metrics:
 
         for col, label, value in zip(st.columns(5), labels, values):
             with col:
-                kpi_card(label, f"{value:.0f}")
+                visual.kpi_card(label, f"{value:.0f}")
 
         st.divider()
+
+        # ── Comparison chart ─────────────────────────────────────────────────────
 
         df_chart_sorted = df_chart.sort_values(metric_col, ascending=True)
         n = len(df_chart_sorted)
@@ -395,77 +325,82 @@ with tab_metrics:
             margin=dict(l=0, r=50, t=40, b=10),
             height=max(300, n * 36),
         )
+
         st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
     st.divider()
 
-    # ── Per-player expanders ──────────────────────────────────────────────────
-    st.markdown("#### Detalhe por Jogador")
+    # ── Expander Jogadores ──────────────────────────────────────────────────
 
-    def render_metric(label, value):
-        st.markdown(
-            f"""
-                <div style="padding:6px 0; border-bottom:1px solid
-        #2a2a2a;">
-                    <div style="font-size:0.85rem; color:
-        #9aa0a6; font-weight:600;">{label}</div>
-                    <div style="font-size:1.3rem; font-weight:700; color:
-        #ffffff;">{value}</div>
-                </div>
-        """,
-            unsafe_allow_html=True,
-        )
+    st.markdown(
+        "#### Detalhe por Jogador",
+        help="A distância que aparece no cartão apenas engloba as fases de jogo!",
+    )
 
     players = sorted(df_clean["atleta_id"].unique())
 
     pairs = [players[i : i + 2] for i in range(0, len(players), 2)]
 
-for pair in pairs:
-    col_left, col_right = st.columns(2)
+    for pair in pairs:
+        col_left, col_right = st.columns(2)
 
-    for col, player in zip([col_left, col_right], pair):
-        with col:
-            df_player = df_clean[df_clean["atleta_id"] == player]
+        for col, player in zip([col_left, col_right], pair):
+            with col:
+                # Obter dados jogador
+                df_player = df_clean.loc[(df_clean["atleta_id"] == player)]
 
-            row_1p = df_player[df_player["fase"] == "1P"]
-            dist_label = ""
-            if not row_1p.empty and row_1p["dist_m"].notna().any():
-                dist_label = f" · 1P {row_1p['dist_m'].values[0]:.0f}m"
+                df_player_m = df_player[df_player["fase"].isin(["1P", "2P"])]
 
-            with st.expander(f"👤 {player}{dist_label}"):
-                phase_cols = st.columns(3)
+                dist_label = ""
 
-                for phase_col, fase in zip(phase_cols, FASES):
-                    with phase_col:
-                        st.markdown(
-                            f'<p style="color:#E30613; font-weight:700; text-align:center; font-size:20px; border-bottom:1px solid #E30613;">{fase}</p>',
-                            unsafe_allow_html=True,
-                        )
+                # Obter total distancia partida em km
+                if not df_player_m.empty and df_player_m["dist_m"].notna().any():
+                    dist_km = round(df_player_m["dist_m"].sum() / 1000, 2)
 
-                        row = df_player[df_player["fase"] == fase]
+                    dist_label = f"  |  Distância {dist_km}km"
 
-                        if row.empty:
-                            st.caption("Sem dados")
-                            continue
+                with st.expander(
+                    f"**:red[{player}]**  {dist_label}", icon=":material/person:"
+                ):
+                    phase_cols = st.columns(3)
 
-                        r = row.iloc[0]
-                        for metric_col_name, metric_display in METRICS_CONFIG.items():
-                            render_metric(
-                                metric_display,
-                                fmt(r.get(metric_col_name), metric_col_name),
+                    for phase_col, fase in zip(phase_cols, FASES):
+                        with phase_col:
+                            # Estitlo titulo fase
+                            st.markdown(
+                                f'<p style="color:#E30613; font-weight:700; text-align:center; font-size:20px; border-bottom:1px solid #E30613;">{fase}</p>',
+                                unsafe_allow_html=True,
                             )
+
+                            row = df_player[df_player["fase"] == fase]
+
+                            if row.empty:
+                                st.caption("Sem dados")
+                                continue
+
+                            r = row.iloc[0]
+                            for (
+                                metric_col_name,
+                                metric_display,
+                            ) in METRICS_CONFIG.items():
+                                visual.render_metric(
+                                    metric_display,
+                                    fmt(r.get(metric_col_name), metric_col_name),
+                                )
 
 # -------------------------------------------------------------------------
 # TAB 2: VISUALIZAÇÃO DO CAMPO (METRICAS DE TRACKING)
 # -------------------------------------------------------------------------
 
 with tab_visual:
-    st.subheader("Métricas da Partida")
+    st.subheader(f"Métricas da Partida · {fase_selected}")
+
+    # ── Calculo Métricas ──────────────────────────────────────────────────
 
     if fase_selected != "Warm-Up" and contexto != "Treino":
-        df_compactacao = calcular_compactacao(track_df, dist_x, dist_y)
+        df_compactacao = calcular_compactacao_cache(track_df, dist_x, dist_y)
 
-        df_area = calcular_area_media(track_df, dist_x, dist_y)
+        df_area = calcular_area_cache(track_df, dist_x, dist_y)
 
         if not df_compactacao.empty:
             avg_comp_vert = df_compactacao["comp_vertical"].mean().round(2)
@@ -475,18 +410,20 @@ with tab_visual:
             col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
 
             with col1:
-                kpi_card("COMPACTAÇÃO VERTICAL (m)", f"{avg_comp_vert:.1f}")
+                visual.kpi_card("COMPACTAÇÃO VERTICAL (m)", f"{avg_comp_vert:.1f}")
 
             with col2:
-                kpi_card("COMPACTAÇÃO HORIZONTAL (m)", f"{avg_comp_hor:.1f}")
+                visual.kpi_card("COMPACTAÇÃO HORIZONTAL (m)", f"{avg_comp_hor:.1f}")
 
             with col3:
-                kpi_card("ÁREA OCUPADA (m²)", f"{avg_area:.1f}")
+                visual.kpi_card("ÁREA OCUPADA (m²)", f"{avg_area:.1f}")
 
             st.divider()
 
     else:
         st.info("Métricas calculadas apenas para fase de jogo!")
+
+    # ── Snapshot ──────────────────────────────────────────────────
 
     if selected_time is not None:
         # 1. Obter snapshot
@@ -513,6 +450,8 @@ with tab_visual:
                 placeholder="Seleciona outro metodo de visualizar o campo",
             )
 
+        # ── Heatmap ──────────────────────────────────────────────────
+
         if "selected_player" not in st.session_state:
             st.session_state.selected_player = None
 
@@ -530,8 +469,8 @@ with tab_visual:
 
             with st.popover(texto_popup, width=500):
                 if st.session_state.selected_player:
-                    # Filter that player's tracking data across all frames
-                    player_frames = tracking_df[tracking_df["atleta_id"] == player_name]
+                    # Obter dados do atleta
+                    player_frames = track_df[track_df["atleta_id"] == player_name]
 
                     st.markdown(f"### {player_name} — Heatmap")
 
@@ -548,27 +487,12 @@ with tab_visual:
                         height=300,
                     )
 
-                    # Cores do Heatmap
-                    custom_hot = [
-                        [0.0, "rgba(34, 49, 43, 0)"],  # transparente — campo limpo
-                        [
-                            0.08,
-                            "rgba(34, 49, 43, 0.5)",
-                        ],  # verde campo — densidade muito baixa
-                        [0.2, "rgba(80, 80, 20, 0.8)"],  # transição rápida para quente
-                        [0.35, "rgba(180, 160, 0, 0.9)"],  # amarelo escuro
-                        [0.5, "rgba(240, 220, 0, 1.0)"],  # amarelo brilhante
-                        [0.65, "rgba(255, 140, 0, 1.0)"],  # laranja
-                        [0.8, "rgba(220, 50, 0, 1.0)"],  # vermelho alaranjado
-                        [1.0, "rgba(120, 0, 0, 1.0)"],  # vermelho escuro
-                    ]
-
                     # Calcular Histograma de Posição
                     fig_heat.add_trace(
                         go.Histogram2dContour(
                             x=player_frames["x_tr"],
                             y=player_frames["y_tr"],
-                            colorscale=custom_hot,
+                            colorscale=visual.custom_hot,
                             reversescale=False,
                             showscale=False,
                             ncontours=20,
@@ -596,9 +520,11 @@ with tab_visual:
                         "Selecione um jogador no campo, para verificar a sua posição durante o jogo!"
                     )
 
+        # ── Campo ──────────────────────────────────────────────────
+
         col_map, col_info = st.columns([2.5, 1])
 
-        # CAMPO
+        # Campo
         with col_map:
             # --- Main pitch ---
             fig_pitch = go.Figure()
@@ -656,14 +582,7 @@ with tab_visual:
                         0
                     ]["customdata"][0]
 
-            # Calculo do Convex Hull
-            area = calcular_area(
-                snapshot,
-                track_df["dist_x"].unique()[0].squeeze(),
-                track_df["dist_y"].unique()[0].squeeze(),
-            )
-
-            # Visualizar Convex Hull
+            # ── Convex Hull ──────────────────────────────────────────────────
             if campo == "Convex Hull":
                 try:
                     pts = snapshot[["x_tr", "y_tr"]].dropna().values
@@ -703,7 +622,7 @@ with tab_visual:
                     },
                 )
 
-        # INFO FRAME
+        # ── Frame Info ──────────────────────────────────────────────────
         with col_info:
             st.subheader("Analise de Frame")
             st.metric(
@@ -718,8 +637,6 @@ with tab_visual:
                     "Compactação Horizontal (m)", compactacao_frame["comp_horizontal"]
                 )
                 st.metric("Área Ocupada (m²)", area_frame["area"])
-    # else:
-    #     st.info("Selecione uma fase com dados para visualizar o campo.")
 
 
 # --- FOOTER ---
