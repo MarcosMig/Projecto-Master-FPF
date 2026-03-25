@@ -147,6 +147,8 @@ def converter_para_relogio_fpf(segundos_totais):
 with st.sidebar:
     st.title("⚽ Filtros de Sessão")
 
+    campo_visualizacao = st.session_state.get('campo_visualizacao')
+
     selecao = st.selectbox("Seleção", options=SELECOES_OPCOES)
     contexto = st.selectbox("Contexto", options=["Treino", "Jogo"])
 
@@ -189,12 +191,16 @@ with st.sidebar:
 
     if not df_fase.empty:
         timestamps = sorted(df_fase['time_evento_s'].unique())
-        # Slider para navegar no tempo
-        selected_time = st.sidebar.select_slider(
-            "Momento do Jogo (s)",
-            options=timestamps,
-         format_func=converter_para_relogio_fpf
-        )
+        if campo_visualizacao == 'Movimento Relativo de Jogadores ao Longo do Tempo':
+            selected_time = st.session_state.get('selected_time_jogo', timestamps[0])
+        else:
+            # Slider para navegar no tempo
+            selected_time = st.sidebar.select_slider(
+                "Momento do Jogo (s)",
+                options=timestamps,
+                key='selected_time_jogo',
+                format_func=converter_para_relogio_fpf
+            )
     else:
         st.sidebar.warning(f"Sem dados de tracking para a fase {fase_selected}")
         selected_time = None
@@ -215,13 +221,19 @@ with tab_metrics:
 # TAB 2: VISUALIZAÇÃO DO CAMPO
 
 with tab_visual:
+    campo_visualizacao = st.session_state.get('campo_visualizacao')
+    ocultar_metricas_partida = campo_visualizacao in [
+        'Distância entre Jogadores',
+        'Movimento Relativo de Jogadores ao Longo do Tempo',
+    ]
 
-    st.subheader('Métricas da Partida')
+    if not ocultar_metricas_partida:
+        st.subheader('Métricas da Partida')
 
     df_compactacao = calcular_compactacao(df_fase)
     area_dict = calcular_area_media(df_fase, 0, 0)
 
-    if not df_compactacao.empty:
+    if not ocultar_metricas_partida and not df_compactacao.empty:
 
         avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
         avg_comp_hor = df_compactacao['comp_horizontal'].mean().round(2)
@@ -241,8 +253,6 @@ with tab_visual:
 
 
     if selected_time is not None:
-
-        # 1. Obter snapshot
         snapshot = df_fase[
             (df_fase['time_evento_s'] == selected_time)
             & (df_fase['x_tr'].notna())
@@ -253,12 +263,23 @@ with tab_visual:
         # Obter metricas para o frame
         compactacao_frame = df_compactacao.loc[ df_compactacao['time_evento_s'] == selected_time]
 
-        campo = st.selectbox(label='Visualização Campo', options=['Convex Hull', 'Distância entre Jogadores', 'Teste'],index=None, placeholder='Seleciona outro metodo de visualizar o campo')
+        campo = st.selectbox(label='Visualização Campo', options=['Convex Hull', 'Distância entre Jogadores', 'Movimento Relativo de Jogadores ao Longo do Tempo', 'Teste'],index=None, placeholder='Seleciona outro metodo de visualizar o campo', key='campo_visualizacao')
 
         jogadores_selecionados = []
         pares_opcoes = []
         pares_selecionados = []
         distancias_pares = []
+        jogador_rel_1 = None
+        jogador_rel_2 = None
+        tempo_relativo = None
+        janela_segundos = 1
+        distancia_rel = None
+        delta_distancia_rel = None
+        distancia_media_rel = None
+        distancia_min_rel = None
+        distancia_max_rel = None
+        tendencia_rel = None
+        serie_distancias_rel = pd.DataFrame()
         cores_pares = [
             ('Amarelo', '#FFD166'),
             ('Verde', '#06D6A0'),
@@ -287,10 +308,41 @@ with tab_visual:
             if not pares_selecionados and pares_opcoes:
                 pares_selecionados = pares_opcoes[:1]
 
+        elif campo == 'Movimento Relativo de Jogadores ao Longo do Tempo' and len(jogadores_disponiveis) >= 2:
+            jogador_rel_1 = st.session_state.get('mov_rel_jogador_1', jogadores_disponiveis[0])
+            jogador_rel_2 = st.session_state.get('mov_rel_jogador_2', jogadores_disponiveis[1 if len(jogadores_disponiveis) > 1 else 0])
+            janela_segundos = int(st.session_state.get('mov_rel_janela_segundos', 1))
+
         col_map, col_info = st.columns([3, 1])
 
         # CAMPO
         with col_map:
+            plot_placeholder = st.empty()
+            slider_placeholder = st.empty()
+            graph_placeholder = st.empty()
+
+            timestamps_relativos = []
+            timestamps_amostrados = []
+            tempo_visualizacao = selected_time
+
+            if campo == 'Movimento Relativo de Jogadores ao Longo do Tempo':
+                timestamps_relativos = sorted(df_fase['time_evento_s'].dropna().unique().tolist())
+                timestamps_amostrados = timestamps_relativos[::10] if timestamps_relativos else []
+                if timestamps_relativos and timestamps_relativos[-1] not in timestamps_amostrados:
+                    timestamps_amostrados.append(timestamps_relativos[-1])
+
+                if timestamps_amostrados:
+                    tempo_relativo = st.session_state.get('mov_rel_slider', timestamps_amostrados[0])
+                    if tempo_relativo not in timestamps_amostrados:
+                        tempo_relativo = timestamps_amostrados[0]
+                    tempo_visualizacao = tempo_relativo
+
+            snapshot = df_fase[
+                (df_fase['time_evento_s'] == tempo_visualizacao)
+                & (df_fase['x_tr'].notna())
+                & (df_fase['y_tr'].notna())
+            ]
+            jogadores_disponiveis = sorted(snapshot['atleta_id'].dropna().astype(str).unique().tolist())
 
             # 2. Configurar Pitch
             pitch = mpl.Pitch(
@@ -404,7 +456,177 @@ with tab_visual:
                         zorder=5,
                     )
 
-            st.pyplot(fig)
+            elif (
+                campo == 'Movimento Relativo de Jogadores ao Longo do Tempo'
+                and jogador_rel_1 is not None
+                and jogador_rel_2 is not None
+                and jogador_rel_1 != jogador_rel_2
+                and tempo_relativo is not None
+            ):
+                idx_tempo = timestamps_relativos.index(tempo_relativo) if tempo_relativo in timestamps_relativos else len(timestamps_relativos) - 1
+                janela_frames = max(1, int(janela_segundos) * 10)
+                janela_timestamps = timestamps_relativos[max(0, idx_tempo - janela_frames + 1): idx_tempo + 1]
+
+                trilho_df = df_fase.loc[
+                    (df_fase['time_evento_s'].isin(janela_timestamps))
+                    & (df_fase['atleta_id'].astype(str).isin([str(jogador_rel_1), str(jogador_rel_2)]))
+                    & (df_fase['x_tr'].notna())
+                    & (df_fase['y_tr'].notna())
+                ].copy()
+
+                jogador_1_trilho = trilho_df[trilho_df['atleta_id'].astype(str) == str(jogador_rel_1)]
+                jogador_2_trilho = trilho_df[trilho_df['atleta_id'].astype(str) == str(jogador_rel_2)]
+
+                if not jogador_1_trilho.empty:
+                    ax.plot(
+                        jogador_1_trilho['x_tr'],
+                        jogador_1_trilho['y_tr'],
+                        color='#2ECC71',
+                        linewidth=2.2,
+                        alpha=0.95,
+                    )
+
+                    if len(jogador_1_trilho) >= 2:
+                        x_prev_1, y_prev_1 = jogador_1_trilho[['x_tr', 'y_tr']].iloc[-2]
+                        x_last_1, y_last_1 = jogador_1_trilho[['x_tr', 'y_tr']].iloc[-1]
+                        ax.annotate(
+                            '',
+                            xy=(x_last_1, y_last_1),
+                            xytext=(x_prev_1, y_prev_1),
+                            arrowprops=dict(arrowstyle='-|>', color='#2ECC71', lw=2.2, shrinkA=0, shrinkB=0),
+                            zorder=4,
+                        )
+
+                if not jogador_2_trilho.empty:
+                    ax.plot(
+                        jogador_2_trilho['x_tr'],
+                        jogador_2_trilho['y_tr'],
+                        color='#F2F2F2',
+                        linewidth=2.2,
+                        alpha=0.95,
+                    )
+
+                    if len(jogador_2_trilho) >= 2:
+                        x_prev_2, y_prev_2 = jogador_2_trilho[['x_tr', 'y_tr']].iloc[-2]
+                        x_last_2, y_last_2 = jogador_2_trilho[['x_tr', 'y_tr']].iloc[-1]
+                        ax.annotate(
+                            '',
+                            xy=(x_last_2, y_last_2),
+                            xytext=(x_prev_2, y_prev_2),
+                            arrowprops=dict(arrowstyle='-|>', color='#F2F2F2', lw=2.2, shrinkA=0, shrinkB=0),
+                            zorder=4,
+                        )
+
+                snapshot_rel = trilho_df.loc[trilho_df['time_evento_s'] == tempo_relativo].copy()
+                jogador_1_frame = snapshot_rel[snapshot_rel['atleta_id'].astype(str) == str(jogador_rel_1)]
+                jogador_2_frame = snapshot_rel[snapshot_rel['atleta_id'].astype(str) == str(jogador_rel_2)]
+
+                jogador_1_serie = (
+                    trilho_df.loc[trilho_df['atleta_id'].astype(str) == str(jogador_rel_1), ['time_evento_s', 'x_tr', 'y_tr']]
+                    .drop_duplicates(subset=['time_evento_s'])
+                    .rename(columns={'x_tr': 'x_1', 'y_tr': 'y_1'})
+                )
+                jogador_2_serie = (
+                    trilho_df.loc[trilho_df['atleta_id'].astype(str) == str(jogador_rel_2), ['time_evento_s', 'x_tr', 'y_tr']]
+                    .drop_duplicates(subset=['time_evento_s'])
+                    .rename(columns={'x_tr': 'x_2', 'y_tr': 'y_2'})
+                )
+                serie_distancias_rel = (
+                    pd.merge(jogador_1_serie, jogador_2_serie, on='time_evento_s', how='inner')
+                    .sort_values('time_evento_s')
+                )
+
+                if not serie_distancias_rel.empty:
+                    serie_distancias_rel['distancia_m'] = np.hypot(
+                        serie_distancias_rel['x_2'] - serie_distancias_rel['x_1'],
+                        serie_distancias_rel['y_2'] - serie_distancias_rel['y_1'],
+                    )
+                    serie_distancias_rel['tempo_label'] = serie_distancias_rel['time_evento_s'].map(converter_para_relogio_fpf)
+
+                    distancia_media_rel = float(serie_distancias_rel['distancia_m'].mean())
+                    distancia_min_rel = float(serie_distancias_rel['distancia_m'].min())
+                    distancia_max_rel = float(serie_distancias_rel['distancia_m'].max())
+
+                    distancia_inicial = float(serie_distancias_rel['distancia_m'].iloc[0])
+                    distancia_final = float(serie_distancias_rel['distancia_m'].iloc[-1])
+                    delta_distancia_rel = distancia_final - distancia_inicial
+
+                    if delta_distancia_rel <= -0.25:
+                        tendencia_rel = 'Aproximação'
+                    elif delta_distancia_rel >= 0.25:
+                        tendencia_rel = 'Afastamento'
+                    else:
+                        tendencia_rel = 'Estável'
+
+                if not jogador_1_frame.empty and not jogador_2_frame.empty:
+                    x1, y1 = jogador_1_frame[['x_tr', 'y_tr']].iloc[0]
+                    x2, y2 = jogador_2_frame[['x_tr', 'y_tr']].iloc[0]
+                    distancia_rel = float(np.hypot(x2 - x1, y2 - y1))
+
+                    x_mid = (x1 + x2) / 2
+                    y_mid = (y1 + y2) / 2
+
+                    pitch.scatter([x1], [y1], s=520, c='#2ECC71', edgecolors='white', linewidth=1.5, ax=ax, zorder=4)
+                    pitch.scatter([x2], [y2], s=520, c='#F2F2F2', edgecolors='black', linewidth=1.5, ax=ax, zorder=4)
+                    ax.plot([x1, x2], [y1, y2], color='#FFC857', linewidth=2.5, alpha=0.95)
+                    pitch.annotate(str(jogador_rel_1), (x1, y1), ax=ax, color='black', fontsize=10, fontweight='bold', va='center', ha='center', zorder=5)
+                    pitch.annotate(str(jogador_rel_2), (x2, y2), ax=ax, color='black', fontsize=10, fontweight='bold', va='center', ha='center', zorder=5)
+                    ax.text(
+                        x_mid,
+                        y_mid,
+                        f'{distancia_rel:.2f} m',
+                        color='black',
+                        fontsize=10,
+                        fontweight='bold',
+                        ha='center',
+                        va='center',
+                        bbox=dict(boxstyle='round,pad=0.25', facecolor='#FFC857', edgecolor='black', alpha=0.95),
+                    )
+
+            plot_placeholder.pyplot(fig)
+
+            if campo == 'Movimento Relativo de Jogadores ao Longo do Tempo' and timestamps_amostrados:
+                tempo_relativo = slider_placeholder.select_slider(
+                    'Momento do Movimento (1 em 1 segundo)',
+                    options=timestamps_amostrados,
+                    value=tempo_relativo if tempo_relativo in timestamps_amostrados else timestamps_amostrados[0],
+                    format_func=converter_para_relogio_fpf,
+                    key='mov_rel_slider',
+                )
+
+            if campo == 'Movimento Relativo de Jogadores ao Longo do Tempo' and not serie_distancias_rel.empty:
+                fig_dist, ax_dist = plt.subplots(figsize=(10, 3.2))
+                ax_dist.plot(
+                    serie_distancias_rel['time_evento_s'],
+                    serie_distancias_rel['distancia_m'],
+                    color='#E30613',
+                    linewidth=2.2,
+                )
+                ax_dist.scatter(
+                    serie_distancias_rel['time_evento_s'].iloc[-1],
+                    serie_distancias_rel['distancia_m'].iloc[-1],
+                    color='#FFC857',
+                    edgecolors='black',
+                    s=70,
+                    zorder=3,
+                )
+                ax_dist.axhline(serie_distancias_rel['distancia_m'].mean(), color='#F2F2F2', linewidth=1.3, linestyle='--')
+                ax_dist.set_facecolor('#1e1e1e')
+                fig_dist.patch.set_facecolor('#1e1e1e')
+                ax_dist.tick_params(colors='white', labelsize=9)
+                ax_dist.set_ylabel('Distância (m)', color='white')
+                ax_dist.set_xlabel('Tempo', color='white')
+                tick_positions = serie_distancias_rel['time_evento_s'].tolist()
+                tick_labels = serie_distancias_rel['tempo_label'].tolist()
+                step_ticks = max(1, len(tick_positions) // 5)
+                ax_dist.set_xticks(tick_positions[::step_ticks])
+                ax_dist.set_xticklabels(tick_labels[::step_ticks], rotation=0)
+                for spine in ax_dist.spines.values():
+                    spine.set_color('#666666')
+                ax_dist.grid(axis='y', color='#444444', linestyle=':', linewidth=0.7, alpha=0.8)
+                ax_dist.set_title('Distância entre jogadores ao longo da janela', color='white', fontsize=11)
+                fig_dist.tight_layout()
+                graph_placeholder.pyplot(fig_dist)
 
         # INFO FRAME
         with col_info:
@@ -442,6 +664,38 @@ with tab_visual:
 
                 st.divider()
 
+            elif campo == 'Movimento Relativo de Jogadores ao Longo do Tempo':
+                st.subheader('Selecionar Jogadores')
+
+                if len(jogadores_disponiveis) >= 2:
+                    jogador_rel_1 = st.selectbox(
+                        'Jogador 1',
+                        options=jogadores_disponiveis,
+                        index=0,
+                        key='mov_rel_jogador_1',
+                    )
+                    jogador_rel_2 = st.selectbox(
+                        'Jogador 2',
+                        options=jogadores_disponiveis,
+                        index=1 if len(jogadores_disponiveis) > 1 else 0,
+                        key='mov_rel_jogador_2',
+                    )
+
+                    if jogador_rel_1 == jogador_rel_2:
+                        st.warning('Seleciona dois jogadores diferentes.')
+
+                    st.selectbox(
+                        'Janela Temporal',
+                        options=[1, 2, 3, 5, 10],
+                        index=[1, 2, 3, 5, 10].index(janela_segundos) if janela_segundos in [1, 2, 3, 5, 10] else 0,
+                        key='mov_rel_janela_segundos',
+                        format_func=lambda valor: f'{valor}s',
+                    )
+                else:
+                    st.info('São necessários pelo menos dois jogadores no frame para esta visualização.')
+
+                st.divider()
+
             st.subheader("Analise de Frame")
             st.metric("Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s")
             if campo == 'Distância entre Jogadores':
@@ -454,6 +708,41 @@ with tab_visual:
                         st.dataframe(df_distancias, width='stretch', hide_index=True)
                 else:
                     st.metric("Distância entre Jogadores", "N/A")
+            elif campo == 'Movimento Relativo de Jogadores ao Longo do Tempo':
+                if tempo_relativo is not None:
+                    st.metric('Tempo do Movimento', f"{converter_para_relogio_fpf(tempo_relativo)}s")
+                else:
+                    st.metric('Tempo do Movimento', 'N/A')
+
+                if distancia_rel is not None:
+                    st.metric('Distância Atual', f'{distancia_rel:.2f} m')
+                else:
+                    st.metric('Distância Atual', 'N/A')
+
+                if distancia_media_rel is not None:
+                    st.metric('Distância Média', f'{distancia_media_rel:.2f} m')
+                else:
+                    st.metric('Distância Média', 'N/A')
+
+                if distancia_min_rel is not None:
+                    st.metric('Distância Mínima', f'{distancia_min_rel:.2f} m')
+                else:
+                    st.metric('Distância Mínima', 'N/A')
+
+                if distancia_max_rel is not None:
+                    st.metric('Distância Máxima', f'{distancia_max_rel:.2f} m')
+                else:
+                    st.metric('Distância Máxima', 'N/A')
+
+                if delta_distancia_rel is not None:
+                    st.metric(f'Variação em {janela_segundos}s', f'{delta_distancia_rel:+.2f} m', delta=tendencia_rel)
+                else:
+                    st.metric(f'Variação em {janela_segundos}s', 'N/A')
+
+                if tendencia_rel is not None:
+                    st.metric('Tendência', tendencia_rel)
+                else:
+                    st.metric('Tendência', 'N/A')
             else:
                 st.metric("Compactação Vertical", compactacao_frame['comp_vertical'])
                 st.metric("Compactação Horizontal", compactacao_frame['comp_horizontal'])
