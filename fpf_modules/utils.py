@@ -92,3 +92,27 @@ def fmt(value, col):
     if col in ("dist_m", "n_sprints", "n_acc_2_5"):
         return f"{value:.0f}"
     return f"{value:.1f}"
+
+
+def format_metrics_display_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Format metric columns for UI display without changing raw values."""
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+
+    minute_cols = ["duracao_min", "active_time_min"]
+    meter_cols = ["dist_m", "m_min", "peak_1m_m_min", "hsr_dist_m", "sprint_dist_m"]
+    pct_cols = ["hsr_pct", "active_pct", "pct_time_valid"]
+
+    for col in minute_cols + meter_cols:
+        if col in out.columns:
+            numeric = pd.to_numeric(out[col], errors="coerce")
+            out[col] = numeric.map(lambda x: "—" if pd.isna(x) else f"{round(float(x)):.0f}")
+
+    for col in pct_cols:
+        if col in out.columns:
+            numeric = pd.to_numeric(out[col], errors="coerce")
+            out[col] = numeric.map(lambda x: "—" if pd.isna(x) else f"{float(x):.1f}%")
+
+    return out

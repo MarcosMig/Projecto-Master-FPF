@@ -4,6 +4,7 @@ import streamlit as st
 import mplsoccer as mpl
 import matplotlib.pyplot as plt
 from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
+from fpf_modules.utils import format_metrics_display_dataframe
 from scipy.spatial import ConvexHull, QhullError
 
 # TODO 1. Converter métricas em m2
@@ -209,7 +210,11 @@ with tab_metrics:
     if sessoes_disponiveis.empty:
         st.warning("Nenhuma métrica encontrada para estes filtros.")
     else:
-        st.dataframe(sessoes_disponiveis, width='stretch', hide_index=True)
+        st.dataframe(
+            format_metrics_display_dataframe(sessoes_disponiveis),
+            width='stretch',
+            hide_index=True,
+        )
 
 # TAB 2: VISUALIZAÇÃO DO CAMPO
 
