@@ -13,6 +13,9 @@ from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
 from fpf_modules.metrics import calcular_area_cache, calcular_compactacao_cache
 from fpf_modules.utils import converter_para_relogio_fpf, fmt
 
+PITCH_X = 120
+PITCH_Y = 80
+
 # Fixar max largura da pagina, de forma ao campo não esticar em demasia
 st.markdown(
     """
@@ -339,7 +342,12 @@ with tab_metrics:
             height=max(300, n * 36),
         )
 
-        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+        st.plotly_chart(
+            fig,
+            width="stretch",
+            config={"displayModeBar": False},
+            key="metricas_barras",
+        )
 
     st.divider()
 
@@ -617,6 +625,7 @@ with tab_visual:
                             "staticPlot": True,
                         },
                         width="stretch",
+                        key="heatmap",
                     )
 
                 else:
@@ -709,7 +718,7 @@ with tab_visual:
             # Campo Default
             if campo is None:
                 # Capture clicks
-                clicked = st.plotly_chart(
+                clicked = plot_placeholder.plotly_chart(
                     fig_pitch,
                     on_select="rerun",
                     width="stretch",
@@ -718,6 +727,7 @@ with tab_visual:
                         "responsive": True,
                         "displayModeBar": False,
                     },
+                    key="main_field",
                 )
 
                 if clicked and clicked["selection"]["points"]:
@@ -755,15 +765,6 @@ with tab_visual:
                 except QhullError:
                     pass
 
-                st.plotly_chart(
-                    fig_pitch,
-                    config={
-                        "scrollZoom": False,
-                        "responsive": True,
-                        "displayModeBar": False,
-                        #    'staticPlot': True
-                    },
-                )
             # ── Distância entre Jogadores ──────────────────────────────────────────────────
 
             elif (
@@ -816,7 +817,15 @@ with tab_visual:
 
                     x1, y1 = coords_jogadores[jogador_1_id]
                     x2, y2 = coords_jogadores[jogador_2_id]
-                    distancia_par = float(np.hypot(x2 - x1, y2 - y1))
+
+                    # Converter em metros reais
+                    distancia_par = float(
+                        np.hypot(
+                            (x2 - x1) * (dist_x / PITCH_X),
+                            (y2 - y1) * (dist_y / PITCH_Y),
+                        )
+                    )
+
                     x_mid = (x1 + x2) / 2
                     y_mid = (y1 + y2) / 2
                     nome_cor, cor_par = cores_pares[idx % len(cores_pares)]
@@ -868,16 +877,6 @@ with tab_visual:
                             xanchor="center",
                             yanchor="middle",
                         )
-
-                st.plotly_chart(
-                    fig_pitch,
-                    config={
-                        "scrollZoom": False,
-                        "responsive": True,
-                        "displayModeBar": False,
-                        #    'staticPlot': True
-                    },
-                )
 
             # ── Movimento Jogadores ──────────────────────────────────────────────────
 
@@ -1014,8 +1013,10 @@ with tab_visual:
 
                 if not serie_distancias_rel.empty:
                     serie_distancias_rel["distancia_m"] = np.hypot(
-                        serie_distancias_rel["x_2"] - serie_distancias_rel["x_1"],
-                        serie_distancias_rel["y_2"] - serie_distancias_rel["y_1"],
+                        (serie_distancias_rel["x_2"] - serie_distancias_rel["x_1"])
+                        * (dist_x / PITCH_X),
+                        (serie_distancias_rel["y_2"] - serie_distancias_rel["y_1"])
+                        * (dist_y / PITCH_Y),
                     )
                     serie_distancias_rel["tempo_label"] = serie_distancias_rel[
                         "time_evento_s"
@@ -1035,9 +1036,9 @@ with tab_visual:
                     )
                     delta_distancia_rel = distancia_final - distancia_inicial
 
-                    if delta_distancia_rel <= -0.25:
+                    if delta_distancia_rel <= -1:
                         tendencia_rel = "Aproximação"
-                    elif delta_distancia_rel >= 0.25:
+                    elif delta_distancia_rel >= 1:
                         tendencia_rel = "Afastamento"
                     else:
                         tendencia_rel = "Estável"
@@ -1045,7 +1046,12 @@ with tab_visual:
                 if not jogador_1_frame.empty and not jogador_2_frame.empty:
                     x1, y1 = jogador_1_frame[["x_tr", "y_tr"]].iloc[0]
                     x2, y2 = jogador_2_frame[["x_tr", "y_tr"]].iloc[0]
-                    distancia_rel = float(np.hypot(x2 - x1, y2 - y1))
+                    distancia_rel = float(
+                        np.hypot(
+                            (x2 - x1) * (dist_x / PITCH_X),
+                            (y2 - y1) * (dist_y / PITCH_Y),
+                        )
+                    )
 
                     x_mid = (x1 + x2) / 2
                     y_mid = (y1 + y2) / 2
@@ -1122,15 +1128,18 @@ with tab_visual:
                         opacity=0.95,
                     )
 
-            plot_placeholder.plotly_chart(
-                fig_pitch,
-                config={
-                    "scrollZoom": False,
-                    "responsive": True,
-                    "displayModeBar": False,
-                    #    'staticPlot': True
-                },
-            )
+            # ── RENDERIZAR CAMPOS ───────────────────────────────────────────────────────────
+
+            if campo is not None or campo is None:
+                plot_placeholder.plotly_chart(
+                    fig_pitch,
+                    config={
+                        "scrollZoom": False,
+                        "responsive": True,
+                        "displayModeBar": False,
+                    },
+                    key=f"pitch_{campo}",
+                )
 
             # ── Grafico Distancia ───────────────────────────────────────────────────────────
 
@@ -1229,7 +1238,9 @@ with tab_visual:
                     ),
                 )
 
-                graph_placeholder.plotly_chart(fig_dist, use_container_width=True)
+                graph_placeholder.plotly_chart(
+                    fig_dist, use_container_width=True, key="distancia_linhas"
+                )
 
         # ── Frame Info ──────────────────────────────────────────────────
         with col_info:
