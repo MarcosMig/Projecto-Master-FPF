@@ -1,3 +1,5 @@
+from itertools import combinations
+
 import matplotlib.pyplot as plt
 import mplsoccer as mpl
 import numpy as np
@@ -105,6 +107,7 @@ except Exception as e:
 with st.sidebar:
     st.title("⚽ Filtros de Sessão")
 
+    campo_visualizacao = st.session_state.get("campo_visualizacao")
     # --- 1. FILTROS PRINCIPAIS — Seleção, Contexto, Ano --- #
 
     selecao = st.selectbox("Seleção", options=SELECOES_OPCOES)
@@ -182,6 +185,8 @@ with st.sidebar:
         & (tracking_df["jogo"] == jogo)
         & (tracking_df["data"] == data)
         & (tracking_df["fase"] == fase_selected)
+        & (tracking_df["x_tr"].notna())
+        & (tracking_df["y_tr"].notna())
     ]
 
     if track_df.empty:
@@ -193,11 +198,19 @@ with st.sidebar:
         dist_y = track_df["dist_y"].iloc[0]
 
         timestamps = sorted(track_df["time_evento_s"].unique())
-        selected_time = st.select_slider(
-            "Momento do Jogo",
-            options=timestamps,
-            format_func=converter_para_relogio_fpf,
-        )
+
+        # Se campo for movimento slider tempo muda para pagina principal
+        if campo_visualizacao == "Movimento Relativo de Jogadores ao Longo do Tempo":
+            selected_time = st.session_state.get("selected_time_jogo", timestamps[0])
+
+        else:
+            # Slider para navegar no tempo
+            selected_time = st.sidebar.select_slider(
+                "Momento do Jogo (s)",
+                options=timestamps,
+                key="selected_time_jogo",
+                format_func=converter_para_relogio_fpf,
+            )
 
 # -------------------------------------------------------------------------
 # PAGINA
@@ -393,16 +406,37 @@ with tab_metrics:
 # -------------------------------------------------------------------------
 
 with tab_visual:
-    st.subheader(f"Métricas da Partida · {fase_selected}")
+    campo_visualizacao = st.session_state.get("campo_visualizacao")
+
+    ocultar_metricas_partida = campo_visualizacao in [
+        "Distância entre Jogadores",
+        "Movimento Relativo de Jogadores ao Longo do Tempo",
+    ]
+
+    if not ocultar_metricas_partida:
+        st.subheader(f"Métricas da Partida · {fase_selected}")
 
     # ── Calculo Métricas ──────────────────────────────────────────────────
+
+    ##### !!!!!! TESTE
+    def kpi_card(label, value, tooltip=None):
+        title_attr = f'title="{tooltip}"' if tooltip else ""
+        st.markdown(
+            f"""
+            <div class="fpt-kpi-card" {title_attr}>
+                <div class="fpt-kpi-label">{label}</div>
+                <div class="fpt-kpi-value">{value}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     if fase_selected != "Warm-Up" and contexto != "Treino":
         df_compactacao = calcular_compactacao_cache(track_df, dist_x, dist_y)
 
         df_area = calcular_area_cache(track_df, dist_x, dist_y)
 
-        if not df_compactacao.empty:
+        if not df_compactacao.empty and not ocultar_metricas_partida:
             avg_comp_vert = df_compactacao["comp_vertical"].mean().round(2)
             avg_comp_hor = df_compactacao["comp_horizontal"].mean().round(2)
             avg_area = df_area["area"].mean().round(2)
@@ -410,7 +444,7 @@ with tab_visual:
             col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
 
             with col1:
-                visual.kpi_card("COMPACTAÇÃO VERTICAL (m)", f"{avg_comp_vert:.1f}")
+                kpi_card("COMPACTAÇÃO VERTICAL (m)", f"{avg_comp_vert:.1f}", "151")
 
             with col2:
                 visual.kpi_card("COMPACTAÇÃO HORIZONTAL (m)", f"{avg_comp_hor:.1f}")
@@ -433,6 +467,10 @@ with tab_visual:
             & (track_df["y_tr"].notna())
         ]
 
+        jogadores_disponiveis = sorted(
+            snapshot["atleta_id"].dropna().astype(str).unique().tolist()
+        )
+
         if fase_selected != "Warm-Up":
             # Obter metricas para o frame
             compactacao_frame = df_compactacao.loc[
@@ -445,10 +483,76 @@ with tab_visual:
         with col1:
             campo = st.selectbox(
                 label="Visualização Campo",
-                options=["Convex Hull"],
+                options=[
+                    "Convex Hull",
+                    "Distância entre Jogadores",
+                    "Movimento Relativo de Jogadores ao Longo do Tempo",
+                ],
                 index=None,
                 placeholder="Seleciona outro metodo de visualizar o campo",
+                key="campo_visualizacao",
             )
+
+        jogadores_selecionados = []
+        pares_opcoes = []
+        pares_selecionados = []
+        distancias_pares = []
+        jogador_rel_1 = None
+        jogador_rel_2 = None
+        tempo_relativo = None
+        janela_segundos = 1
+        distancia_rel = None
+        delta_distancia_rel = None
+        distancia_media_rel = None
+        distancia_min_rel = None
+        distancia_max_rel = None
+        tendencia_rel = None
+        serie_distancias_rel = pd.DataFrame()
+        cores_pares = [
+            ("Amarelo", "#FFD166"),
+            ("Verde", "#06D6A0"),
+            ("Azul Claro", "#4CC9F0"),
+            ("Rosa", "#EF476F"),
+            ("Laranja", "#F77F00"),
+            ("Verde Lima", "#90BE6D"),
+        ]
+        if campo == "Distância entre Jogadores" and len(jogadores_disponiveis) >= 2:
+            jogadores_default = st.session_state.get(
+                "dist_jogadores_selecionados", jogadores_disponiveis[:2]
+            )
+            jogadores_selecionados = [
+                str(jogador)
+                for jogador in jogadores_default
+                if str(jogador) in jogadores_disponiveis
+            ][:4]
+
+            if len(jogadores_selecionados) < 2:
+                jogadores_selecionados = jogadores_disponiveis[:2]
+
+            pares_opcoes = [
+                f"{jogador_1} - {jogador_2}"
+                for jogador_1, jogador_2 in combinations(jogadores_selecionados, 2)
+            ]
+            pares_default = st.session_state.get(
+                "dist_pares_selecionados", pares_opcoes[:1]
+            )
+            pares_selecionados = [par for par in pares_default if par in pares_opcoes]
+
+            if not pares_selecionados and pares_opcoes:
+                pares_selecionados = pares_opcoes[:1]
+
+        elif (
+            campo == "Movimento Relativo de Jogadores ao Longo do Tempo"
+            and len(jogadores_disponiveis) >= 2
+        ):
+            jogador_rel_1 = st.session_state.get(
+                "mov_rel_jogador_1", jogadores_disponiveis[0]
+            )
+            jogador_rel_2 = st.session_state.get(
+                "mov_rel_jogador_2",
+                jogadores_disponiveis[1 if len(jogadores_disponiveis) > 1 else 0],
+            )
+            janela_segundos = int(st.session_state.get("mov_rel_janela_segundos", 1))
 
         # ── Heatmap ──────────────────────────────────────────────────
 
@@ -526,6 +630,44 @@ with tab_visual:
 
         # Campo
         with col_map:
+            plot_placeholder = st.empty()
+            slider_placeholder = st.empty()
+            graph_placeholder = st.empty()
+
+            timestamps_relativos = []
+            timestamps_amostrados = []
+            tempo_visualizacao = selected_time
+
+            if campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
+                timestamps_relativos = sorted(
+                    track_df["time_evento_s"].dropna().unique().tolist()
+                )
+                timestamps_amostrados = (
+                    timestamps_relativos[::10] if timestamps_relativos else []
+                )
+                if (
+                    timestamps_relativos
+                    and timestamps_relativos[-1] not in timestamps_amostrados
+                ):
+                    timestamps_amostrados.append(timestamps_relativos[-1])
+
+                if timestamps_amostrados:
+                    tempo_relativo = st.session_state.get(
+                        "mov_rel_slider", timestamps_amostrados[0]
+                    )
+                    if tempo_relativo not in timestamps_amostrados:
+                        tempo_relativo = timestamps_amostrados[0]
+                    tempo_visualizacao = tempo_relativo
+
+            snapshot = track_df[
+                (track_df["time_evento_s"] == tempo_visualizacao)
+                & (track_df["x_tr"].notna())
+                & (track_df["y_tr"].notna())
+            ]
+            jogadores_disponiveis = sorted(
+                snapshot["atleta_id"].dropna().astype(str).unique().tolist()
+            )
+
             # --- Main pitch ---
             fig_pitch = go.Figure()
 
@@ -560,6 +702,7 @@ with tab_visual:
                     ),
                     customdata=snapshot[["atleta_id"]].values,
                     hovertemplate="<b>Jogador: %{customdata[0]}</b><extra></extra>",
+                    showlegend=False,
                 )
             )
 
@@ -621,15 +764,615 @@ with tab_visual:
                         #    'staticPlot': True
                     },
                 )
+            # ── Distância entre Jogadores ──────────────────────────────────────────────────
+
+            elif (
+                campo == "Distância entre Jogadores"
+                and len(jogadores_selecionados) >= 2
+            ):
+                coords_jogadores = {}
+                for jogador_id in jogadores_selecionados:
+                    jogador_data = snapshot[
+                        snapshot["atleta_id"].astype(str) == str(jogador_id)
+                    ]
+                    if not jogador_data.empty:
+                        coords_jogadores[str(jogador_id)] = tuple(
+                            jogador_data[["x_tr", "y_tr"]].iloc[0]
+                        )
+
+                if coords_jogadores:
+                    xs_sel = [
+                        coords_jogadores[jogador_id][0]
+                        for jogador_id in coords_jogadores
+                    ]
+                    ys_sel = [
+                        coords_jogadores[jogador_id][1]
+                        for jogador_id in coords_jogadores
+                    ]
+
+                    # Adicionar jogador selecionado com cor diferente
+                    fig_pitch.add_trace(
+                        go.Scatter(
+                            x=xs_sel,
+                            y=ys_sel,
+                            mode="markers",
+                            marker=dict(
+                                size=18,
+                                color="#2ECC71",
+                                line=dict(color="black", width=1.5),
+                            ),
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
+                for idx, par in enumerate(pares_selecionados):
+                    jogador_1_id, jogador_2_id = par.split(" - ")
+                    if (
+                        jogador_1_id not in coords_jogadores
+                        or jogador_2_id not in coords_jogadores
+                    ):
+                        continue
+
+                    x1, y1 = coords_jogadores[jogador_1_id]
+                    x2, y2 = coords_jogadores[jogador_2_id]
+                    distancia_par = float(np.hypot(x2 - x1, y2 - y1))
+                    x_mid = (x1 + x2) / 2
+                    y_mid = (y1 + y2) / 2
+                    nome_cor, cor_par = cores_pares[idx % len(cores_pares)]
+
+                    distancias_pares.append(
+                        {
+                            "Par": par,
+                            "Cor": nome_cor,
+                            "Distância": round(distancia_par, 2),
+                        }
+                    )
+
+                    # Line between two points with distance label
+                    fig_pitch.add_trace(
+                        go.Scatter(
+                            x=[x1, x2],
+                            y=[y1, y2],
+                            mode="lines",
+                            line=dict(color=cor_par, width=2.5),
+                            opacity=0.95,
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
+                    fig_pitch.add_annotation(
+                        x=x_mid,
+                        y=y_mid,
+                        text=f"{distancia_par:.2f} m",
+                        showarrow=False,
+                        font=dict(color="black", size=10, family="Arial Black"),
+                        bgcolor=cor_par,
+                        bordercolor="black",
+                        borderwidth=1,
+                        borderpad=4,
+                        opacity=0.95,
+                    )
+
+                    # Player ID annotations
+                    for _, row in snapshot[
+                        snapshot["atleta_id"].astype(str).isin(coords_jogadores.keys())
+                    ].iterrows():
+                        fig_pitch.add_annotation(
+                            x=row["x_tr"],
+                            y=row["y_tr"],
+                            text=str(row["atleta_id"]),
+                            showarrow=False,
+                            font=dict(color="black", size=10, family="Arial Black"),
+                            xanchor="center",
+                            yanchor="middle",
+                        )
+
+                st.plotly_chart(
+                    fig_pitch,
+                    config={
+                        "scrollZoom": False,
+                        "responsive": True,
+                        "displayModeBar": False,
+                        #    'staticPlot': True
+                    },
+                )
+
+            # ── Movimento Jogadores ──────────────────────────────────────────────────
+
+            elif (
+                campo == "Movimento Relativo de Jogadores ao Longo do Tempo"
+                and jogador_rel_1 is not None
+                and jogador_rel_2 is not None
+                and jogador_rel_1 != jogador_rel_2
+                and tempo_relativo is not None
+            ):
+                idx_tempo = (
+                    timestamps_relativos.index(tempo_relativo)
+                    if tempo_relativo in timestamps_relativos
+                    else len(timestamps_relativos) - 1
+                )
+                janela_frames = max(1, int(janela_segundos) * 10)
+                janela_timestamps = timestamps_relativos[
+                    max(0, idx_tempo - janela_frames + 1) : idx_tempo + 1
+                ]
+
+                trilho_df = track_df.loc[
+                    (track_df["time_evento_s"].isin(janela_timestamps))
+                    & (
+                        track_df["atleta_id"]
+                        .astype(str)
+                        .isin([str(jogador_rel_1), str(jogador_rel_2)])
+                    )
+                    & (track_df["x_tr"].notna())
+                    & (track_df["y_tr"].notna())
+                ].copy()
+
+                jogador_1_trilho = trilho_df[
+                    trilho_df["atleta_id"].astype(str) == str(jogador_rel_1)
+                ]
+                jogador_2_trilho = trilho_df[
+                    trilho_df["atleta_id"].astype(str) == str(jogador_rel_2)
+                ]
+
+                if not jogador_1_trilho.empty:
+                    fig_pitch.add_trace(
+                        go.Scatter(
+                            x=jogador_1_trilho["x_tr"],
+                            y=jogador_1_trilho["y_tr"],
+                            mode="lines",
+                            line=dict(color="#2ECC71", width=2.2),
+                            opacity=0.95,
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
+                    if len(jogador_1_trilho) >= 2:
+                        x_prev_1, y_prev_1 = jogador_1_trilho[["x_tr", "y_tr"]].iloc[-2]
+                        x_last_1, y_last_1 = jogador_1_trilho[["x_tr", "y_tr"]].iloc[-1]
+                        fig_pitch.add_annotation(
+                            x=x_last_1,
+                            y=y_last_1,
+                            ax=x_prev_1,
+                            ay=y_prev_1,
+                            axref="x",
+                            ayref="y",
+                            xref="x",
+                            yref="y",
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowsize=1.2,
+                            arrowwidth=2.2,
+                            arrowcolor="#2ECC71",
+                            text="",
+                        )
+
+                if not jogador_2_trilho.empty:
+                    fig_pitch.add_trace(
+                        go.Scatter(
+                            x=jogador_2_trilho["x_tr"],
+                            y=jogador_2_trilho["y_tr"],
+                            mode="lines",
+                            line=dict(color="#F2F2F2", width=2.2),
+                            opacity=0.95,
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
+                    if len(jogador_2_trilho) >= 2:
+                        x_prev_2, y_prev_2 = jogador_2_trilho[["x_tr", "y_tr"]].iloc[-2]
+                        x_last_2, y_last_2 = jogador_2_trilho[["x_tr", "y_tr"]].iloc[-1]
+                        fig_pitch.add_annotation(
+                            x=x_last_2,
+                            y=y_last_2,
+                            ax=x_prev_2,
+                            ay=y_prev_2,
+                            axref="x",
+                            ayref="y",
+                            xref="x",
+                            yref="y",
+                            showarrow=True,
+                            arrowhead=2,
+                            arrowsize=1.2,
+                            arrowwidth=2.2,
+                            arrowcolor="#F2F2F2",
+                            text="",
+                        )
+
+                snapshot_rel = trilho_df.loc[
+                    trilho_df["time_evento_s"] == tempo_relativo
+                ].copy()
+                jogador_1_frame = snapshot_rel[
+                    snapshot_rel["atleta_id"].astype(str) == str(jogador_rel_1)
+                ]
+                jogador_2_frame = snapshot_rel[
+                    snapshot_rel["atleta_id"].astype(str) == str(jogador_rel_2)
+                ]
+
+                jogador_1_serie = (
+                    trilho_df.loc[
+                        trilho_df["atleta_id"].astype(str) == str(jogador_rel_1),
+                        ["time_evento_s", "x_tr", "y_tr"],
+                    ]
+                    .drop_duplicates(subset=["time_evento_s"])
+                    .rename(columns={"x_tr": "x_1", "y_tr": "y_1"})
+                )
+                jogador_2_serie = (
+                    trilho_df.loc[
+                        trilho_df["atleta_id"].astype(str) == str(jogador_rel_2),
+                        ["time_evento_s", "x_tr", "y_tr"],
+                    ]
+                    .drop_duplicates(subset=["time_evento_s"])
+                    .rename(columns={"x_tr": "x_2", "y_tr": "y_2"})
+                )
+                serie_distancias_rel = pd.merge(
+                    jogador_1_serie, jogador_2_serie, on="time_evento_s", how="inner"
+                ).sort_values("time_evento_s")
+
+                if not serie_distancias_rel.empty:
+                    serie_distancias_rel["distancia_m"] = np.hypot(
+                        serie_distancias_rel["x_2"] - serie_distancias_rel["x_1"],
+                        serie_distancias_rel["y_2"] - serie_distancias_rel["y_1"],
+                    )
+                    serie_distancias_rel["tempo_label"] = serie_distancias_rel[
+                        "time_evento_s"
+                    ].map(converter_para_relogio_fpf)
+
+                    distancia_media_rel = float(
+                        serie_distancias_rel["distancia_m"].mean()
+                    )
+                    distancia_min_rel = float(serie_distancias_rel["distancia_m"].min())
+                    distancia_max_rel = float(serie_distancias_rel["distancia_m"].max())
+
+                    distancia_inicial = float(
+                        serie_distancias_rel["distancia_m"].iloc[0]
+                    )
+                    distancia_final = float(
+                        serie_distancias_rel["distancia_m"].iloc[-1]
+                    )
+                    delta_distancia_rel = distancia_final - distancia_inicial
+
+                    if delta_distancia_rel <= -0.25:
+                        tendencia_rel = "Aproximação"
+                    elif delta_distancia_rel >= 0.25:
+                        tendencia_rel = "Afastamento"
+                    else:
+                        tendencia_rel = "Estável"
+
+                if not jogador_1_frame.empty and not jogador_2_frame.empty:
+                    x1, y1 = jogador_1_frame[["x_tr", "y_tr"]].iloc[0]
+                    x2, y2 = jogador_2_frame[["x_tr", "y_tr"]].iloc[0]
+                    distancia_rel = float(np.hypot(x2 - x1, y2 - y1))
+
+                    x_mid = (x1 + x2) / 2
+                    y_mid = (y1 + y2) / 2
+
+                    # Dots
+                    fig_pitch.add_trace(
+                        go.Scatter(
+                            x=[x1],
+                            y=[y1],
+                            mode="markers",
+                            marker=dict(
+                                size=18,
+                                color="#2ECC71",
+                                line=dict(color="white", width=1.5),
+                            ),
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+                    fig_pitch.add_trace(
+                        go.Scatter(
+                            x=[x2],
+                            y=[y2],
+                            mode="markers",
+                            marker=dict(
+                                size=18,
+                                color="#F2F2F2",
+                                line=dict(color="black", width=1.5),
+                            ),
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
+                    # Line between players
+                    fig_pitch.add_trace(
+                        go.Scatter(
+                            x=[x1, x2],
+                            y=[y1, y2],
+                            mode="lines",
+                            line=dict(color="#FFC857", width=2.5),
+                            opacity=0.95,
+                            hoverinfo="skip",
+                            showlegend=False,
+                        )
+                    )
+
+                    # Player ID labels
+                    for x, y, label in [
+                        (x1, y1, str(jogador_rel_1)),
+                        (x2, y2, str(jogador_rel_2)),
+                    ]:
+                        fig_pitch.add_annotation(
+                            x=x,
+                            y=y,
+                            text=label,
+                            showarrow=False,
+                            font=dict(color="black", size=10, family="Arial Black"),
+                            xanchor="center",
+                            yanchor="middle",
+                        )
+
+                    # Distance label
+                    fig_pitch.add_annotation(
+                        x=x_mid,
+                        y=y_mid,
+                        text=f"{distancia_rel:.2f} m",
+                        showarrow=False,
+                        font=dict(color="black", size=10, family="Arial Black"),
+                        bgcolor="#FFC857",
+                        bordercolor="black",
+                        borderwidth=1,
+                        borderpad=4,
+                        opacity=0.95,
+                    )
+
+            plot_placeholder.plotly_chart(
+                fig_pitch,
+                config={
+                    "scrollZoom": False,
+                    "responsive": True,
+                    "displayModeBar": False,
+                    #    'staticPlot': True
+                },
+            )
+
+            # ── Grafico Distancia ───────────────────────────────────────────────────────────
+
+            if (
+                campo == "Movimento Relativo de Jogadores ao Longo do Tempo"
+                and timestamps_amostrados
+            ):
+                tempo_relativo = slider_placeholder.select_slider(
+                    "Momento do Movimento (1 em 1 segundo)",
+                    options=timestamps_amostrados,
+                    value=tempo_relativo
+                    if tempo_relativo in timestamps_amostrados
+                    else timestamps_amostrados[0],
+                    format_func=converter_para_relogio_fpf,
+                    key="mov_rel_slider",
+                )
+
+            if (
+                campo == "Movimento Relativo de Jogadores ao Longo do Tempo"
+                and not serie_distancias_rel.empty
+            ):
+                tick_positions = serie_distancias_rel["time_evento_s"].tolist()
+                tick_labels = serie_distancias_rel["tempo_label"].tolist()
+                step_ticks = max(1, len(tick_positions) // 5)
+
+                fig_dist = go.Figure()
+
+                # Main line
+                fig_dist.add_trace(
+                    go.Scatter(
+                        x=serie_distancias_rel["time_evento_s"],
+                        y=serie_distancias_rel["distancia_m"],
+                        mode="lines",
+                        line=dict(color="#E30613", width=2.2),
+                        customdata=serie_distancias_rel[["tempo_label"]].values,
+                        hovertemplate=(
+                            "<b>Tempo %{customdata[0]}</b><br>"
+                            "Distância: <b>%{y:.2f} m</b>"
+                            "<extra></extra>"
+                        ),
+                        showlegend=False,
+                    )
+                )
+
+                # Current-moment dot
+                fig_dist.add_trace(
+                    go.Scatter(
+                        x=[serie_distancias_rel["time_evento_s"].iloc[-1]],
+                        y=[serie_distancias_rel["distancia_m"].iloc[-1]],
+                        mode="markers",
+                        marker=dict(
+                            size=10,
+                            color="#FFC857",
+                            line=dict(color="black", width=1.5),
+                        ),
+                        customdata=[[serie_distancias_rel["tempo_label"].iloc[-1]]],
+                        hovertemplate=(
+                            "<span style='color:#FFC857'><b>⏱ Momento Atual</b></span><br><br>"
+                            "<b>Tempo %{customdata[0]}</b><br>"
+                            "Distância: <b>%{y:.2f} m</b>"
+                            "<extra></extra>"
+                        ),
+                        showlegend=False,
+                    )
+                )
+
+                # Mean dashed line
+                fig_dist.add_hline(
+                    y=serie_distancias_rel["distancia_m"].mean(),
+                    line=dict(color="#F2F2F2", width=1.3, dash="dash"),
+                )
+
+                fig_dist.update_layout(
+                    title=dict(
+                        text="Distância entre jogadores ao longo da janela",
+                        font=dict(color="white", size=11),
+                    ),
+                    paper_bgcolor="#1e1e1e",
+                    plot_bgcolor="#1e1e1e",
+                    height=260,
+                    margin=dict(l=50, r=20, t=40, b=40),
+                    xaxis=dict(
+                        tickvals=tick_positions[::step_ticks],
+                        ticktext=tick_labels[::step_ticks],
+                        tickfont=dict(color="white", size=9),
+                        title=dict(text="Tempo", font=dict(color="white")),
+                        gridcolor="#444444",
+                        linecolor="#666666",
+                    ),
+                    yaxis=dict(
+                        tickfont=dict(color="white", size=9),
+                        title=dict(text="Distância (m)", font=dict(color="white")),
+                        gridcolor="#444444",
+                        griddash="dot",
+                        linecolor="#666666",
+                    ),
+                )
+
+                graph_placeholder.plotly_chart(fig_dist, use_container_width=True)
 
         # ── Frame Info ──────────────────────────────────────────────────
         with col_info:
+            if campo == "Distância entre Jogadores":
+                st.subheader("Selecionar Jogadores")
+
+                if len(jogadores_disponiveis) >= 2:
+                    jogadores_escolhidos = st.multiselect(
+                        "Jogadores (Máx. 4)",
+                        options=jogadores_disponiveis,
+                        default=jogadores_selecionados,
+                        key="dist_jogadores_selecionados",
+                        max_selections=4,
+                    )
+
+                    if len(jogadores_escolhidos) < 2:
+                        st.warning("Seleciona pelo menos 2 jogadores.")
+                    else:
+                        pares_widget_opcoes = [
+                            f"{jogador_1} - {jogador_2}"
+                            for jogador_1, jogador_2 in combinations(
+                                jogadores_escolhidos, 2
+                            )
+                        ]
+                        pares_default_widget = [
+                            par
+                            for par in pares_selecionados
+                            if par in pares_widget_opcoes
+                        ]
+                        if not pares_default_widget and pares_widget_opcoes:
+                            pares_default_widget = pares_widget_opcoes[:1]
+
+                        st.multiselect(
+                            "Pares",
+                            options=pares_widget_opcoes,
+                            default=pares_default_widget,
+                            key="dist_pares_selecionados",
+                        )
+                else:
+                    st.info(
+                        "São necessários pelo menos dois jogadores no frame para esta visualização."
+                    )
+
+                st.divider()
+
+            elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
+                st.subheader("Selecionar Jogadores")
+
+                if len(jogadores_disponiveis) >= 2:
+                    jogador_rel_1 = st.selectbox(
+                        "Jogador 1",
+                        options=jogadores_disponiveis,
+                        index=0,
+                        key="mov_rel_jogador_1",
+                    )
+                    jogador_rel_2 = st.selectbox(
+                        "Jogador 2",
+                        options=jogadores_disponiveis,
+                        index=1 if len(jogadores_disponiveis) > 1 else 0,
+                        key="mov_rel_jogador_2",
+                    )
+
+                    if jogador_rel_1 == jogador_rel_2:
+                        st.warning("Seleciona dois jogadores diferentes.")
+
+                    st.selectbox(
+                        "Janela Temporal",
+                        options=[1, 2, 3, 5, 10],
+                        index=[1, 2, 3, 5, 10].index(janela_segundos)
+                        if janela_segundos in [1, 2, 3, 5, 10]
+                        else 0,
+                        key="mov_rel_janela_segundos",
+                        format_func=lambda valor: f"{valor}s",
+                    )
+                else:
+                    st.info(
+                        "São necessários pelo menos dois jogadores no frame para esta visualização."
+                    )
+
+                st.divider()
+
             st.subheader("Analise de Frame")
             st.metric(
                 "Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s"
             )
+            if campo == "Distância entre Jogadores":
+                if distancias_pares:
+                    if len(distancias_pares) == 1:
+                        st.metric(
+                            "Distância entre Jogadores",
+                            f"{distancias_pares[0]['Distância']:.2f} m",
+                        )
+                    else:
+                        df_distancias = pd.DataFrame(distancias_pares)
+                        df_distancias["Distância"] = df_distancias["Distância"].map(
+                            lambda valor: f"{valor:.2f} m"
+                        )
+                        st.dataframe(df_distancias, width="stretch", hide_index=True)
+                else:
+                    st.metric("Distância entre Jogadores", "N/A")
+            elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
+                if tempo_relativo is not None:
+                    st.metric(
+                        "Tempo do Movimento",
+                        f"{converter_para_relogio_fpf(tempo_relativo)}s",
+                    )
+                else:
+                    st.metric("Tempo do Movimento", "N/A")
 
-            if fase_selected != "Warm-Up":
+                if distancia_rel is not None:
+                    st.metric("Distância Atual", f"{distancia_rel:.2f} m")
+                else:
+                    st.metric("Distância Atual", "N/A")
+
+                if distancia_media_rel is not None:
+                    st.metric("Distância Média", f"{distancia_media_rel:.2f} m")
+                else:
+                    st.metric("Distância Média", "N/A")
+
+                if distancia_min_rel is not None:
+                    st.metric("Distância Mínima", f"{distancia_min_rel:.2f} m")
+                else:
+                    st.metric("Distância Mínima", "N/A")
+
+                if distancia_max_rel is not None:
+                    st.metric("Distância Máxima", f"{distancia_max_rel:.2f} m")
+                else:
+                    st.metric("Distância Máxima", "N/A")
+
+                if delta_distancia_rel is not None:
+                    st.metric(
+                        f"Variação em {janela_segundos}s",
+                        f"{delta_distancia_rel:+.2f} m",
+                        delta=tendencia_rel,
+                    )
+                else:
+                    st.metric(f"Variação em {janela_segundos}s", "N/A")
+
+                if tendencia_rel is not None:
+                    st.metric("Tendência", tendencia_rel)
+                else:
+                    st.metric("Tendência", "N/A")
+            else:
                 st.metric(
                     "Compactação Vertical (m)", compactacao_frame["comp_vertical"]
                 )
