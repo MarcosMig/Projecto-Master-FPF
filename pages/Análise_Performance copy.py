@@ -10,7 +10,11 @@ from scipy.spatial import ConvexHull, QhullError
 
 import fpf_modules.visualization as visual
 from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
-from fpf_modules.metrics import calcular_area_cache, calcular_compactacao_cache
+from fpf_modules.metrics import (
+    calcular_area_cache,
+    calcular_compactacao_cache,
+    calcular_linhas,
+)
 from fpf_modules.utils import converter_para_relogio_fpf, fmt
 
 PITCH_X = 120
@@ -426,19 +430,6 @@ with tab_visual:
 
     # ── Calculo Métricas ──────────────────────────────────────────────────
 
-    ##### !!!!!! TESTE
-    def kpi_card(label, value, tooltip=None):
-        title_attr = f'title="{tooltip}"' if tooltip else ""
-        st.markdown(
-            f"""
-            <div class="fpt-kpi-card" {title_attr}>
-                <div class="fpt-kpi-label">{label}</div>
-                <div class="fpt-kpi-value">{value}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
     if fase_selected != "Warm-Up" and contexto != "Treino":
         df_compactacao = calcular_compactacao_cache(track_df, dist_x, dist_y)
 
@@ -448,24 +439,36 @@ with tab_visual:
             avg_comp_vert = df_compactacao["comp_vertical"].mean().round(2)
             avg_comp_hor = df_compactacao["comp_horizontal"].mean().round(2)
             avg_area = df_area["area"].mean().round(2)
+            linhas_partida = calcular_linhas(track_df, dist_x, PITCH_X)
 
-            col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+            col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 1])
 
             with col1:
-                kpi_card("COMPACTAÇÃO VERTICAL (m)", f"{avg_comp_vert:.1f}", "151")
+                visual.kpi_card("COMPACTAÇÃO VERTICAL (m)", f"{avg_comp_vert:.1f}")
 
             with col2:
                 visual.kpi_card("COMPACTAÇÃO HORIZONTAL (m)", f"{avg_comp_hor:.1f}")
 
             with col3:
                 visual.kpi_card("ÁREA OCUPADA (m²)", f"{avg_area:.1f}")
-
+            with col4:
+                visual.kpi_card(
+                    "Distância Linha: DEF (m)",
+                    f"{linhas_partida['linha_def']:.1f}",
+                    tooltip=f"Linha Med: {linhas_partida['linha_med']:.1f}m | Linha Ata: {linhas_partida['linha_ata']:.1f}m",
+                )
+            with col5:
+                visual.kpi_card(
+                    "Distância Entre Linha: DEF → MED (m)",
+                    f"{linhas_partida['dist_def_med']:.1f}",
+                    tooltip=f"Distância Linha: Med → Ata: {linhas_partida['dist_mid_ata']:.1f}m | Distância Linha: Def → Ata: {linhas_partida['dist_def_ata']:.1f}m",
+                )
             st.divider()
 
     else:
         st.info("Métricas calculadas apenas para fase de jogo!")
 
-    # ── Snapshot ──────────────────────────────────────────────────
+    # ── Snapshot (Frame) ──────────────────────────────────────────────────
 
     if selected_time is not None:
         # 1. Obter snapshot
@@ -493,6 +496,7 @@ with tab_visual:
                 label="Visualização Campo",
                 options=[
                     "Convex Hull",
+                    "Distância entre Linhas",
                     "Distância entre Jogadores",
                     "Movimento Relativo de Jogadores ao Longo do Tempo",
                 ],
@@ -500,6 +504,10 @@ with tab_visual:
                 placeholder="Seleciona outro metodo de visualizar o campo",
                 key="campo_visualizacao",
             )
+
+        # ── Inicialização Variaveis Campos─────────────────────────────────────────────
+        # "Distância entre Jogadores",
+        # "Movimento Relativo de Jogadores ao Longo do Tempo"
 
         jogadores_selecionados = []
         pares_opcoes = []
@@ -573,67 +581,63 @@ with tab_visual:
                 unsafe_allow_html=True,
             )
 
-            texto_popup = "Selecione um jogador no campo, para verificar o seu heatmap!"
-
-            if st.session_state.selected_player:
-                player_name = st.session_state.selected_player
-                texto_popup = f"Jogador selecionado: {player_name}"
+            texto_popup = "Verifique o heatmap dos jogadores!"
 
             with st.popover(texto_popup, width=500):
-                if st.session_state.selected_player:
-                    # Obter dados do atleta
-                    player_frames = track_df[track_df["atleta_id"] == player_name]
+                player_name = st.selectbox(
+                    "Selecione um jogador",
+                    options=sorted(snapshot["atleta_id"].unique()),
+                    key="heatmap_player",
+                )
 
-                    st.markdown(f"### {player_name} — Heatmap")
+                # Obter dados do atleta
+                player_frames = track_df[track_df["atleta_id"] == player_name]
 
-                    # Vamos usar Plotly, pois o kdeplot do mplsoccer
-                    # Demora muito tempo a carregar
-                    fig_heat = go.Figure()
-                    fig_heat.update_layout(
-                        shapes=visual.draw_statsbomb_pitch_horizontal(),
-                        plot_bgcolor="#22312b",
-                        paper_bgcolor="#22312b",
-                        xaxis=dict(range=[0, 120], visible=False),
-                        yaxis=dict(range=[0, 80], visible=False),
-                        margin=dict(l=0, r=0, t=0, b=0),
-                        height=300,
+                st.markdown(f"### {player_name} — Heatmap")
+
+                # Vamos usar Plotly, pois o kdeplot do mplsoccer
+                # Demora muito tempo a carregar
+                fig_heat = go.Figure()
+                fig_heat.update_layout(
+                    shapes=visual.draw_statsbomb_pitch_horizontal(),
+                    plot_bgcolor="#22312b",
+                    paper_bgcolor="#22312b",
+                    xaxis=dict(range=[0, 120], visible=False),
+                    yaxis=dict(range=[0, 80], visible=False),
+                    margin=dict(l=0, r=0, t=0, b=0),
+                    height=300,
+                )
+
+                # Calcular Histograma de Posição
+                fig_heat.add_trace(
+                    go.Histogram2dContour(
+                        x=player_frames["x_tr"],
+                        y=player_frames["y_tr"],
+                        colorscale=visual.custom_hot,
+                        reversescale=False,
+                        showscale=False,
+                        ncontours=20,
+                        opacity=1,
+                        contours=dict(
+                            coloring="fill",
+                        ),
+                        line=dict(width=0),
                     )
+                )
 
-                    # Calcular Histograma de Posição
-                    fig_heat.add_trace(
-                        go.Histogram2dContour(
-                            x=player_frames["x_tr"],
-                            y=player_frames["y_tr"],
-                            colorscale=visual.custom_hot,
-                            reversescale=False,
-                            showscale=False,
-                            ncontours=20,
-                            opacity=1,
-                            contours=dict(
-                                coloring="fill",
-                            ),
-                            line=dict(width=0),
-                        )
-                    )
+                # Render Heatmap
+                st.plotly_chart(
+                    fig_heat,
+                    config={
+                        "scrollZoom": False,
+                        "displayModeBar": False,
+                        "staticPlot": True,
+                    },
+                    width="stretch",
+                    key="heatmap",
+                )
 
-                    # Render Heatmap
-                    st.plotly_chart(
-                        fig_heat,
-                        config={
-                            "scrollZoom": False,
-                            "displayModeBar": False,
-                            "staticPlot": True,
-                        },
-                        width="stretch",
-                        key="heatmap",
-                    )
-
-                else:
-                    st.warning(
-                        "Selecione um jogador no campo, para verificar a sua posição durante o jogo!"
-                    )
-
-        # ── Campo ──────────────────────────────────────────────────
+        # ── Visualizações Campo ──────────────────────────────────────────────────
 
         col_map, col_info = st.columns([2.5, 1])
 
@@ -717,10 +721,8 @@ with tab_visual:
 
             # Campo Default
             if campo is None:
-                # Capture clicks
-                clicked = plot_placeholder.plotly_chart(
+                plot_placeholder.plotly_chart(
                     fig_pitch,
-                    on_select="rerun",
                     width="stretch",
                     config={
                         "scrollZoom": False,
@@ -729,11 +731,6 @@ with tab_visual:
                     },
                     key="main_field",
                 )
-
-                if clicked and clicked["selection"]["points"]:
-                    st.session_state.selected_player = clicked["selection"]["points"][
-                        0
-                    ]["customdata"][0]
 
             # ── Convex Hull ──────────────────────────────────────────────────
             if campo == "Convex Hull":
@@ -764,6 +761,86 @@ with tab_visual:
 
                 except QhullError:
                     pass
+
+            # ── Distância entre Linhas ────────────────────────────────────────────────
+            if campo == "Distância entre Linhas":
+                linhas_frame = calcular_linhas(snapshot, dist_x, PITCH_X, True)
+
+                for linha_plot, linha_m, color, name in [
+                    ("linha_def_sb", "linha_def", "#E30613", "Def"),
+                    ("linha_med_sb", "linha_med", "#FFC857", "Med"),
+                    ("linha_ata_sb", "linha_ata", "#2ECC71", "Ata"),
+                ]:
+                    fig_pitch.add_trace(
+                        go.Scatter(
+                            x=[linhas_frame[linha_plot], linhas_frame[linha_plot]],
+                            y=[0, 80],
+                            mode="lines",
+                            line=dict(color=color, width=2, dash="dash"),
+                            hovertemplate=f"<b>Linha {name}</b>: {linhas_frame[linha_m]:.1f}m<extra></extra>",
+                            name=f"Linha {name}",
+                            showlegend=True,
+                        )
+                    )
+
+                pares_linhas = [
+                    (
+                        "Def → Med",
+                        "linha_def_sb",
+                        "linha_med_sb",
+                        "dist_def_med",
+                        "#E30613",
+                        79,
+                    ),
+                    (
+                        "Med → Ata",
+                        "linha_med_sb",
+                        "linha_ata_sb",
+                        "dist_mid_ata",
+                        "#FFC857",
+                        75,
+                    ),
+                    (
+                        "Def → Ata",
+                        "linha_def_sb",
+                        "linha_ata_sb",
+                        "dist_def_ata",
+                        "#2ECC71",
+                        71,
+                    ),
+                ]
+
+                # Distancia entre linhas, desenhar apenas se ativo
+                if st.session_state.get("dist_entre_linhas", True):
+                    for nome, x_start, x_end, dist_m, cor, y_pos in pares_linhas:
+                        x_mid = (linhas_frame[x_start] + linhas_frame[x_end]) / 2
+
+                        fig_pitch.add_trace(
+                            go.Scatter(
+                                x=[linhas_frame[x_start], linhas_frame[x_end]],
+                                y=[y_pos, y_pos],
+                                mode="lines",
+                                line=dict(color=cor, width=2.5),
+                                opacity=0.95,
+                                hovertemplate=f"<b>Linha {nome}</b>: {linhas_frame[dist_m]:.1f}m<extra></extra>",
+                                showlegend=False,
+                            )
+                        )
+
+                        fig_pitch.add_annotation(
+                            x=x_mid,
+                            y=y_pos,
+                            text=f"{linhas_frame[dist_m]:.2f} m",
+                            showarrow=False,
+                            font=dict(color="black", size=10, family="Arial Black"),
+                            bgcolor=cor,
+                            bordercolor="black",
+                            borderwidth=1,
+                            borderpad=4,
+                            opacity=0.95,
+                        )
+
+                fig_pitch.update_layout(showlegend=True)
 
             # ── Distância entre Jogadores ──────────────────────────────────────────────────
 
@@ -818,7 +895,7 @@ with tab_visual:
                     x1, y1 = coords_jogadores[jogador_1_id]
                     x2, y2 = coords_jogadores[jogador_2_id]
 
-                    # Converter em metros reais
+                    # Converter em metros
                     distancia_par = float(
                         np.hypot(
                             (x2 - x1) * (dist_x / PITCH_X),
@@ -1383,6 +1460,18 @@ with tab_visual:
                     st.metric("Tendência", tendencia_rel)
                 else:
                     st.metric("Tendência", "N/A")
+
+            if campo == "Distância entre Linhas":
+                dist_entre_linhas = st.toggle(
+                    "Distância entre Linhas",
+                    value=st.session_state.get("dist_entre_linhas", True),
+                    key="dist_entre_linhas",
+                )
+
+                st.metric("Distância Linha DEF", linhas_frame["linha_def"])
+                st.metric("Distância Linha MED", linhas_frame["linha_med"])
+                st.metric("Distância Linha ATA", linhas_frame["linha_ata"])
+
             else:
                 st.metric(
                     "Compactação Vertical (m)", compactacao_frame["comp_vertical"]

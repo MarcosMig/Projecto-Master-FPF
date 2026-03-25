@@ -11,14 +11,15 @@ import streamlit as st
 # ── Streamlit elementos customizados ─────────────────────────────────────
 
 
-def kpi_card(label, value):
+def kpi_card(label, value, tooltip=None):
+    title_attr = f'title="{tooltip}"' if tooltip else ""
     st.markdown(
         f"""
-        <div class="fpt-kpi-card">
+        <div class="fpt-kpi-card" {title_attr}>
             <div class="fpt-kpi-label">{label}</div>
             <div class="fpt-kpi-value">{value}</div>
         </div>
-    """,
+        """,
         unsafe_allow_html=True,
     )
 

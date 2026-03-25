@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy.spatial import ConvexHull, QhullError
+from sklearn.cluster import KMeans
 
 from .constants import (
     ACC_THR,
@@ -360,3 +361,75 @@ def calcular_compactacao_cache(tracking_df, dist_x, dist_y, pitch_x=120, pitch_y
         ).reset_index()
 
         return frame_data
+
+
+def calcular_linhas(
+    tracking_df,
+    dist_x,
+    pitch_x=120,
+    linhas_pitch=False,
+    n_linhas=3,
+) -> dict | list:
+    """Utilização do algoritmo KMeans para calculo das linhas tendo em conta a
+    posição dos jogadores. Os resultados são convertidos em metros
+    usando a distancia original do campo.
+
+    Args:
+        tracking_df (DataFrame): DataFrame que contem tracking data.
+        dist_x (Float): Comprimento original do campo
+        pitch_x (Integer): Comprimento do campo, default 120 (Statsbomb)
+        linhas_pitch (Bool): Retorna tambem as linhas em coordenaas statsbomb.
+        n_linhas (Integer): Número de linhas (clusters), default 3.
+    Returns:
+        dict | list:
+        Se `n_linhas` for 3, retorna um dicionário com a localização
+        das linhas e as distâncias entre elas.
+        Para outros valores de `n_linhas`, retorna apenas uma lista com a localização
+        das linhas.
+    """
+
+    # Conversão em metros
+    fator_conversao = dist_x / pitch_x
+
+    # Obter coordenadas x
+    pts = tracking_df[["x_tr"]].dropna().values.reshape(-1, 1)
+
+    # Fit Kmeans
+    kmeans_lines = KMeans(n_clusters=n_linhas, random_state=42, n_init=10).fit(pts)
+
+    # Ordenar linhas
+    linhas_raw = np.sort(kmeans_lines.cluster_centers_.ravel())
+
+    # Converter em metros
+    linhas = linhas_raw * fator_conversao
+
+    if n_linhas == 3:
+        linha_def, linha_med, linha_ata = linhas
+
+        resultado = {
+            "linha_def": round(linha_def, 2),
+            "linha_med": round(linha_med, 2),
+            "linha_ata": round(linha_ata, 2),
+            "dist_def_med": round(linha_med - linha_def, 2),
+            "dist_def_ata": round(linha_ata - linha_def, 2),
+            "dist_mid_ata": round(linha_ata - linha_med, 2),
+        }
+
+        if linhas_pitch:
+            linha_def_r, linha_med_r, linha_ata_r = linhas_raw
+            # Adicionar novas chaves
+            resultado.update(
+                {
+                    "linha_def_sb": round(linha_def_r, 2),
+                    "linha_med_sb": round(linha_med_r, 2),
+                    "linha_ata_sb": round(linha_ata_r, 2),
+                }
+            )
+
+        return resultado
+
+    else:
+        if linhas_pitch:
+            return linhas_raw
+
+        return linhas
