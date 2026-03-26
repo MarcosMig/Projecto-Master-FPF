@@ -206,8 +206,14 @@ def insert_or_update_table(
     
     client = get_supabase_client()
     stats = {'inserted': 0, 'updated': 0, 'success': True, 'error': None}
+
+    df_to_upload = df.copy()
+    if pk_columns:
+        pk_present = [col for col in pk_columns if col in df_to_upload.columns]
+        if pk_present:
+            df_to_upload = df_to_upload.drop_duplicates(subset=pk_present, keep="last")
     
-    records = _dataframe_to_supabase_records(df)
+    records = _dataframe_to_supabase_records(df_to_upload)
 
     if batch_size is None or batch_size <= 0:
         batches = [records]
@@ -224,13 +230,17 @@ def insert_or_update_table(
             while True:
                 try:
                     if pk_columns is None or len(pk_columns) == 0:
-                        response = client.table(table_name).insert(batch).execute()
+                        response = client.table(table_name).insert(
+                            batch,
+                            returning="minimal",
+                        ).execute()
                         stats['inserted'] += len(response.data) if response.data else len(batch)
                     else:
                         response = client.table(table_name).upsert(
                             batch,
                             on_conflict=",".join(pk_columns),
-                            ignore_duplicates=False
+                            ignore_duplicates=False,
+                            returning="minimal",
                         ).execute()
                         stats['inserted'] += len(response.data) if response.data else len(batch)
                     break
@@ -484,7 +494,7 @@ def write_session_data(
         stats['samples'] = insert_or_update_table(
             "samples", df_samples,
             pk_columns=["session_sk", "athlete_sk", "phase_id", "time"],
-            batch_size=250,
+            batch_size=1500,
             max_retries=3,
             batch_progress_callback=lambda idx, total, size, retry_attempt=0, retry_wait_seconds=0: _emit_progress(
                 progress_callback,

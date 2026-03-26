@@ -45,7 +45,7 @@ from fpf_modules.io_utils import (
     read_csv_upload
 )
 
-from fpf_modules.utils import round_metrics_dataframe, file_to_bytes
+from fpf_modules.utils import round_metrics_dataframe, file_to_bytes, format_metrics_display_dataframe
 
 from fpf_modules.geo import (
     calibrar_campo,
@@ -97,6 +97,79 @@ def _detect_hr_col(df: pd.DataFrame):
         if col in df.columns:
             return col
     return None
+
+
+def _evaluate_athlete_submission(audit_data: dict):
+    """Valida submissões por atleta.
+
+    Aceita:
+    - submissão completa: Warm-Up + 1P + 2P
+    - submissão uniforme: 1 único ficheiro por atleta, com a mesma fase para todos
+    """
+    fases_norm = {
+        str(aid): sorted({str(f) for f in (fases or [])}, key=lambda x: PHASE_MAP.get(x, 99))
+        for aid, fases in (audit_data or {}).items()
+    }
+    single_phase_sets = {tuple(fases) for fases in fases_norm.values()}
+    uniform_single_phase = (
+        bool(fases_norm)
+        and len(single_phase_sets) == 1
+        and len(next(iter(single_phase_sets))) == 1
+    )
+
+    athlete_status = {}
+    valid_count = 0
+    for aid, fases in fases_norm.items():
+        is_complete = all(x in fases for x in ["Warm-Up", "1P", "2P"])
+        is_valid = is_complete or uniform_single_phase
+        if is_valid:
+            valid_count += 1
+        athlete_status[aid] = {
+            "fases": fases,
+            "is_complete": is_complete,
+            "is_valid": is_valid,
+        }
+
+    uniform_phase = next(iter(single_phase_sets))[0] if uniform_single_phase else None
+    return athlete_status, valid_count, uniform_single_phase, uniform_phase
+
+
+def _parse_report_sections(report_txt: str):
+    if not report_txt:
+        return "", []
+
+    lines = report_txt.splitlines()
+    title = ""
+    sections = []
+    current_title = None
+    current_lines = []
+    separators = {"-" * 70, "=" * 70}
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if not title and stripped and stripped not in separators:
+            title = stripped
+            continue
+
+        if stripped in separators or not stripped:
+            continue
+
+        if not line.startswith(" ") and ":" not in stripped:
+            if current_title:
+                sections.append((current_title, "\n".join(current_lines).strip()))
+            current_title = stripped
+            current_lines = []
+            continue
+
+        if current_title:
+            current_lines.append(line)
+
+    if current_title:
+        sections.append((current_title, "\n".join(current_lines).strip()))
+
+    return title, sections
 
 
 def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
@@ -199,6 +272,17 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="FPF UTM Engine v16", layout="wide", initial_sidebar_state="collapsed")
+st.markdown(
+    """
+    <style>
+      div.stButton > button,
+      div.stDownloadButton > button {
+        white-space: nowrap;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 if "auth" not in st.session_state:
     st.session_state.auth = False
 if "login_user" not in st.session_state:
@@ -238,6 +322,8 @@ if "pts_gps_picked" not in st.session_state:
 if "pick_last_click_sig" not in st.session_state:
     # evita duplicar o mesmo clique após rerun
     st.session_state.pick_last_click_sig = None
+if "last_metodo_campo" not in st.session_state:
+    st.session_state.last_metodo_campo = None
 
 # --- LOGIN (CENTRADO + st.secrets) ---
 
@@ -402,6 +488,16 @@ with st.sidebar:
     )
 st.divider()
 
+if (
+    metodo_campo == "Pick no mapa (clicar 4 cantos)"
+    and st.session_state.last_metodo_campo != metodo_campo
+):
+    st.session_state.pick_corners = []
+    st.session_state.pts_gps_picked = None
+    st.session_state.pick_last_click_sig = None
+
+st.session_state.last_metodo_campo = metodo_campo
+
 # Defaults (menu de opções removido)
 epsg_used = 32629
 raio_validacao_m = 50
@@ -483,6 +579,82 @@ def _build_metric_groups():
             "QC": ["qc_grade", "qc_flags", "vmax_mps_qc", "n_jumps_gt15m", "n_gaps_gt2s_qc"],
         },
     }
+
+
+def _build_performance_metric_groups():
+    return {
+        "Volume": [
+            "duracao_min",
+            "dist_m",
+            "hsr_dist_m",
+            "sprint_dist_m",
+            "active_time_min",
+        ],
+        "Intensidade": [
+            "m_min",
+            "hsr_pct",
+            "active_pct",
+        ],
+        "Picos de Fase": [
+            "vmax_mps",
+            "peak_1m_m_min",
+        ],
+        f"HSR ≥ {HSR_MPS:.1f} m/s": [
+            "hsr_dist_m",
+            "hsr_pct",
+        ],
+        f"Sprint ≥ {SPRINT_MPS:.1f} m/s": [
+            "sprint_dist_m",
+            "n_sprints",
+        ],
+        f"Acc ≥ {ACC_THR:.1f} m/s²": [
+            "n_acc_2_5",
+        ],
+        f"Dec ≤ {DEC_THR:.1f} m/s²": [
+            "n_dec_3_0",
+        ],
+    }
+
+
+def _build_technical_metric_groups():
+    return {
+        "Disponibilidade / Integridade | Completude do sinal": [
+            "n_points",
+            "pct_time_valid",
+            "n_gaps_gt2s",
+        ],
+        "QC / Confiabilidade | QC": [
+            "qc_grade",
+            "qc_flags",
+            "vmax_mps_qc",
+            "n_jumps_gt15m",
+            "n_gaps_gt2s_qc",
+        ],
+    }
+
+
+def _order_technical_report_sections(report_sections):
+    ordered_titles = [
+        "Dados da Sessão",
+        "Validação geográfica",
+        "Auditoria de atletas (submissão)",
+        "Sincronização",
+        "Timeline do Jogo",
+        "Qualidade do Sinal GPS",
+        "Auditoria de Timestamp",
+    ]
+    ignored_titles = {
+        "Métricas Individuais (GPS-only) — thresholds fixos",
+        "Avisos/Problemas (exemplos):",
+    }
+
+    section_map = {title: body for title, body in report_sections if title not in ignored_titles}
+    ordered_sections = [(title, section_map[title]) for title in ordered_titles if title in section_map]
+    remaining_sections = [
+        (title, body) for title, body in report_sections
+        if title not in ignored_titles and title not in ordered_titles
+    ]
+    return ordered_sections + remaining_sections
 
 
 METRIC_INFO = {
@@ -791,10 +963,7 @@ try:
             "TR": [float(row["TR_lat"]), float(row["TR_lon"])],
         }
 
-        # guardar cantos limpos em sessão
-        st.session_state.pts_gps_picked = pts_gps_recuperado
-
-        # recalibrar -> define origin, R, pts_utm, dist_x, dist_y, angulo_rad, clat, clon
+        # Recalibrar com os cantos recuperados sem ocupar o estado reservado ao pick manual.
         pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
             pts_gps_recuperado, int(epsg_used)
         )
@@ -821,6 +990,11 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
     f_atleta, clat, clon, float(raio_validacao_m), int(
         amostra_geo_n), float(min_pct_atletas_ok)
 )
+n_ok_geo = len({a for a, _ in ok_list})
+n_fora_geo = len({a for a, _ in fora_list})
+n_avaliados_geo = n_ok_geo + n_fora_geo
+n_total_geo = len(set([get_atleta_id(f.name) for f in f_atleta]))
+n_erros_geo = len(geo_errors)
 
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
@@ -842,7 +1016,10 @@ atletas_local = ", ".join(atletas_parts) if atletas_parts else "—"
 
 st.markdown(f"**Campo, Local:** {campo_local}")
 st.markdown(f"**Atletas, Local:** {atletas_local}")
-st.markdown(f"**% Atletas OK:** {pct_ok*100:.0f}%")
+st.markdown(f"**% Atletas dentro do raio (avaliados):** {pct_ok*100:.0f}%")
+st.caption(
+    f"{n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio, {n_fora_geo} fora do raio, {n_erros_geo} com erro de leitura."
+)
 
 st.markdown("---")
 
@@ -851,7 +1028,8 @@ if passed_geo:
     st.success("✅ Validação geográfica aprovada.")
 else:
     st.error(
-        "❌ Validação geográfica falhou (percentagem insuficiente dentro do raio).")
+        f"❌ Validação geográfica falhou: apenas {n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio configurado."
+    )
 
 
 # Map
@@ -875,28 +1053,44 @@ for f in f_atleta:
     audit_data.setdefault(aid, [])
     audit_data[aid].append(infer_fase(f.name))
 
+athlete_status, atletas_validos, uniform_single_phase, uniform_phase = _evaluate_athlete_submission(audit_data)
+
 rows = []
-completos = 0
 for aid in sorted(
     audit_data.keys(),
     key=lambda x: int(re.search(r"\d+", x).group()
                       ) if re.search(r"\d+", x) else 0,
 ):
-    fases = audit_data[aid]
-    is_ok = all(x in fases for x in ["Warm-Up", "1P", "2P"])
-    if is_ok:
-        completos += 1
+    status_info = athlete_status.get(aid, {})
+    fases = status_info.get("fases", [])
+    is_complete = status_info.get("is_complete", False)
+    is_valid = status_info.get("is_valid", False)
+    criterio = (
+        "Uniforme"
+        if uniform_single_phase and not is_complete
+        else "Completo"
+        if is_complete
+        else "Incompleto"
+    )
     rows.append(
         {
             "ID Atleta": aid,
             "Ficheiros": len(fases),
-            "Estado": "✅ OK" if is_ok else "❌ INCOMPLETO",
+            "Critério": criterio,
+            "Estado": "OK" if is_valid else "INCOMPLETO",
             "Fases": ", ".join(sorted(set(fases))),
         }
     )
-st.table(pd.DataFrame(rows))
-st.write(
-    f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_data)}")
+with st.expander("Auditoria de atletas", expanded=False):
+    st.table(pd.DataFrame(rows))
+    if uniform_single_phase and uniform_phase:
+        st.write(
+            f"**Atletas válidos (submissão uniforme em {uniform_phase}):** {atletas_validos} / {len(audit_data)}"
+        )
+    else:
+        st.write(
+            f"**Atletas válidos (Warm-Up + 1P + 2P):** {atletas_validos} / {len(audit_data)}"
+        )
 
 st.divider()
 
@@ -905,7 +1099,7 @@ st.header("Normalização | Calculo Métricas")
 
 if not passed_geo:
     st.warning(
-        "A exportação está desativada porque a validação geográfica falhou. Ajusta o raio/% mínimo ou verifica os ficheiros."
+        f"A exportação está desativada porque só {n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio configurado. Os ficheiros com erro de leitura ({n_erros_geo}) não entram nesta percentagem. O mínimo configurado é {min_pct_atletas_ok*100:.0f}%."
     )
     st.stop()
 
@@ -946,8 +1140,9 @@ with st.sidebar.popover('💾 Guardar Campo'):
         save_field_to_parquet(campo_df)
         st.success("Campo Guardado!")
 
-btn = st.button("⚙️ Processar e Gerar Relatório",
-                type="primary", use_container_width=True)
+btn_row = st.columns([1.75, 0.8, 0.8, 0.8, 0.8, 1.05])
+with btn_row[0]:
+    btn = st.button("⚙️ Processar e Gerar Relatório", type="primary")
 
 # outputs (para UI) — manter em session_state para sobreviver a reruns
 df_metrics = st.session_state.df_metrics
@@ -963,7 +1158,8 @@ if btn:
             status.update(
                 label="Validação geográfica falhou. Processamento interrompido.", state="error")
             st.error(
-                "Validação geográfica falhou. O processamento foi interrompido.")
+                f"Validação geográfica falhou: {n_ok_geo}/{n_avaliados_geo} atletas avaliados dentro do raio configurado (mínimo {min_pct_atletas_ok*100:.0f}%). Ficheiros com erro de leitura: {n_erros_geo}. O processamento foi interrompido."
+            )
             st.stop()
 
         with tempfile.TemporaryDirectory() as td:
@@ -1224,6 +1420,11 @@ if btn:
             df_perf = df_metrics[base_cols + perf_cols].copy()
             df_qc = df_metrics[["session_sk", "athlete_sk", "atleta_id", "phase_id", "fase"] + qc_cols].copy()
             df_samples, df_athlete_session = _build_samples_export(out_files, session_sk, athlete_map)
+            if not df_samples.empty:
+                df_samples = df_samples.drop_duplicates(
+                    subset=["session_sk", "athlete_sk", "phase_id", "time"],
+                    keep="last",
+                )
 
             # Normalizar coordenadas StatsBomb
             df_tracking = normalize_tracking_data(
@@ -1286,7 +1487,7 @@ if btn:
             report_lines.append("-" * 70)
             report_lines.append("Auditoria de atletas (submissão)")
             report_lines.append(
-                f"  Atletas totais: {len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
+                f"  Atletas totais: {len(audit_data)} | Atletas válidos ({'submissão uniforme em ' + uniform_phase if uniform_single_phase and uniform_phase else 'Warm-Up+1P+2P'}): {atletas_validos}"
             )
 
             report_lines.append("-" * 70)
@@ -1448,50 +1649,53 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     # 5️⃣ Organização vertical por blocos e famílias
     id_cols = [c for c in [col_inicio, "fase"] if c in df_display.columns]
     metric_groups = _build_metric_groups()
+    performance_metric_groups = _build_performance_metric_groups()
+    technical_metric_groups = _build_technical_metric_groups()
 
     ordered_metric_cols = []
     for familias in metric_groups.values():
         for cols in familias.values():
             ordered_metric_cols.extend([c for c in cols if c in df_display.columns])
 
-    df_export = df_display[id_cols + ordered_metric_cols].copy()
+    ordered_metric_cols = list(dict.fromkeys(ordered_metric_cols))
 
-    st.subheader("Métricas organizadas por contexto")
-    for categoria, familias in metric_groups.items():
-        st.markdown(f"### {categoria}")
-        for familia, cols in familias.items():
-            cols_presentes = [c for c in cols if c in df_display.columns]
-            if not cols_presentes:
-                continue
-            st.markdown(f"**{familia}**")
+    df_export = df_display[id_cols + ordered_metric_cols].copy()
+    df_display_ui = format_metrics_display_dataframe(df_display)
+
+    st.subheader("Métricas Performance")
+    for familia, cols in performance_metric_groups.items():
+        cols_presentes = [c for c in cols if c in df_display.columns]
+        if not cols_presentes:
+            continue
+        with st.expander(f"Performance | {familia}", expanded=False):
             st.dataframe(
-                df_display[id_cols + cols_presentes],
+                df_display_ui[id_cols + cols_presentes],
                 use_container_width=True,
                 hide_index=True,
             )
 
     # 6️⃣ Downloads
-    st.download_button(
-        "⬇️ Download Métricas (.csv)",
-        data=df_export.to_csv(index=False).encode("utf-8"),
-        file_name="metricas_individuais_FPF.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
+    action_cols = st.columns([1.15, 1.05, 1.8])
+    with action_cols[0]:
+        st.download_button(
+            "⬇️ Download Métricas (.csv)",
+            data=df_export.to_csv(index=False).encode("utf-8"),
+            file_name="metricas_individuais_FPF.csv",
+            mime="text/csv",
+        )
 
 
     st.subheader("Integração na Base de Dados")
 
     if st.session_state.get("df_perf") is not None and not st.session_state.df_perf.empty:
-        col1, col2 = st.columns([3, 1])
+        col1, col2 = st.columns([3.95, 1.05])
         with col1:
             st.info("✅ Dados processados e prontos para serem integrados no Supabase.")
         
         with col2:
-            if st.button("💾 Gravar na Base", key="btn_save_duckdb", use_container_width=True):
+            if st.button("💾 Gravar na Base", key="btn_save_duckdb"):
                 progress_bar = st.progress(0, text="A iniciar transferência para o Supabase...")
                 progress_text = st.empty()
-                status_box = st.status("Transferência em curso", expanded=True)
 
                 def _on_db_progress(event: dict):
                     step = max(int(event.get("step", 0)), 0)
@@ -1500,7 +1704,6 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                     pct = min(step / total_steps, 1.0)
                     progress_bar.progress(pct, text=message)
                     progress_text.caption(f"Passo {step}/{total_steps}: {message}")
-                    status_box.write(message)
 
                 try:
                     stats = write_session_data(
@@ -1512,7 +1715,6 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                     )
                     progress_bar.progress(1.0, text="Transferência concluída.")
                     progress_text.caption("Passo finalizado: todos os envios terminaram.")
-                    status_box.update(label="Transferência concluída", state="complete", expanded=False)
                     
                     # Build stats message
                     stats_msg = "📊 **Resumo da Integração:**\n\n"
@@ -1527,34 +1729,59 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                 except Exception as e:
                     progress_bar.progress(1.0, text="Transferência interrompida.")
                     progress_text.caption("A transferência foi interrompida por um erro.")
-                    status_box.update(label="Erro na transferência", state="error", expanded=True)
                     st.error(f"❌ Erro ao gravar: {str(e)}")
     else:
         st.warning("📊 Processa a sessão primeiro para gravar os dados.")
 
-    # Auditoria de timestamp (diagnóstico)
-
-    if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
-        dfta = st.session_state.df_time_audit
-        if isinstance(dfta, pd.DataFrame) and not dfta.empty:
-            st.subheader("Auditoria de Timestamp (por atleta e fase)")
-            st.dataframe(dfta, use_container_width=True, hide_index=True)
-
-    st.subheader("Relatório")
+    st.subheader("Relatório Técnico")
     if report_txt:
-        st.code(report_txt, language="text")
-        st.download_button(
-            "⬇️ Download Relatório (.txt)",
-            data=report_txt.encode("utf-8"),
-            file_name="relatorio_FPF.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
+        report_title, report_sections = _parse_report_sections(report_txt)
+        report_sections = _order_technical_report_sections(report_sections)
+        if report_title:
+            st.caption(report_title)
+
+        if report_sections:
+            for section_title, section_body in report_sections:
+                with st.expander(section_title, expanded=False):
+                    st.code(section_body or "Sem dados nesta secção.", language="text")
+        else:
+            st.code(report_txt, language="text")
+
+        for section_title, cols in technical_metric_groups.items():
+            cols_presentes = [c for c in cols if c in df_display.columns]
+            if not cols_presentes:
+                continue
+            with st.expander(section_title, expanded=False):
+                st.dataframe(
+                    df_display_ui[id_cols + cols_presentes],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
+            dfta = st.session_state.df_time_audit
+            if isinstance(dfta, pd.DataFrame) and not dfta.empty:
+                with st.expander("Auditoria de Timestamp", expanded=False):
+                    st.dataframe(dfta, use_container_width=True, hide_index=True)
+
+        report_action_cols = st.columns([1.35, 1.0, 3.65])
+        with report_action_cols[0]:
+            st.download_button(
+                "⬇️ Download Relatório (.txt)",
+                data=report_txt.encode("utf-8"),
+                file_name="relatorio_FPF.txt",
+                mime="text/plain",
+            )
+        with report_action_cols[1]:
+            clear_results = st.button("🧹 Limpar resultados")
     else:
         st.warning("Sem relatório para mostrar (processa novamente).")
+        report_action_cols = st.columns([1.0, 5.0])
+        with report_action_cols[0]:
+            clear_results = st.button("🧹 Limpar resultados")
 
     # (Opcional) botão para limpar resultados
-    if st.button("🧹 Limpar resultados", use_container_width=True):
+    if clear_results:
         st.session_state.df_metrics = None
         st.session_state.report_txt = None
         st.session_state.manual_metricas_txt = None

@@ -326,8 +326,10 @@ def geo_validacao_por_atleta(
         except Exception as e:
             erros.append((aid, str(e)))
 
-    total = len(set([get_atleta_id(f.name) for f in f_atleta_files]))
-    pct_ok = (len({a for a, _ in ok}) / max(1, total))
+    atletas_ok = {a for a, _ in ok}
+    atletas_fora = {a for a, _ in fora}
+    total_avaliados = len(atletas_ok | atletas_fora)
+    pct_ok = (len(atletas_ok) / max(1, total_avaliados))
     passed = pct_ok >= min_pct_ok
     return passed, pct_ok, ok, fora, erros
 

@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
+import streamlit as st
 from scipy.spatial import ConvexHull, QhullError
+from sklearn.cluster import KMeans
 
 from .constants import (
     ACC_THR,
@@ -32,7 +34,7 @@ def time_to_seconds(series: pd.Series) -> pd.Series:
 
     # Try full timestamp format first (YYYY-MM-DD HH:MM:SS.ffffff)
     try:
-        dt = pd.to_datetime(s, format='%Y-%m-%d %H:%M:%S.%f', errors='coerce', utc=True)
+        dt = pd.to_datetime(s, format="%Y-%m-%d %H:%M:%S.%f", errors="coerce", utc=True)
         if dt.notna().mean() > 0.5:  # If more than 50% parsed successfully
             pass  # Use this result
         else:
@@ -43,7 +45,7 @@ def time_to_seconds(series: pd.Series) -> pd.Series:
     # If full timestamp didn't work well, try time-only format (HH:MM:SS.ffffff)
     if dt is None or dt.notna().mean() < 0.5:
         try:
-            dt = pd.to_datetime(s, format='%H:%M:%S.%f', errors='coerce', utc=True)
+            dt = pd.to_datetime(s, format="%H:%M:%S.%f", errors="coerce", utc=True)
             if dt.notna().mean() > 0.5:
                 pass  # Use this result
             else:
@@ -186,7 +188,9 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     x = pd.to_numeric(df["X_UTM"], errors="coerce")
     y = pd.to_numeric(df["Y_UTM"], errors="coerce")
     valid = t_sec.notna() & x.notna() & y.notna()
-    dfv = pd.DataFrame({"t": t_sec[valid], "x": x[valid], "y": y[valid]}).sort_values("t")
+    dfv = pd.DataFrame({"t": t_sec[valid], "x": x[valid], "y": y[valid]}).sort_values(
+        "t"
+    )
 
     out = default.copy()
     out["n_points"] = int(len(dfv))
@@ -217,7 +221,7 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     vmax = float(np.nanmax(v)) if len(v) else np.nan
 
     # Active time (tempo em movimento)
-    ACTIVE_V_THR = 0.5 # m/s
+    ACTIVE_V_THR = 0.5  # m/s
     active_time_s = float(np.nansum(dt[v >= ACTIVE_V_THR])) if len(v) else 0.0
     active_time_min = active_time_s / 60.0 if active_time_s > 0 else 0.0
     active_pct = (active_time_s / dur_s * 100.0) if dur_s > 0 else np.nan
@@ -274,32 +278,158 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
         "active_pct": active_pct,
     }
 
-##### TRACKING DATA #####
 
-def calcular_area(snapshot, dist_x, dist_y):
-    """Calcula a area ocupada pelo frame, convertendo em m², usando as distancias originais do campo.
+# ── Tracking Data ─────────────────────────────────────────────────────
+
+
+@st.cache_data
+def calcular_area_cache(
+    tracking_df, dist_x, dist_y, pitch_x=120, pitch_y=80
+) -> pd.DataFrame:
+    """Calcula a area ocupada por frame, convertendo de campo (default StatsBomb) em m²,
+    usando as distancias originais do campo.
 
     Args:
-        snapshot (DataFrame): DataFrame que contem tracking data, para um frame.
+        tracking_df (DataFrame): DataFrame que contem tracking data.
         dist_x (Float): Comprimento original do campo
         dist_y (Float): Largura original do campo.
+        pitch_x (Integer): Comprimento do campo, default 120 (Statsbomb)
+        pitch_y (Integer): Largura do campo, default 80 (Statsbomb)
 
     Returns:
-        Dictionary: Média e Mediana da Área Ocupada.
+        DataFrame: Área Ocupada por frame
     """
-    df = snapshot.copy()
+    df = tracking_df.copy()
 
-    fator_conversao = (dist_x * dist_y) / (120 * 80)  # StatsBomb → m²
+    fator_conversao = (dist_x * dist_y) / (pitch_x * pitch_y)
+    areas = []
 
-    pts = df[['x_tr', 'y_tr']].dropna().values
+    for time, frame in df.groupby("time_evento_s"):
+        pts = frame[["x_tr", "y_tr"]].dropna().values
 
-    if len(pts) >= 3:
-        try:
+        if len(pts) >= 3:
+            try:
+                hull = ConvexHull(pts)
+                areas.append(
+                    {
+                        "time_evento_s": time,
+                        "area": round(hull.volume * fator_conversao, 2),
+                    }
+                )
 
-            hull = ConvexHull(pts)
-            area = hull.volume * fator_conversao
+            except QhullError:
+                continue
 
-            return area
+    areas_df = pd.DataFrame(areas)
 
-        except QhullError:
-            return 0.0
+    return areas_df if not areas_df.empty else pd.DataFrame([])
+
+
+@st.cache_data
+def calcular_compactacao_cache(tracking_df, dist_x, dist_y, pitch_x=120, pitch_y=80):
+    """Calcula compactação Vertical e Horizontal por Frame, converte de
+    campo (default StatsBomb) para metros.
+
+    Args:
+        tracking_df (DataFrame): DataFrame que contem tracking data.
+        dist_x (Float): Comprimento original do campo
+        dist_y (Float): Largura original do campo.
+        pitch_x (Integer): Comprimento do campo, default 120 (Statsbomb)
+        pitch_y (Integer): Largura do campo, default 80 (Statsbomb)
+    Returns:
+        pd.DataFrame: DataFrame com a compactação vertical e horizontal por frame
+        em metros.
+    """
+    if "time_evento_s" in tracking_df.columns:
+        # Agrupar por tempo
+        frame_data = tracking_df.groupby("time_evento_s").agg(
+            x_min=("x_tr", "min"),
+            x_max=("x_tr", "max"),
+            y_min=("y_tr", "min"),
+            y_max=("y_tr", "max"),
+        )
+
+        frame_data["comp_vertical"] = round(
+            (frame_data["x_max"] - frame_data["x_min"]) * (pitch_x / dist_x), 2
+        )
+        frame_data["comp_horizontal"] = round(
+            (frame_data["y_max"] - frame_data["y_min"]) * (pitch_y / dist_y), 2
+        )
+
+        frame_data = frame_data.drop(
+            columns={"x_min", "x_max", "y_min", "y_max"}
+        ).reset_index()
+
+        return frame_data
+
+
+def calcular_linhas(
+    tracking_df,
+    dist_x,
+    pitch_x=120,
+    linhas_pitch=False,
+    n_linhas=3,
+) -> dict | list:
+    """Utilização do algoritmo KMeans para calculo das linhas tendo em conta a
+    posição dos jogadores. Os resultados são convertidos em metros
+    usando a distancia original do campo.
+
+    Args:
+        tracking_df (DataFrame): DataFrame que contem tracking data.
+        dist_x (Float): Comprimento original do campo
+        pitch_x (Integer): Comprimento do campo, default 120 (Statsbomb)
+        linhas_pitch (Bool): Retorna tambem as linhas em coordenaas statsbomb.
+        n_linhas (Integer): Número de linhas (clusters), default 3.
+    Returns:
+        dict | list:
+        Se `n_linhas` for 3, retorna um dicionário com a localização
+        das linhas e as distâncias entre elas.
+        Para outros valores de `n_linhas`, retorna apenas uma lista com a localização
+        das linhas.
+    """
+
+    # Conversão em metros
+    fator_conversao = dist_x / pitch_x
+
+    # Obter coordenadas x
+    pts = tracking_df[["x_tr"]].dropna().values.reshape(-1, 1)
+
+    # Fit Kmeans
+    kmeans_lines = KMeans(n_clusters=n_linhas, random_state=42, n_init=10).fit(pts)
+
+    # Ordenar linhas
+    linhas_raw = np.sort(kmeans_lines.cluster_centers_.ravel())
+
+    # Converter em metros
+    linhas = linhas_raw * fator_conversao
+
+    if n_linhas == 3:
+        linha_def, linha_med, linha_ata = linhas
+
+        resultado = {
+            "linha_def": round(linha_def, 2),
+            "linha_med": round(linha_med, 2),
+            "linha_ata": round(linha_ata, 2),
+            "dist_def_med": round(linha_med - linha_def, 2),
+            "dist_def_ata": round(linha_ata - linha_def, 2),
+            "dist_mid_ata": round(linha_ata - linha_med, 2),
+        }
+
+        if linhas_pitch:
+            linha_def_r, linha_med_r, linha_ata_r = linhas_raw
+            # Adicionar novas chaves
+            resultado.update(
+                {
+                    "linha_def_sb": round(linha_def_r, 2),
+                    "linha_med_sb": round(linha_med_r, 2),
+                    "linha_ata_sb": round(linha_ata_r, 2),
+                }
+            )
+
+        return resultado
+
+    else:
+        if linhas_pitch:
+            return linhas_raw
+
+        return linhas
