@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from scipy.spatial import ConvexHull, QhullError
-from sklearn.cluster import KMeans
 
 from .constants import (
     ACC_THR,
@@ -387,6 +386,13 @@ def calcular_linhas(
         Para outros valores de `n_linhas`, retorna apenas uma lista com a localização
         das linhas.
     """
+
+    try:
+        from sklearn.cluster import KMeans
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "A funcionalidade de cálculo de linhas requer a dependência opcional 'scikit-learn'."
+        ) from exc
 
     # Conversão em metros
     fator_conversao = dist_x / pitch_x

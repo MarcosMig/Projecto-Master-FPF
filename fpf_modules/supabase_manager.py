@@ -59,11 +59,27 @@ def initialize_schema() -> None:
     CREATE TABLE IF NOT EXISTS athletes (
         athlete_sk SERIAL PRIMARY KEY,
         atleta_id TEXT UNIQUE NOT NULL,
+        nome TEXT,
+        data_nascimento DATE,
+        posicao TEXT,
+        pe_preferencial TEXT,
+        altura_cm DOUBLE PRECISION,
+        peso_kg DOUBLE PRECISION,
+        escalao TEXT,
+        selecao TEXT,
         genero TEXT,
         ativo BOOLEAN DEFAULT true,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS nome TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS data_nascimento DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS posicao TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS pe_preferencial TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS altura_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS peso_kg DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS escalao TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS selecao TEXT;
 
     -- Sessions dimension
     CREATE TABLE IF NOT EXISTS sessions (
@@ -331,7 +347,11 @@ def _sync_dimension_tables(session_sks: List[int], athlete_sks: List[int], base_
             df_athletes = pd.read_parquet(athletes_path)
             if not df_athletes.empty and "athlete_sk" in df_athletes.columns:
                 df_athletes = df_athletes[df_athletes["athlete_sk"].isin(athlete_sks)].copy()
-                allowed_cols = ["athlete_sk", "atleta_id", "genero", "ativo", "created_at", "updated_at"]
+                allowed_cols = [
+                    "athlete_sk", "atleta_id", "nome", "data_nascimento", "posicao",
+                    "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
+                    "genero", "ativo", "created_at", "updated_at"
+                ]
                 df_athletes = df_athletes[[c for c in allowed_cols if c in df_athletes.columns]]
                 if not df_athletes.empty:
                     insert_or_update_table(
@@ -606,7 +626,7 @@ def append_dedup_parquet(df_new, filename, subset_keys):
     return df_final
 
 
-def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None):
+def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_profiles=None, selecao=None):
     """Resolve persistent athlete_sk from atleta_id (using parquet cache)."""
     path = os.path.join(base_dir, "athletes.parquet")
     os.makedirs(base_dir, exist_ok=True)
@@ -618,10 +638,20 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None):
     if os.path.exists(path):
         df_dim = pd.read_parquet(path)
     else:
-        df_dim = pd.DataFrame(columns=["athlete_sk", "atleta_id", "genero", "ativo", "created_at", "updated_at"])
+        df_dim = pd.DataFrame(columns=[
+            "athlete_sk", "atleta_id", "nome", "data_nascimento", "posicao",
+            "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
+            "genero", "ativo", "created_at", "updated_at"
+        ])
 
     if not df_dim.empty:
         df_dim["atleta_id"] = df_dim["atleta_id"].astype(str)
+
+    profiles_map = {}
+    if athlete_profiles is not None and not athlete_profiles.empty and "atleta_id" in athlete_profiles.columns:
+        df_profiles = athlete_profiles.copy()
+        df_profiles["atleta_id"] = df_profiles["atleta_id"].astype(str)
+        profiles_map = df_profiles.set_index("atleta_id").to_dict(orient="index")
 
     existing = dict(zip(df_dim.get("atleta_id", pd.Series(dtype="object")), df_dim.get("athlete_sk", pd.Series(dtype="int64"))))
     next_id = 1 if df_dim.empty else int(pd.to_numeric(df_dim["athlete_sk"], errors="coerce").max()) + 1
@@ -629,21 +659,40 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None):
     now_ts = pd.Timestamp.utcnow()
     new_rows = []
     for aid in atletas.tolist():
+        profile = profiles_map.get(aid, {})
         if aid not in existing:
             existing[aid] = next_id
             new_rows.append({
                 "athlete_sk": next_id,
                 "atleta_id": aid,
-                "genero": genero,
+                "nome": profile.get("nome"),
+                "data_nascimento": profile.get("data_nascimento"),
+                "posicao": profile.get("posicao"),
+                "pe_preferencial": profile.get("pe_preferencial"),
+                "altura_cm": profile.get("altura_cm"),
+                "peso_kg": profile.get("peso_kg"),
+                "escalao": profile.get("escalao"),
+                "selecao": profile.get("selecao", selecao),
+                "genero": profile.get("genero", genero),
                 "ativo": True,
                 "created_at": now_ts,
                 "updated_at": now_ts,
             })
             next_id += 1
+        elif profile:
+            idx = df_dim["atleta_id"].astype(str) == aid
+            for col in ["nome", "data_nascimento", "posicao", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao"]:
+                if col in df_dim.columns and profile.get(col) is not None and not pd.isna(profile.get(col)):
+                    df_dim.loc[idx, col] = profile.get(col)
+            if "genero" in df_dim.columns and genero is not None:
+                df_dim.loc[idx, "genero"] = df_dim.loc[idx, "genero"].fillna(profile.get("genero", genero))
+            if "updated_at" in df_dim.columns:
+                df_dim.loc[idx, "updated_at"] = now_ts
 
     if new_rows:
         df_new = pd.DataFrame(new_rows)
         df_dim = pd.concat([df_dim, df_new], ignore_index=True)
+    if new_rows or profiles_map:
         df_dim.to_parquet(path, index=False)
 
     return existing

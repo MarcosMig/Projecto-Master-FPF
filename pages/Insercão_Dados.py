@@ -89,6 +89,21 @@ HR_CANDIDATE_COLS = [
     "HR_bpm", "HR", "HeartRate", "Heart Rate", "Heart_Rate", "BPM", "Pulse"
 ]
 
+ATHLETE_PROFILE_COLUMN_MAP = {
+    "atleta_id": ["atleta_id", "id_atleta", "player_id", "player", "athlete_id", "id"],
+    "nome": ["nome", "name", "jogador", "player_name"],
+    "data_nascimento": ["data_nascimento", "dt_nascimento", "birth_date", "data_nasc"],
+    "posicao": ["posicao", "posição", "position", "pos"],
+    "pe_preferencial": ["pe_preferencial", "pé_preferencial", "preferred_foot", "foot", "pe"],
+    "altura_cm": ["altura_cm", "height_cm", "altura"],
+    "peso_kg": ["peso_kg", "weight_kg", "peso"],
+    "escalao": ["escalao", "escalao_etario", "age_group"],
+    "selecao": ["selecao", "seleção", "team", "equipa"],
+}
+ATHLETE_POSITIONS = ["", "GR", "DD", "DE", "DC", "MD", "ME", "MC", "MDC", "MAC", "ED", "EE", "AV", "PL"]
+ATHLETE_FEET = ["", "Direito", "Esquerdo", "Ambidestro"]
+ATHLETE_ESCALOES = ["", "A", "Sub-23", "Sub-21", "Sub-20", "Sub-19", "Sub-18", "Sub-17", "Sub-16", "Sub-15"]
+
 
 def _detect_hr_col(df: pd.DataFrame):
     if df is None or df.empty:
@@ -99,39 +114,130 @@ def _detect_hr_col(df: pd.DataFrame):
     return None
 
 
-def _evaluate_athlete_submission(audit_data: dict):
-    """Valida submissões por atleta.
+def _evaluate_athlete_submission(audit_data: dict, contexto: str):
+    """Valida a submissão por atleta segundo o contexto da sessão.
 
-    Aceita:
-    - submissão completa: Warm-Up + 1P + 2P
-    - submissão uniforme: 1 único ficheiro por atleta, com a mesma fase para todos
+    Regras:
+    - Jogo: cada atleta tem obrigatoriamente 1P e 2P; Warm-Up é opcional
+    - Treino: cada atleta tem exatamente 1 ficheiro
     """
     fases_norm = {
         str(aid): sorted({str(f) for f in (fases or [])}, key=lambda x: PHASE_MAP.get(x, 99))
         for aid, fases in (audit_data or {}).items()
     }
-    single_phase_sets = {tuple(fases) for fases in fases_norm.values()}
-    uniform_single_phase = (
-        bool(fases_norm)
-        and len(single_phase_sets) == 1
-        and len(next(iter(single_phase_sets))) == 1
-    )
 
     athlete_status = {}
     valid_count = 0
     for aid, fases in fases_norm.items():
-        is_complete = all(x in fases for x in ["Warm-Up", "1P", "2P"])
-        is_valid = is_complete or uniform_single_phase
+        fases_set = set(fases)
+        n_files = len(fases)
+
+        if contexto == "Jogo":
+            has_required = {"1P", "2P"}.issubset(fases_set)
+            has_only_allowed = fases_set.issubset({"Warm-Up", "1P", "2P"})
+            is_valid = has_required and has_only_allowed
+            criterio = "1P + 2P obrigatórios; Warm-Up opcional"
+        else:
+            is_valid = n_files == 1
+            criterio = "1 ficheiro obrigatório"
+
         if is_valid:
             valid_count += 1
         athlete_status[aid] = {
             "fases": fases,
-            "is_complete": is_complete,
             "is_valid": is_valid,
+            "criterio": criterio,
+            "n_files": n_files,
         }
 
-    uniform_phase = next(iter(single_phase_sets))[0] if uniform_single_phase else None
-    return athlete_status, valid_count, uniform_single_phase, uniform_phase
+    total_atletas = len(fases_norm)
+    session_valid = bool(total_atletas) and valid_count == total_atletas
+    return athlete_status, valid_count, session_valid
+
+
+def _normalize_athlete_registry_df(df: pd.DataFrame, genero_default: str, selecao_default: str):
+    if df is None or df.empty:
+        return None, None
+
+    if "atleta_id" not in df.columns:
+        return None, "A ficha de atletas tem de incluir atleta_id."
+
+    keep_cols = [
+        "atleta_id", "nome", "data_nascimento", "posicao", "pe_preferencial",
+        "altura_cm", "peso_kg", "escalao", "selecao"
+    ]
+    for col in keep_cols:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    df = df[keep_cols].copy()
+    df["atleta_id"] = df["atleta_id"].astype(str).str.strip()
+    df = df[df["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
+
+    if df.empty:
+        return None, "O cadastro de atletas não contém atleta_id válidos."
+
+    df["genero"] = genero_default or pd.NA
+    df["selecao"] = df["selecao"].fillna(selecao_default or pd.NA)
+    df["altura_cm"] = pd.to_numeric(df["altura_cm"], errors="coerce")
+    df["peso_kg"] = pd.to_numeric(df["peso_kg"], errors="coerce")
+    df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce").dt.date
+    return df, None
+
+
+def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_default: str):
+    athlete_ids = sorted({
+        str(get_atleta_id(f.name)).strip()
+        for f in (f_atleta_files or [])
+        if str(get_atleta_id(f.name)).strip()
+    })
+    if not athlete_ids:
+        return None, None
+
+    state_key = "athlete_registry_editor_df"
+    existing = st.session_state.get(state_key)
+    base_rows = pd.DataFrame({"atleta_id": athlete_ids})
+    if existing is None or not isinstance(existing, pd.DataFrame) or "atleta_id" not in existing.columns:
+        editor_df = base_rows.copy()
+    else:
+        editor_df = base_rows.merge(existing, on="atleta_id", how="left")
+
+    defaults = {
+        "nome": pd.NA,
+        "data_nascimento": pd.NaT,
+        "posicao": "",
+        "pe_preferencial": "",
+        "altura_cm": np.nan,
+        "peso_kg": np.nan,
+        "escalao": "",
+        "selecao": selecao_default or "",
+    }
+    for col, default in defaults.items():
+        if col not in editor_df.columns:
+            editor_df[col] = default
+        else:
+            editor_df[col] = editor_df[col].fillna(default)
+
+    edited_df = st.data_editor(
+        editor_df,
+        key="athlete_registry_editor",
+        hide_index=True,
+        use_container_width=True,
+        num_rows="fixed",
+        column_config={
+            "atleta_id": st.column_config.TextColumn("Atleta ID", disabled=True),
+            "nome": st.column_config.TextColumn("Nome"),
+            "data_nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY"),
+            "posicao": st.column_config.SelectboxColumn("Posição", options=ATHLETE_POSITIONS),
+            "pe_preferencial": st.column_config.SelectboxColumn("Pé Preferencial", options=ATHLETE_FEET),
+            "altura_cm": st.column_config.NumberColumn("Altura (cm)", min_value=0, max_value=260, step=1),
+            "peso_kg": st.column_config.NumberColumn("Peso (kg)", min_value=0, max_value=200, step=1),
+            "escalao": st.column_config.SelectboxColumn("Escalão", options=ATHLETE_ESCALOES),
+            "selecao": st.column_config.TextColumn("Seleção"),
+        },
+    )
+    st.session_state[state_key] = edited_df.copy()
+    return _normalize_athlete_registry_df(edited_df, genero_default, selecao_default)
 
 
 def _parse_report_sections(report_txt: str):
@@ -461,6 +567,16 @@ with st.sidebar:
     f_atleta = st.file_uploader(
         "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
+    if f_atleta:
+        with st.expander("Ficha de Atletas", expanded=False):
+            st.caption("Preenche diretamente a ficha dos atletas detetados nos ficheiros carregados.")
+            athlete_registry_df_sidebar, athlete_registry_error_sidebar = _build_athlete_registry_editor(
+                f_atleta, genero, selecao
+            )
+            if athlete_registry_error_sidebar:
+                st.warning(athlete_registry_error_sidebar)
+    else:
+        athlete_registry_df_sidebar, athlete_registry_error_sidebar = None, None
     st.divider()
 
     st.header("🗺️ Calibração do Campo")
@@ -1047,13 +1163,19 @@ st.divider()
 
 # Audit by athlete phases
 st.header("Auditoria de Atletas")
+athlete_registry_df, athlete_registry_error = athlete_registry_df_sidebar, athlete_registry_error_sidebar
+if athlete_registry_error:
+    st.warning(athlete_registry_error)
+elif athlete_registry_df is not None:
+    st.caption(f"Ficha de atletas preenchida: {len(athlete_registry_df)} registos.")
+
 audit_data = {}
 for f in f_atleta:
     aid = get_atleta_id(f.name)
     audit_data.setdefault(aid, [])
     audit_data[aid].append(infer_fase(f.name))
 
-athlete_status, atletas_validos, uniform_single_phase, uniform_phase = _evaluate_athlete_submission(audit_data)
+athlete_status, atletas_validos, submission_valid = _evaluate_athlete_submission(audit_data, contexto)
 
 rows = []
 for aid in sorted(
@@ -1063,15 +1185,8 @@ for aid in sorted(
 ):
     status_info = athlete_status.get(aid, {})
     fases = status_info.get("fases", [])
-    is_complete = status_info.get("is_complete", False)
     is_valid = status_info.get("is_valid", False)
-    criterio = (
-        "Uniforme"
-        if uniform_single_phase and not is_complete
-        else "Completo"
-        if is_complete
-        else "Incompleto"
-    )
+    criterio = status_info.get("criterio", "")
     rows.append(
         {
             "ID Atleta": aid,
@@ -1083,19 +1198,32 @@ for aid in sorted(
     )
 with st.expander("Auditoria de atletas", expanded=False):
     st.table(pd.DataFrame(rows))
-    if uniform_single_phase and uniform_phase:
+    if contexto == "Jogo":
         st.write(
-            f"**Atletas válidos (submissão uniforme em {uniform_phase}):** {atletas_validos} / {len(audit_data)}"
+            f"**Regra de Jogo:** 1P e 2P são obrigatórios por atleta; Warm-Up é opcional. Válidos: {atletas_validos} / {len(audit_data)}"
         )
     else:
         st.write(
-            f"**Atletas válidos (Warm-Up + 1P + 2P):** {atletas_validos} / {len(audit_data)}"
+            f"**Regra de Treino:** 1 ficheiro por atleta. Válidos: {atletas_validos} / {len(audit_data)}"
         )
+if not submission_valid:
+    st.warning("A submissão não cumpre as condições mínimas definidas para este contexto.")
 
 st.divider()
 
 # Normalization + export
 st.header("Normalização | Calculo Métricas")
+
+if not submission_valid:
+    if contexto == "Jogo":
+        st.warning(
+            "A exportação está desativada porque, em contexto de Jogo, cada atleta tem de ter pelo menos 1P e 2P. O ficheiro de Warm-Up é opcional."
+        )
+    else:
+        st.warning(
+            "A exportação está desativada porque, em contexto de Treino, cada atleta tem de ter exatamente 1 ficheiro."
+        )
+    st.stop()
 
 if not passed_geo:
     st.warning(
@@ -1398,7 +1526,13 @@ if btn:
                 "engine_version": ENGINE_VERSION,
             }
             session_sk = resolve_session_sk(session_fingerprint, session_payload, CLEANDATA_DIR)
-            athlete_map = resolve_athlete_sk(df_metrics, CLEANDATA_DIR, genero=genero)
+            athlete_map = resolve_athlete_sk(
+                df_metrics,
+                CLEANDATA_DIR,
+                genero=genero,
+                athlete_profiles=athlete_registry_df,
+                selecao=selecao,
+            )
 
             df_metrics["session_sk"] = session_sk
             df_metrics["athlete_sk"] = df_metrics["atleta_id"].astype(str).map(athlete_map)
@@ -1487,7 +1621,11 @@ if btn:
             report_lines.append("-" * 70)
             report_lines.append("Auditoria de atletas (submissão)")
             report_lines.append(
-                f"  Atletas totais: {len(audit_data)} | Atletas válidos ({'submissão uniforme em ' + uniform_phase if uniform_single_phase and uniform_phase else 'Warm-Up+1P+2P'}): {atletas_validos}"
+                (
+                    f"  Contexto: Jogo | Regra: 1P e 2P obrigatórios; Warm-Up opcional | Atletas válidos: {atletas_validos} / {len(audit_data)}"
+                    if contexto == "Jogo"
+                    else f"  Contexto: Treino | Regra: 1 ficheiro por atleta | Atletas válidos: {atletas_validos} / {len(audit_data)}"
+                )
             )
 
             report_lines.append("-" * 70)

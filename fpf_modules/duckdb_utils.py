@@ -111,11 +111,27 @@ def initialize_schema(con) -> None:
     CREATE TABLE IF NOT EXISTS athletes (
         athlete_sk   INTEGER PRIMARY KEY,
         atleta_id    TEXT UNIQUE,
+        nome         TEXT,
+        data_nascimento DATE,
+        posicao      TEXT,
+        pe_preferencial TEXT,
+        altura_cm    DOUBLE,
+        peso_kg      DOUBLE,
+        escalao      TEXT,
+        selecao      TEXT,
         genero       TEXT,
         ativo        BOOLEAN,
         created_at   TIMESTAMP,
         updated_at   TIMESTAMP
     );
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS nome TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS data_nascimento DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS posicao TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS pe_preferencial TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS altura_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS peso_kg DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS escalao TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS selecao TEXT;
 
     CREATE TABLE IF NOT EXISTS sessions (
         session_sk          INTEGER PRIMARY KEY,
