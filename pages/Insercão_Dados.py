@@ -99,6 +99,41 @@ def _detect_hr_col(df: pd.DataFrame):
     return None
 
 
+def _evaluate_athlete_submission(audit_data: dict):
+    """Valida submissões por atleta.
+
+    Aceita:
+    - submissão completa: Warm-Up + 1P + 2P
+    - submissão uniforme: 1 único ficheiro por atleta, com a mesma fase para todos
+    """
+    fases_norm = {
+        str(aid): sorted({str(f) for f in (fases or [])}, key=lambda x: PHASE_MAP.get(x, 99))
+        for aid, fases in (audit_data or {}).items()
+    }
+    single_phase_sets = {tuple(fases) for fases in fases_norm.values()}
+    uniform_single_phase = (
+        bool(fases_norm)
+        and len(single_phase_sets) == 1
+        and len(next(iter(single_phase_sets))) == 1
+    )
+
+    athlete_status = {}
+    valid_count = 0
+    for aid, fases in fases_norm.items():
+        is_complete = all(x in fases for x in ["Warm-Up", "1P", "2P"])
+        is_valid = is_complete or uniform_single_phase
+        if is_valid:
+            valid_count += 1
+        athlete_status[aid] = {
+            "fases": fases,
+            "is_complete": is_complete,
+            "is_valid": is_valid,
+        }
+
+    uniform_phase = next(iter(single_phase_sets))[0] if uniform_single_phase else None
+    return athlete_status, valid_count, uniform_single_phase, uniform_phase
+
+
 def _parse_report_sections(report_txt: str):
     if not report_txt:
         return "", []
@@ -955,6 +990,11 @@ passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
     f_atleta, clat, clon, float(raio_validacao_m), int(
         amostra_geo_n), float(min_pct_atletas_ok)
 )
+n_ok_geo = len({a for a, _ in ok_list})
+n_fora_geo = len({a for a, _ in fora_list})
+n_avaliados_geo = n_ok_geo + n_fora_geo
+n_total_geo = len(set([get_atleta_id(f.name) for f in f_atleta]))
+n_erros_geo = len(geo_errors)
 
 st.header("Validação de Localização (Campo ↔ Atletas)")
 
@@ -976,7 +1016,10 @@ atletas_local = ", ".join(atletas_parts) if atletas_parts else "—"
 
 st.markdown(f"**Campo, Local:** {campo_local}")
 st.markdown(f"**Atletas, Local:** {atletas_local}")
-st.markdown(f"**% Atletas OK:** {pct_ok*100:.0f}%")
+st.markdown(f"**% Atletas dentro do raio (avaliados):** {pct_ok*100:.0f}%")
+st.caption(
+    f"{n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio, {n_fora_geo} fora do raio, {n_erros_geo} com erro de leitura."
+)
 
 st.markdown("---")
 
@@ -985,7 +1028,8 @@ if passed_geo:
     st.success("✅ Validação geográfica aprovada.")
 else:
     st.error(
-        "❌ Validação geográfica falhou (percentagem insuficiente dentro do raio).")
+        f"❌ Validação geográfica falhou: apenas {n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio configurado."
+    )
 
 
 # Map
@@ -1009,29 +1053,44 @@ for f in f_atleta:
     audit_data.setdefault(aid, [])
     audit_data[aid].append(infer_fase(f.name))
 
+athlete_status, atletas_validos, uniform_single_phase, uniform_phase = _evaluate_athlete_submission(audit_data)
+
 rows = []
-completos = 0
 for aid in sorted(
     audit_data.keys(),
     key=lambda x: int(re.search(r"\d+", x).group()
                       ) if re.search(r"\d+", x) else 0,
 ):
-    fases = audit_data[aid]
-    is_ok = all(x in fases for x in ["Warm-Up", "1P", "2P"])
-    if is_ok:
-        completos += 1
+    status_info = athlete_status.get(aid, {})
+    fases = status_info.get("fases", [])
+    is_complete = status_info.get("is_complete", False)
+    is_valid = status_info.get("is_valid", False)
+    criterio = (
+        "Uniforme"
+        if uniform_single_phase and not is_complete
+        else "Completo"
+        if is_complete
+        else "Incompleto"
+    )
     rows.append(
         {
             "ID Atleta": aid,
             "Ficheiros": len(fases),
-            "Estado": "✅ OK" if is_ok else "❌ INCOMPLETO",
+            "Critério": criterio,
+            "Estado": "OK" if is_valid else "INCOMPLETO",
             "Fases": ", ".join(sorted(set(fases))),
         }
     )
 with st.expander("Auditoria de atletas", expanded=False):
     st.table(pd.DataFrame(rows))
-    st.write(
-        f"**Atletas completos (Warm-Up + 1P + 2P):** {completos} / {len(audit_data)}")
+    if uniform_single_phase and uniform_phase:
+        st.write(
+            f"**Atletas válidos (submissão uniforme em {uniform_phase}):** {atletas_validos} / {len(audit_data)}"
+        )
+    else:
+        st.write(
+            f"**Atletas válidos (Warm-Up + 1P + 2P):** {atletas_validos} / {len(audit_data)}"
+        )
 
 st.divider()
 
@@ -1040,7 +1099,7 @@ st.header("Normalização | Calculo Métricas")
 
 if not passed_geo:
     st.warning(
-        "A exportação está desativada porque a validação geográfica falhou. Ajusta o raio/% mínimo ou verifica os ficheiros."
+        f"A exportação está desativada porque só {n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio configurado. Os ficheiros com erro de leitura ({n_erros_geo}) não entram nesta percentagem. O mínimo configurado é {min_pct_atletas_ok*100:.0f}%."
     )
     st.stop()
 
@@ -1099,7 +1158,8 @@ if btn:
             status.update(
                 label="Validação geográfica falhou. Processamento interrompido.", state="error")
             st.error(
-                "Validação geográfica falhou. O processamento foi interrompido.")
+                f"Validação geográfica falhou: {n_ok_geo}/{n_avaliados_geo} atletas avaliados dentro do raio configurado (mínimo {min_pct_atletas_ok*100:.0f}%). Ficheiros com erro de leitura: {n_erros_geo}. O processamento foi interrompido."
+            )
             st.stop()
 
         with tempfile.TemporaryDirectory() as td:
@@ -1427,7 +1487,7 @@ if btn:
             report_lines.append("-" * 70)
             report_lines.append("Auditoria de atletas (submissão)")
             report_lines.append(
-                f"  Atletas totais: {len(audit_data)} | Atletas completos (Warm-Up+1P+2P): {completos}"
+                f"  Atletas totais: {len(audit_data)} | Atletas válidos ({'submissão uniforme em ' + uniform_phase if uniform_single_phase and uniform_phase else 'Warm-Up+1P+2P'}): {atletas_validos}"
             )
 
             report_lines.append("-" * 70)
