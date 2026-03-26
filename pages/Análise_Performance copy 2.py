@@ -181,10 +181,15 @@ with st.sidebar:
 
     # ---  4. NAVEGAÇÃO TEMPORAL — Fase e Slider de Tempo --- #
 
-    st.divider()
-    st.header("⏱️ Navegação Temporal")
+    if campo_visualizacao != "Heatmap":
+        st.divider()
+        st.header("⏱️ Navegação Temporal")
 
-    fase_selected = st.radio("Fase", options=["Warm-Up", "1P", "2P"], index=1)
+    fase_selected = (
+        st.radio("Fase", options=["Warm-Up", "1P", "2P"], index=1)
+        if campo_visualizacao != "Heatmap"
+        else st.session_state.get("Fase", "1P")
+    )
 
     track_df = tracking_df[
         (tracking_df["selecao"] == selecao)
@@ -209,6 +214,9 @@ with st.sidebar:
         # Se campo for movimento slider tempo muda para pagina principal
         if campo_visualizacao == "Movimento Relativo de Jogadores ao Longo do Tempo":
             selected_time = st.session_state.get("selected_time_jogo", timestamps[0])
+
+        elif campo_visualizacao == "Heatmap":
+            selected_time = timestamps[0]
 
         else:
             # Slider para navegar no tempo
@@ -421,6 +429,7 @@ with tab_visual:
     campo_visualizacao = st.session_state.get("campo_visualizacao")
 
     ocultar_metricas_partida = campo_visualizacao in [
+        "Heatmap",
         "Distância entre Jogadores",
         "Movimento Relativo de Jogadores ao Longo do Tempo",
     ]
@@ -489,12 +498,13 @@ with tab_visual:
             ]
             area_frame = df_area.loc[df_area["time_evento_s"] == selected_time]
 
-        col1, col2 = st.columns(2)
+        control_col1, control_col2 = st.columns([1.4, 1])
 
-        with col1:
+        with control_col1:
             campo = st.selectbox(
                 label="Visualização Campo",
                 options=[
+                    "Heatmap",
                     "Convex Hull",
                     "Distância entre Linhas",
                     "Distância entre Jogadores",
@@ -513,6 +523,8 @@ with tab_visual:
         pares_opcoes = []
         pares_selecionados = []
         distancias_pares = []
+        player_name = None
+        player_compare_name = None
         jogador_rel_1 = None
         jogador_rel_2 = None
         tempo_relativo = None
@@ -570,76 +582,105 @@ with tab_visual:
             )
             janela_segundos = int(st.session_state.get("mov_rel_janela_segundos", 1))
 
+        if jogadores_disponiveis:
+            player_name = st.session_state.get(
+                "heatmap_player", jogadores_disponiveis[0]
+            )
+            if player_name not in jogadores_disponiveis:
+                player_name = jogadores_disponiveis[0]
+
+            default_compare_idx = 1 if len(jogadores_disponiveis) > 1 else 0
+            player_compare_name = st.session_state.get(
+                "heatmap_compare_player", jogadores_disponiveis[default_compare_idx]
+            )
+            if player_compare_name not in jogadores_disponiveis:
+                player_compare_name = jogadores_disponiveis[default_compare_idx]
+
+            if (
+                len(jogadores_disponiveis) > 1
+                and player_compare_name == player_name
+            ):
+                player_compare_name = next(
+                    jogador
+                    for jogador in jogadores_disponiveis
+                    if jogador != player_name
+                )
+
         # ── Heatmap ──────────────────────────────────────────────────
 
         if "selected_player" not in st.session_state:
             st.session_state.selected_player = None
 
-        with col2:
-            st.markdown(
-                '<p style="font-size:14px; margin-bottom:4px;">Visualizar Heatmap do Jogador</p>',
-                unsafe_allow_html=True,
-            )
-
-            texto_popup = "Verifique o heatmap dos jogadores!"
-
-            with st.popover(texto_popup, width=500):
-                player_name = st.selectbox(
-                    "Selecione um jogador",
-                    options=sorted(snapshot["atleta_id"].unique()),
-                    key="heatmap_player",
+        with control_col2:
+            if campo in ["Convex Hull", "Distância entre Linhas"]:
+                st.markdown(
+                    '<p style="font-size:14px; margin-bottom:4px;">Visualizar Heatmap do Jogador</p>',
+                    unsafe_allow_html=True,
                 )
 
-                # Obter dados do atleta
-                player_frames = track_df[track_df["atleta_id"] == player_name]
+                texto_popup = "Verifique o heatmap dos jogadores!"
 
-                st.markdown(f"### {player_name} — Heatmap")
-
-                # Vamos usar Plotly, pois o kdeplot do mplsoccer
-                # Demora muito tempo a carregar
-                fig_heat = go.Figure()
-                fig_heat.update_layout(
-                    shapes=visual.draw_statsbomb_pitch_horizontal(),
-                    plot_bgcolor="#22312b",
-                    paper_bgcolor="#22312b",
-                    xaxis=dict(range=[0, 120], visible=False),
-                    yaxis=dict(range=[0, 80], visible=False),
-                    margin=dict(l=0, r=0, t=0, b=0),
-                    height=300,
-                )
-
-                # Calcular Histograma de Posição
-                fig_heat.add_trace(
-                    go.Histogram2dContour(
-                        x=player_frames["x_tr"],
-                        y=player_frames["y_tr"],
-                        colorscale=visual.custom_hot,
-                        reversescale=False,
-                        showscale=False,
-                        ncontours=20,
-                        opacity=1,
-                        contours=dict(
-                            coloring="fill",
-                        ),
-                        line=dict(width=0),
+                with st.popover(texto_popup, width=500):
+                    player_name = st.selectbox(
+                        "Selecione um jogador",
+                        options=sorted(snapshot["atleta_id"].unique()),
+                        key="heatmap_player",
                     )
-                )
 
-                # Render Heatmap
-                st.plotly_chart(
-                    fig_heat,
-                    config={
-                        "scrollZoom": False,
-                        "displayModeBar": False,
-                        "staticPlot": True,
-                    },
-                    width="stretch",
-                    key="heatmap",
-                )
+                    # Obter dados do atleta
+                    player_frames = track_df[track_df["atleta_id"] == player_name]
+
+                    st.markdown(f"### {player_name} — Heatmap")
+
+                    # Vamos usar Plotly, pois o kdeplot do mplsoccer
+                    # Demora muito tempo a carregar
+                    fig_heat = go.Figure()
+                    fig_heat.update_layout(
+                        shapes=visual.draw_statsbomb_pitch_horizontal(),
+                        plot_bgcolor="#22312b",
+                        paper_bgcolor="#22312b",
+                        xaxis=dict(range=[0, 120], visible=False),
+                        yaxis=dict(range=[0, 80], visible=False),
+                        margin=dict(l=0, r=0, t=0, b=0),
+                        height=300,
+                    )
+
+                    # Calcular Histograma de Posição
+                    fig_heat.add_trace(
+                        go.Histogram2dContour(
+                            x=player_frames["x_tr"],
+                            y=player_frames["y_tr"],
+                            colorscale=visual.custom_hot,
+                            reversescale=False,
+                            showscale=False,
+                            ncontours=20,
+                            opacity=1,
+                            contours=dict(
+                                coloring="fill",
+                            ),
+                            line=dict(width=0),
+                        )
+                    )
+
+                    # Render Heatmap
+                    st.plotly_chart(
+                        fig_heat,
+                        config={
+                            "scrollZoom": False,
+                            "displayModeBar": False,
+                            "staticPlot": True,
+                        },
+                        width="stretch",
+                        key="heatmap",
+                    )
 
         # ── Visualizações Campo ──────────────────────────────────────────────────
 
-        col_map, col_info = st.columns([2.5, 1])
+        if campo == "Heatmap":
+            col_map = st.container()
+            col_info = None
+        else:
+            col_map, col_info = st.columns([2.5, 1])
 
         # Campo
         with col_map:
@@ -732,8 +773,146 @@ with tab_visual:
                     key="main_field",
                 )
 
+            # ── Heatmap ──────────────────────────────────────────────────
+            if campo == "Heatmap":
+                heatmap_col1, heatmap_col2 = st.columns(2)
+
+                for heatmap_col, jogador_heatmap, chart_key in [
+                    (heatmap_col1, player_name, "heatmap_player_1"),
+                    (heatmap_col2, player_compare_name, "heatmap_player_2"),
+                ]:
+                    with heatmap_col:
+                        # ── Seletor de jogador ──
+                        selector_key = (
+                            "heatmap_player"
+                            if chart_key == "heatmap_player_1"
+                            else "heatmap_compare_player"
+                        )
+                        selected_index = (
+                            jogadores_disponiveis.index(jogador_heatmap)
+                            if jogador_heatmap in jogadores_disponiveis
+                            else 0
+                        )
+                        jogador_heatmap = st.selectbox(
+                            "Selecione um jogador",
+                            options=jogadores_disponiveis,
+                            index=selected_index,
+                            key=selector_key,
+                        )
+
+                        # ── Seletor de fase (independente por heatmap) ──
+                        fase_key = (
+                            "heatmap_fase_1"
+                            if chart_key == "heatmap_player_1"
+                            else "heatmap_fase_2"
+                        )
+                        fase_default = (
+                            ["1P", "2P"].index(fase_selected)
+                            if fase_selected in ["1P", "2P"]
+                            else 0
+                        )
+                        heatmap_fase = st.radio(
+                            "Fase",
+                            options=["1P", "2P"],
+                            index=fase_default,
+                            key=fase_key,
+                            horizontal=True,
+                        )
+
+                        # ── Query tracking independente por heatmap ──
+                        heatmap_track = tracking_df[
+                            (tracking_df["selecao"] == selecao)
+                            & (tracking_df["contexto"] == contexto)
+                            & (tracking_df["jogo"] == jogo)
+                            & (tracking_df["data"] == data)
+                            & (tracking_df["fase"] == heatmap_fase)
+                            & (tracking_df["x_tr"].notna())
+                            & (tracking_df["y_tr"].notna())
+                        ]
+
+                        if heatmap_track.empty:
+                            st.info(f"Sem dados de tracking para {heatmap_fase}.")
+                            continue
+
+                        # ── Timestamps e range slider ──
+                        heatmap_timestamps = sorted(
+                            heatmap_track["time_evento_s"].unique()
+                        )
+
+                        if len(heatmap_timestamps) >= 2:
+                            range_key = (
+                                "heatmap_range_1"
+                                if chart_key == "heatmap_player_1"
+                                else "heatmap_range_2"
+                            )
+                            t_start, t_end = st.select_slider(
+                                "Intervalo de Tempo",
+                                options=heatmap_timestamps,
+                                value=(
+                                    heatmap_timestamps[0],
+                                    heatmap_timestamps[-1],
+                                ),
+                                format_func=converter_para_relogio_fpf,
+                                key=range_key,
+                            )
+                            player_frames = heatmap_track[
+                                (heatmap_track["atleta_id"].astype(str) == str(jogador_heatmap))
+                                & (heatmap_track["time_evento_s"] >= t_start)
+                                & (heatmap_track["time_evento_s"] <= t_end)
+                            ]
+                        else:
+                            player_frames = heatmap_track[
+                                heatmap_track["atleta_id"].astype(str) == str(jogador_heatmap)
+                            ]
+
+                        if player_frames.empty:
+                            st.info("Sem dados para este jogador no intervalo selecionado.")
+                            continue
+
+                        # ── Render heatmap ──
+                        fig_heatmap = go.Figure()
+                        fig_heatmap.update_layout(
+                            shapes=visual.draw_statsbomb_pitch_horizontal(),
+                            plot_bgcolor="#22312b",
+                            paper_bgcolor="#22312b",
+                            xaxis=dict(range=[-2, 122], visible=False),
+                            yaxis=dict(range=[-2, 82], visible=False),
+                            margin=dict(l=0, r=0, t=40, b=0),
+                            height=550,
+                            title=dict(
+                                text=f"Heatmap · {jogador_heatmap}",
+                                font=dict(color="#ffffff", size=14),
+                                x=0.5,
+                            ),
+                        )
+                        fig_heatmap.add_trace(
+                            go.Histogram2dContour(
+                                x=player_frames["x_tr"],
+                                y=player_frames["y_tr"],
+                                colorscale=visual.custom_hot,
+                                reversescale=False,
+                                showscale=False,
+                                ncontours=20,
+                                opacity=1,
+                                contours=dict(
+                                    coloring="fill",
+                                ),
+                                line=dict(width=0),
+                            )
+                        )
+                        st.plotly_chart(
+                            fig_heatmap,
+                            config={
+                                "scrollZoom": False,
+                                "responsive": True,
+                                "displayModeBar": False,
+                            },
+                            width="stretch",
+                            key=chart_key,
+                        )
+
             # ── Convex Hull ──────────────────────────────────────────────────
-            if campo == "Convex Hull":
+            elif campo == "Convex Hull":
                 try:
                     pts = snapshot[["x_tr", "y_tr"]].dropna().values
 
@@ -1285,7 +1464,7 @@ with tab_visual:
 
             # ── RENDERIZAR CAMPOS ───────────────────────────────────────────────────────────
 
-            if campo is not None or campo is None:
+            if campo != "Heatmap":
                 plot_placeholder.plotly_chart(
                     fig_pitch,
                     config={
@@ -1429,141 +1608,142 @@ with tab_visual:
                             st.metric("Tendência", "N/A")
 
         # ── Frame Info ──────────────────────────────────────────────────
-        with col_info:
-            ocultar_metricas_frame = campo in [
-                "Distância entre Jogadores",
-                "Movimento Relativo de Jogadores ao Longo do Tempo",
-            ]
+        if campo != "Heatmap":
+            with col_info:
+                ocultar_metricas_frame = campo in [
+                    "Distância entre Jogadores",
+                    "Movimento Relativo de Jogadores ao Longo do Tempo",
+                ]
 
-            if campo == "Distância entre Jogadores":
-                st.subheader("Selecionar Jogadores")
+                if campo == "Distância entre Jogadores":
+                    st.subheader("Selecionar Jogadores")
 
-                if len(jogadores_disponiveis) >= 2:
-                    jogadores_escolhidos = st.multiselect(
-                        "Jogadores (Máx. 4)",
-                        options=jogadores_disponiveis,
-                        default=jogadores_selecionados,
-                        key="dist_jogadores_selecionados",
-                        max_selections=4,
-                    )
+                    if len(jogadores_disponiveis) >= 2:
+                        jogadores_escolhidos = st.multiselect(
+                            "Jogadores (Máx. 4)",
+                            options=jogadores_disponiveis,
+                            default=jogadores_selecionados,
+                            key="dist_jogadores_selecionados",
+                            max_selections=4,
+                        )
 
-                    if len(jogadores_escolhidos) < 2:
-                        st.warning("Seleciona pelo menos 2 jogadores.")
-                    else:
-                        pares_widget_opcoes = [
-                            f"{jogador_1} - {jogador_2}"
-                            for jogador_1, jogador_2 in combinations(
-                                jogadores_escolhidos, 2
+                        if len(jogadores_escolhidos) < 2:
+                            st.warning("Seleciona pelo menos 2 jogadores.")
+                        else:
+                            pares_widget_opcoes = [
+                                f"{jogador_1} - {jogador_2}"
+                                for jogador_1, jogador_2 in combinations(
+                                    jogadores_escolhidos, 2
+                                )
+                            ]
+                            pares_default_widget = [
+                                par
+                                for par in pares_selecionados
+                                if par in pares_widget_opcoes
+                            ]
+                            if not pares_default_widget and pares_widget_opcoes:
+                                pares_default_widget = pares_widget_opcoes[:1]
+
+                            st.multiselect(
+                                "Pares",
+                                options=pares_widget_opcoes,
+                                default=pares_default_widget,
+                                key="dist_pares_selecionados",
                             )
-                        ]
-                        pares_default_widget = [
-                            par
-                            for par in pares_selecionados
-                            if par in pares_widget_opcoes
-                        ]
-                        if not pares_default_widget and pares_widget_opcoes:
-                            pares_default_widget = pares_widget_opcoes[:1]
-
-                        st.multiselect(
-                            "Pares",
-                            options=pares_widget_opcoes,
-                            default=pares_default_widget,
-                            key="dist_pares_selecionados",
-                        )
-                else:
-                    st.info(
-                        "São necessários pelo menos dois jogadores no frame para esta visualização."
-                    )
-
-                st.divider()
-
-            elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
-                st.subheader("Selecionar Jogadores")
-
-                if len(jogadores_disponiveis) >= 2:
-                    jogador_rel_1 = st.selectbox(
-                        "Jogador 1",
-                        options=jogadores_disponiveis,
-                        index=0,
-                        key="mov_rel_jogador_1",
-                    )
-                    jogador_rel_2 = st.selectbox(
-                        "Jogador 2",
-                        options=jogadores_disponiveis,
-                        index=1 if len(jogadores_disponiveis) > 1 else 0,
-                        key="mov_rel_jogador_2",
-                    )
-
-                    if jogador_rel_1 == jogador_rel_2:
-                        st.warning("Seleciona dois jogadores diferentes.")
-
-                    st.selectbox(
-                        "Janela Temporal",
-                        options=[1, 2, 3, 5, 10],
-                        index=[1, 2, 3, 5, 10].index(janela_segundos)
-                        if janela_segundos in [1, 2, 3, 5, 10]
-                        else 0,
-                        key="mov_rel_janela_segundos",
-                        format_func=lambda valor: f"{valor}s",
-                    )
-
-                    if timestamps_amostrados:
-                        tempo_relativo = st.select_slider(
-                            "Momento do Movimento (1 em 1 segundo)",
-                            options=timestamps_amostrados,
-                            value=tempo_relativo
-                            if tempo_relativo in timestamps_amostrados
-                            else timestamps_amostrados[0],
-                            format_func=converter_para_relogio_fpf,
-                            key="mov_rel_slider",
-                        )
-                else:
-                    st.info(
-                        "São necessários pelo menos dois jogadores no frame para esta visualização."
-                    )
-
-                st.divider()
-
-            if campo != "Movimento Relativo de Jogadores ao Longo do Tempo":
-                st.subheader("Analise de Frame")
-                st.metric(
-                    "Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s"
-                )
-            if campo == "Distância entre Jogadores":
-                if distancias_pares:
-                    if len(distancias_pares) == 1:
-                        st.metric(
-                            "Distância entre Jogadores",
-                            f"{distancias_pares[0]['Distância']:.2f} m",
-                        )
                     else:
-                        df_distancias = pd.DataFrame(distancias_pares)
-                        df_distancias["Distância"] = df_distancias["Distância"].map(
-                            lambda valor: f"{valor:.2f} m"
+                        st.info(
+                            "São necessários pelo menos dois jogadores no frame para esta visualização."
                         )
-                        st.dataframe(df_distancias, width="stretch", hide_index=True)
-                else:
-                    st.metric("Distância entre Jogadores", "N/A")
 
-            if campo == "Distância entre Linhas":
-                dist_entre_linhas = st.toggle(
-                    "Distância entre Linhas",
-                    value=st.session_state.get("dist_entre_linhas", True),
-                    key="dist_entre_linhas",
-                )
+                    st.divider()
 
-                st.metric("Distância Linha DEF", linhas_frame["linha_def"])
-                st.metric("Distância Linha MED", linhas_frame["linha_med"])
-                st.metric("Distância Linha ATA", linhas_frame["linha_ata"])
+                elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
+                    st.subheader("Selecionar Jogadores")
 
-            elif not ocultar_metricas_frame:
-                st.metric(
-                    "Compactação Vertical (m)", compactacao_frame["comp_vertical"]
-                )
-                st.metric(
-                    "Compactação Horizontal (m)", compactacao_frame["comp_horizontal"]
-                )
-                st.metric("Área Ocupada (m²)", area_frame["area"])
+                    if len(jogadores_disponiveis) >= 2:
+                        jogador_rel_1 = st.selectbox(
+                            "Jogador 1",
+                            options=jogadores_disponiveis,
+                            index=0,
+                            key="mov_rel_jogador_1",
+                        )
+                        jogador_rel_2 = st.selectbox(
+                            "Jogador 2",
+                            options=jogadores_disponiveis,
+                            index=1 if len(jogadores_disponiveis) > 1 else 0,
+                            key="mov_rel_jogador_2",
+                        )
+
+                        if jogador_rel_1 == jogador_rel_2:
+                            st.warning("Seleciona dois jogadores diferentes.")
+
+                        st.selectbox(
+                            "Janela Temporal",
+                            options=[1, 2, 3, 5, 10],
+                            index=[1, 2, 3, 5, 10].index(janela_segundos)
+                            if janela_segundos in [1, 2, 3, 5, 10]
+                            else 0,
+                            key="mov_rel_janela_segundos",
+                            format_func=lambda valor: f"{valor}s",
+                        )
+
+                        if timestamps_amostrados:
+                            tempo_relativo = st.select_slider(
+                                "Momento do Movimento (1 em 1 segundo)",
+                                options=timestamps_amostrados,
+                                value=tempo_relativo
+                                if tempo_relativo in timestamps_amostrados
+                                else timestamps_amostrados[0],
+                                format_func=converter_para_relogio_fpf,
+                                key="mov_rel_slider",
+                            )
+                    else:
+                        st.info(
+                            "São necessários pelo menos dois jogadores no frame para esta visualização."
+                        )
+
+                    st.divider()
+
+                if campo != "Movimento Relativo de Jogadores ao Longo do Tempo":
+                    st.subheader("Analise de Frame")
+                    st.metric(
+                        "Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s"
+                    )
+                if campo == "Distância entre Jogadores":
+                    if distancias_pares:
+                        if len(distancias_pares) == 1:
+                            st.metric(
+                                "Distância entre Jogadores",
+                                f"{distancias_pares[0]['Distância']:.2f} m",
+                            )
+                        else:
+                            df_distancias = pd.DataFrame(distancias_pares)
+                            df_distancias["Distância"] = df_distancias["Distância"].map(
+                                lambda valor: f"{valor:.2f} m"
+                            )
+                            st.dataframe(df_distancias, width="stretch", hide_index=True)
+                    else:
+                        st.metric("Distância entre Jogadores", "N/A")
+
+                if campo == "Distância entre Linhas":
+                    dist_entre_linhas = st.toggle(
+                        "Distância entre Linhas",
+                        value=st.session_state.get("dist_entre_linhas", True),
+                        key="dist_entre_linhas",
+                    )
+
+                    st.metric("Distância Linha DEF", linhas_frame["linha_def"])
+                    st.metric("Distância Linha MED", linhas_frame["linha_med"])
+                    st.metric("Distância Linha ATA", linhas_frame["linha_ata"])
+
+                elif not ocultar_metricas_frame:
+                    st.metric(
+                        "Compactação Vertical (m)", compactacao_frame["comp_vertical"]
+                    )
+                    st.metric(
+                        "Compactação Horizontal (m)", compactacao_frame["comp_horizontal"]
+                    )
+                    st.metric("Área Ocupada (m²)", area_frame["area"])
 
 
 # --- FOOTER ---
