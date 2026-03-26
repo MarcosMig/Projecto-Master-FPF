@@ -8,3 +8,7 @@ scipy
 geopy
 mplsoccer
 supabase
+scikit-learn
+plotly
+matplotlib
+pyarrow
