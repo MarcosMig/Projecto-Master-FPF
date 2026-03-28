@@ -25,8 +25,9 @@ from scipy.signal import savgol_filter
 from fpf_modules.constants import (
     HSR_MPS, SPRINT_MPS, ACC_THR, DEC_THR, SPRINT_BOUT_MIN_S, ENGINE_VERSION,
     COL_LAT, COL_LON, COL_TIME, COL_FASE,
-    SELECOES_OPCOES, CLEANDATA_DIR
+    CLEANDATA_DIR
 )
+from fpf_modules.selections import load_selection_options
 
 from fpf_modules.metrics import (
     time_to_seconds,
@@ -103,6 +104,54 @@ ATHLETE_PROFILE_COLUMN_MAP = {
 ATHLETE_POSITIONS = ["", "GR", "DD", "DE", "DC", "MD", "ME", "MC", "MDC", "MAC", "ED", "EE", "AV", "PL"]
 ATHLETE_FEET = ["", "Direito", "Esquerdo", "Ambidestro"]
 ATHLETE_ESCALOES = ["", "A", "Sub-23", "Sub-21", "Sub-20", "Sub-19", "Sub-18", "Sub-17", "Sub-16", "Sub-15"]
+SELECTION_OPTIONS = load_selection_options()
+ATHLETES_DB_COLUMNS = [
+    "athlete_sk",
+    "atleta_id",
+    "nome",
+    "numero_camisola",
+    "data_nascimento",
+    "posicao",
+    "pe_preferencial",
+    "altura_cm",
+    "peso_kg",
+    "escalao",
+    "selecao",
+    "genero",
+    "ativo",
+]
+
+
+def _load_active_athletes_by_selection(selecao_default: str) -> pd.DataFrame:
+    athletes_path = Path(CLEANDATA_DIR) / "athletes.parquet"
+    if not athletes_path.exists():
+        return pd.DataFrame(columns=ATHLETES_DB_COLUMNS)
+
+    try:
+        df = pd.read_parquet(athletes_path)
+    except Exception:
+        return pd.DataFrame(columns=ATHLETES_DB_COLUMNS)
+
+    for col in ATHLETES_DB_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    df = df[ATHLETES_DB_COLUMNS].copy()
+    if df.empty:
+        return df
+
+    df["atleta_id"] = df["atleta_id"].astype(str).str.strip()
+    df["selecao"] = df["selecao"].astype("string").fillna("").str.strip()
+    df["ativo"] = df["ativo"].fillna(True).astype(bool)
+    df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce").dt.date
+    df["altura_cm"] = pd.to_numeric(df["altura_cm"], errors="coerce")
+    df["peso_kg"] = pd.to_numeric(df["peso_kg"], errors="coerce")
+
+    df = df[df["atleta_id"].ne("") & df["ativo"]]
+    if selecao_default:
+        df = df[df["selecao"].eq(str(selecao_default).strip())]
+
+    return df.sort_values(["nome", "atleta_id"], na_position="last").drop_duplicates(subset=["atleta_id"], keep="last")
 
 
 def _detect_hr_col(df: pd.DataFrame):
@@ -163,7 +212,7 @@ def _normalize_athlete_registry_df(df: pd.DataFrame, genero_default: str, seleca
         return None, "A ficha de atletas tem de incluir atleta_id."
 
     keep_cols = [
-        "atleta_id", "nome", "data_nascimento", "posicao", "pe_preferencial",
+        "atleta_id", "nome", "numero_camisola", "data_nascimento", "posicao", "pe_preferencial",
         "altura_cm", "peso_kg", "escalao", "selecao"
     ]
     for col in keep_cols:
@@ -178,7 +227,8 @@ def _normalize_athlete_registry_df(df: pd.DataFrame, genero_default: str, seleca
         return None, "O cadastro de atletas não contém atleta_id válidos."
 
     df["genero"] = genero_default or pd.NA
-    df["selecao"] = df["selecao"].fillna(selecao_default or pd.NA)
+    df["selecao"] = selecao_default or pd.NA
+    df["numero_camisola"] = pd.to_numeric(df["numero_camisola"], errors="coerce")
     df["altura_cm"] = pd.to_numeric(df["altura_cm"], errors="coerce")
     df["peso_kg"] = pd.to_numeric(df["peso_kg"], errors="coerce")
     df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce").dt.date
@@ -195,21 +245,51 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
         return None, None
 
     state_key = "athlete_registry_editor_df"
+    state_selection_key = "athlete_registry_editor_selection"
     existing = st.session_state.get(state_key)
-    base_rows = pd.DataFrame({"atleta_id": athlete_ids})
-    if existing is None or not isinstance(existing, pd.DataFrame) or "atleta_id" not in existing.columns:
+    db_athletes = _load_active_athletes_by_selection(selecao_default)
+    athlete_options = db_athletes["atleta_id"].astype(str).tolist() if not db_athletes.empty else []
+    db_profiles = (
+        db_athletes.set_index("atleta_id").to_dict(orient="index")
+        if not db_athletes.empty
+        else {}
+    )
+    base_rows = pd.DataFrame({
+        "atleta_id_ficheiro": athlete_ids,
+        "atleta_id": [
+            athlete_id if athlete_id in athlete_options else ""
+            for athlete_id in athlete_ids
+        ],
+    })
+    if (
+        st.session_state.get(state_selection_key) != selecao_default
+        or existing is None
+        or not isinstance(existing, pd.DataFrame)
+        or "atleta_id_ficheiro" not in existing.columns
+    ):
         editor_df = base_rows.copy()
     else:
-        editor_df = base_rows.merge(existing, on="atleta_id", how="left")
+        editor_df = base_rows.merge(
+            existing,
+            on="atleta_id_ficheiro",
+            how="left",
+            suffixes=("", "_existing"),
+        )
+        if "atleta_id_existing" in editor_df.columns:
+            editor_df["atleta_id"] = editor_df["atleta_id_existing"].where(
+                editor_df["atleta_id_existing"].astype(str).isin(athlete_options),
+                editor_df["atleta_id"],
+            )
+            editor_df = editor_df.drop(columns=["atleta_id_existing"])
 
     defaults = {
         "nome": pd.NA,
+        "numero_camisola": np.nan,
         "data_nascimento": pd.NaT,
         "posicao": "",
         "pe_preferencial": "",
         "altura_cm": np.nan,
         "peso_kg": np.nan,
-        "escalao": "",
         "selecao": selecao_default or "",
     }
     for col, default in defaults.items():
@@ -218,15 +298,64 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
         else:
             editor_df[col] = editor_df[col].fillna(default)
 
+    for idx in editor_df.index:
+        selected_athlete_id = str(editor_df.at[idx, "atleta_id"]).strip()
+        profile = db_profiles.get(selected_athlete_id)
+        if not profile:
+            continue
+        for col in defaults:
+            if col == "selecao":
+                editor_df.at[idx, col] = selecao_default or ""
+                continue
+            current_value = editor_df.at[idx, col]
+            if pd.isna(current_value) or current_value == "":
+                editor_df.at[idx, col] = profile.get(col, current_value)
+
+    editor_df["selecao"] = selecao_default or ""
+
+    if selecao_default:
+        st.caption(f"Atletas ativos na base de dados para {selecao_default}: {len(db_athletes)}")
+    if selecao_default and not athlete_options:
+        st.warning(f"Sem atletas ativos registados para a seleção {selecao_default}.")
+
     edited_df = st.data_editor(
         editor_df,
         key="athlete_registry_editor",
         hide_index=True,
         use_container_width=True,
+        column_order=[
+            "atleta_id_ficheiro",
+            "atleta_id",
+            "nome",
+            "numero_camisola",
+            "data_nascimento",
+            "posicao",
+            "pe_preferencial",
+            "altura_cm",
+            "peso_kg",
+            "selecao",
+        ],
+        disabled=[
+            "atleta_id_ficheiro",
+            "nome",
+            "numero_camisola",
+            "data_nascimento",
+            "posicao",
+            "pe_preferencial",
+            "altura_cm",
+            "peso_kg",
+            "selecao",
+        ],
         num_rows="fixed",
         column_config={
-            "atleta_id": st.column_config.TextColumn("Atleta ID", disabled=True),
+            "atleta_id_ficheiro": st.column_config.TextColumn("ID no ficheiro", disabled=True),
+            "atleta_id": st.column_config.SelectboxColumn(
+                "Ficha de atleta",
+                options=athlete_options,
+                required=bool(athlete_options),
+            ),
             "nome": st.column_config.TextColumn("Nome"),
+            "numero_camisola": st.column_config.NumberColumn("Nº Camisola", min_value=1, max_value=99, step=1),
             "data_nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY"),
             "posicao": st.column_config.SelectboxColumn("Posição", options=ATHLETE_POSITIONS),
             "pe_preferencial": st.column_config.SelectboxColumn("Pé Preferencial", options=ATHLETE_FEET),
@@ -236,8 +365,23 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
             "selecao": st.column_config.TextColumn("Seleção"),
         },
     )
-    st.session_state[state_key] = edited_df.copy()
-    return _normalize_athlete_registry_df(edited_df, genero_default, selecao_default)
+    resolved_df = edited_df.copy()
+    for col in defaults:
+        if col not in resolved_df.columns:
+            resolved_df[col] = pd.NA
+
+    for idx in resolved_df.index:
+        selected_athlete_id = str(resolved_df.at[idx, "atleta_id"]).strip()
+        profile = db_profiles.get(selected_athlete_id, {})
+        for col in defaults:
+            if col == "selecao":
+                resolved_df.at[idx, col] = selecao_default or ""
+            else:
+                resolved_df.at[idx, col] = profile.get(col, pd.NA)
+
+    st.session_state[state_key] = resolved_df.copy()
+    st.session_state[state_selection_key] = selecao_default
+    return _normalize_athlete_registry_df(resolved_df, genero_default, selecao_default)
 
 
 def _parse_report_sections(report_txt: str):
@@ -550,7 +694,7 @@ with st.sidebar:
     # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
     estadio = None
     data_sessao = st.date_input("Data do Evento")
-    selecao = st.selectbox("Seleção", options=SELECOES_OPCOES, index=0)
+    selecao = st.selectbox("Seleção", options=SELECTION_OPTIONS, index=0 if SELECTION_OPTIONS else None)
     # Género é inferido da seleção (M/F), não é input manual
     genero = selecao.split()[-1] if selecao.split() and selecao.split()[-1] in ["M", "F"] else ""
     contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0)

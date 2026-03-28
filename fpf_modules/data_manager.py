@@ -101,7 +101,7 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_
     else:
         df_dim = pd.DataFrame(columns=[
             "athlete_sk", "atleta_id", "nome", "data_nascimento", "posicao",
-            "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
+            "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
             "genero", "ativo", "created_at", "updated_at"
         ])
 
@@ -130,6 +130,7 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_
                     "nome": profile.get("nome"),
                     "data_nascimento": profile.get("data_nascimento"),
                     "posicao": profile.get("posicao"),
+                    "numero_camisola": profile.get("numero_camisola"),
                     "pe_preferencial": profile.get("pe_preferencial"),
                     "altura_cm": profile.get("altura_cm"),
                     "peso_kg": profile.get("peso_kg"),
@@ -144,7 +145,7 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_
             next_id += 1
         elif profile:
             idx = df_dim["atleta_id"].astype(str) == aid
-            for col in ["nome", "data_nascimento", "posicao", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao"]:
+            for col in ["nome", "data_nascimento", "posicao", "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao"]:
                 if col in df_dim.columns and profile.get(col) is not None and not pd.isna(profile.get(col)):
                     df_dim.loc[idx, col] = profile.get(col)
             if "genero" in df_dim.columns and genero is not None:

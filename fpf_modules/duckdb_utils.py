@@ -108,12 +108,31 @@ def query(con, sql: str, **params):
 def initialize_schema(con) -> None:
     """Create the analytic schema (dimensions + fact table) if it doesn't exist."""
     ddl = """
+    CREATE TABLE IF NOT EXISTS selecoes (
+        selection_sk INTEGER PRIMARY KEY,
+        codigo       TEXT UNIQUE,
+        escalao      TEXT,
+        genero       TEXT,
+        ativo        BOOLEAN,
+        sort_order   INTEGER,
+        created_at   TIMESTAMP,
+        updated_at   TIMESTAMP
+    );
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS codigo TEXT;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS escalao TEXT;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS genero TEXT;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS ativo BOOLEAN;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS sort_order INTEGER;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS created_at TIMESTAMP;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+
     CREATE TABLE IF NOT EXISTS athletes (
         athlete_sk   INTEGER PRIMARY KEY,
         atleta_id    TEXT UNIQUE,
         nome         TEXT,
         data_nascimento DATE,
         posicao      TEXT,
+        numero_camisola INTEGER,
         pe_preferencial TEXT,
         altura_cm    DOUBLE,
         peso_kg      DOUBLE,
@@ -127,6 +146,7 @@ def initialize_schema(con) -> None:
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS nome TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS data_nascimento DATE;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS posicao TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS numero_camisola INTEGER;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS pe_preferencial TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS altura_cm DOUBLE;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS peso_kg DOUBLE;

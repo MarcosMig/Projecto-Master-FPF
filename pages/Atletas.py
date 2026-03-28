@@ -4,7 +4,8 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
+from fpf_modules.constants import CLEANDATA_DIR
+from fpf_modules.selections import load_selection_options
 
 
 ATHLETES_PATH = Path(CLEANDATA_DIR) / "athletes.parquet"
@@ -12,6 +13,7 @@ ATHLETE_COLUMNS = [
     "athlete_sk",
     "atleta_id",
     "nome",
+    "numero_camisola",
     "data_nascimento",
     "posicao",
     "pe_preferencial",
@@ -26,12 +28,24 @@ ATHLETE_COLUMNS = [
 ]
 ATHLETE_POSITIONS = ["", "GR", "DD", "DE", "DC", "MD", "ME", "MC", "MDC", "MAC", "ED", "EE", "AV", "PL"]
 ATHLETE_FEET = ["", "Direito", "Esquerdo", "Ambidestro"]
-ATHLETE_ESCALOES = ["", "A", "Sub-23", "Sub-21", "Sub-20", "Sub-19", "Sub-18", "Sub-17", "Sub-16", "Sub-15"]
-ATHLETE_GENDERS = ["", "M", "F"]
+SELECTION_OPTIONS = load_selection_options()
 
 
 def _empty_athletes_df() -> pd.DataFrame:
     return pd.DataFrame(columns=ATHLETE_COLUMNS)
+
+
+def _selection_to_genero(selecao: str) -> str:
+    parts = str(selecao).split()
+    return parts[-1] if parts and parts[-1] in ["M", "F"] else ""
+
+
+def _selection_to_escalao(selecao: str) -> str:
+    value = str(selecao).strip()
+    if not value:
+        return ""
+    parts = value.rsplit(" ", 1)
+    return parts[0] if len(parts) == 2 else value
 
 
 def _load_athletes() -> pd.DataFrame:
@@ -46,6 +60,7 @@ def _load_athletes() -> pd.DataFrame:
     df = df[ATHLETE_COLUMNS].copy()
     if not df.empty:
         df["atleta_id"] = df["atleta_id"].astype(str)
+        df["numero_camisola"] = pd.to_numeric(df["numero_camisola"], errors="coerce")
         df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce").dt.date
         df["altura_cm"] = pd.to_numeric(df["altura_cm"], errors="coerce")
         df["peso_kg"] = pd.to_numeric(df["peso_kg"], errors="coerce")
@@ -61,10 +76,14 @@ def _save_athletes(df: pd.DataFrame) -> None:
     save_df = df.copy()
     save_df["atleta_id"] = save_df["atleta_id"].astype(str).str.strip()
     save_df = save_df[save_df["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
+    save_df["numero_camisola"] = pd.to_numeric(save_df["numero_camisola"], errors="coerce")
     save_df["data_nascimento"] = pd.to_datetime(save_df["data_nascimento"], errors="coerce").dt.date
     save_df["altura_cm"] = pd.to_numeric(save_df["altura_cm"], errors="coerce")
     save_df["peso_kg"] = pd.to_numeric(save_df["peso_kg"], errors="coerce")
     save_df["ativo"] = save_df["ativo"].fillna(True).astype(bool)
+    save_df["selecao"] = save_df["selecao"].astype(str).str.strip()
+    save_df["genero"] = save_df["selecao"].map(_selection_to_genero)
+    save_df["escalao"] = save_df["selecao"].map(_selection_to_escalao)
     save_df.to_parquet(ATHLETES_PATH, index=False)
 
 
@@ -77,36 +96,33 @@ def _next_athlete_sk(df: pd.DataFrame) -> int:
 
 def _editor_view(df: pd.DataFrame) -> pd.DataFrame:
     display_cols = [
-        "athlete_sk",
         "atleta_id",
         "nome",
+        "numero_camisola",
         "data_nascimento",
         "posicao",
         "pe_preferencial",
         "altura_cm",
         "peso_kg",
-        "escalao",
         "selecao",
-        "genero",
         "ativo",
     ]
     return st.data_editor(
         df[display_cols],
         hide_index=True,
         use_container_width=True,
+        column_order=display_cols,
         num_rows="dynamic",
         column_config={
-            "athlete_sk": st.column_config.NumberColumn("SK", disabled=True),
             "atleta_id": st.column_config.TextColumn("Atleta ID", required=True),
             "nome": st.column_config.TextColumn("Nome"),
+            "numero_camisola": st.column_config.NumberColumn("Nº Camisola", min_value=1, max_value=99, step=1),
             "data_nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY"),
             "posicao": st.column_config.SelectboxColumn("Posição", options=ATHLETE_POSITIONS),
             "pe_preferencial": st.column_config.SelectboxColumn("Pé Preferencial", options=ATHLETE_FEET),
             "altura_cm": st.column_config.NumberColumn("Altura (cm)", min_value=0, max_value=260, step=1),
             "peso_kg": st.column_config.NumberColumn("Peso (kg)", min_value=0, max_value=200, step=1),
-            "escalao": st.column_config.SelectboxColumn("Escalão", options=ATHLETE_ESCALOES),
-            "selecao": st.column_config.SelectboxColumn("Seleção", options=[""] + SELECOES_OPCOES),
-            "genero": st.column_config.SelectboxColumn("Género", options=ATHLETE_GENDERS),
+            "selecao": st.column_config.SelectboxColumn("Seleção", options=[""] + SELECTION_OPTIONS),
             "ativo": st.column_config.CheckboxColumn("Ativo"),
         },
         key="athletes_editor",
@@ -122,6 +138,8 @@ def _merge_edited_rows(original_df: pd.DataFrame, edited_df: pd.DataFrame) -> pd
     merged = merged[merged["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
     merged["created_at"] = merged["atleta_id"].map(lambda aid: original_meta.get(aid, {}).get("created_at", now_ts))
     merged["updated_at"] = now_ts
+    merged["genero"] = merged["selecao"].map(_selection_to_genero)
+    merged["escalao"] = merged["selecao"].map(_selection_to_escalao)
 
     for col in ATHLETE_COLUMNS:
         if col not in merged.columns:
@@ -157,22 +175,19 @@ with tab_insert:
         atleta_id = col1.text_input("Atleta ID")
         nome = col2.text_input("Nome")
 
-        col3, col4 = st.columns(2)
+        col3, col4, col5 = st.columns(3)
         data_nascimento = col3.date_input("Data de nascimento", value=None, format="DD/MM/YYYY")
         posicao = col4.selectbox("Posição", ATHLETE_POSITIONS)
+        numero_camisola = col5.number_input("Nº Camisola", min_value=1, max_value=99, step=1, value=None)
 
-        col5, col6 = st.columns(2)
-        pe_preferencial = col5.selectbox("Pé Preferencial", ATHLETE_FEET)
-        escalao = col6.selectbox("Escalão", ATHLETE_ESCALOES)
-
-        col7, col8 = st.columns(2)
+        col6, col7, col8 = st.columns(3)
+        pe_preferencial = col6.selectbox("Pé Preferencial", ATHLETE_FEET)
         altura_cm = col7.number_input("Altura (cm)", min_value=0, max_value=260, step=1, value=None)
         peso_kg = col8.number_input("Peso (kg)", min_value=0, max_value=200, step=1, value=None)
 
-        col9, col10, col11 = st.columns(3)
-        selecao = col9.selectbox("Seleção", [""] + SELECOES_OPCOES)
-        genero = col10.selectbox("Género", ATHLETE_GENDERS)
-        ativo = col11.checkbox("Ativo", value=True)
+        col9, col10 = st.columns(2)
+        selecao = col9.selectbox("Seleção", [""] + SELECTION_OPTIONS)
+        ativo = col10.checkbox("Ativo", value=True)
 
         submitted = st.form_submit_button("Inserir atleta", type="primary")
 
@@ -189,14 +204,15 @@ with tab_insert:
                     "athlete_sk": _next_athlete_sk(athletes_df),
                     "atleta_id": atleta_id,
                     "nome": nome or pd.NA,
+                    "numero_camisola": numero_camisola,
                     "data_nascimento": data_nascimento,
                     "posicao": posicao,
                     "pe_preferencial": pe_preferencial,
                     "altura_cm": altura_cm,
                     "peso_kg": peso_kg,
-                    "escalao": escalao,
+                    "escalao": _selection_to_escalao(selecao),
                     "selecao": selecao,
-                    "genero": genero,
+                    "genero": _selection_to_genero(selecao),
                     "ativo": ativo,
                     "created_at": now_ts,
                     "updated_at": now_ts,

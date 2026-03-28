@@ -29,6 +29,18 @@ SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJ
 
 # SQL DDL to create all tables
 SCHEMA_SQL = """
+-- Selections dimension
+CREATE TABLE IF NOT EXISTS selecoes (
+    selection_sk SERIAL PRIMARY KEY,
+    codigo TEXT UNIQUE NOT NULL,
+    escalao TEXT,
+    genero TEXT,
+    ativo BOOLEAN DEFAULT true,
+    sort_order INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Athletes dimension
 CREATE TABLE IF NOT EXISTS athletes (
     athlete_sk SERIAL PRIMARY KEY,
@@ -36,6 +48,7 @@ CREATE TABLE IF NOT EXISTS athletes (
     nome TEXT,
     data_nascimento DATE,
     posicao TEXT,
+    numero_camisola INTEGER,
     pe_preferencial TEXT,
     altura_cm DOUBLE PRECISION,
     peso_kg DOUBLE PRECISION,

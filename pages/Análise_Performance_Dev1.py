@@ -4,8 +4,11 @@ import streamlit as st
 import mplsoccer as mpl
 import matplotlib.pyplot as plt
 from itertools import combinations
-from fpf_modules.constants import CLEANDATA_DIR, SELECOES_OPCOES
+from fpf_modules.constants import CLEANDATA_DIR
+from fpf_modules.selections import load_selection_options
 from scipy.spatial import ConvexHull, QhullError
+
+SELECTION_OPTIONS = load_selection_options()
 
 # TODO 1. Converter métricas em m2
 # TODO 2. Alterar Heat map posicional de plotly para mplsoccer
@@ -149,7 +152,7 @@ with st.sidebar:
 
     campo_visualizacao = st.session_state.get('campo_visualizacao')
 
-    selecao = st.selectbox("Seleção", options=SELECOES_OPCOES)
+    selecao = st.selectbox("Seleção", options=SELECTION_OPTIONS, index=0 if SELECTION_OPTIONS else None)
     contexto = st.selectbox("Contexto", options=["Treino", "Jogo"])
 
     # Inicializamos o jogo como vazio por defeito

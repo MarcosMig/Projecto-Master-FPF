@@ -55,6 +55,24 @@ def initialize_schema() -> None:
     client = get_supabase_client()
     
     tables_sql = """
+    -- Selections dimension
+    CREATE TABLE IF NOT EXISTS selecoes (
+        selection_sk SERIAL PRIMARY KEY,
+        codigo TEXT UNIQUE NOT NULL,
+        escalao TEXT,
+        genero TEXT,
+        ativo BOOLEAN DEFAULT true,
+        sort_order INTEGER,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS escalao TEXT;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS genero TEXT;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS ativo BOOLEAN DEFAULT true;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS sort_order INTEGER;
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+    ALTER TABLE selecoes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+
     -- Athletes dimension
     CREATE TABLE IF NOT EXISTS athletes (
         athlete_sk SERIAL PRIMARY KEY,
@@ -65,6 +83,7 @@ def initialize_schema() -> None:
         pe_preferencial TEXT,
         altura_cm DOUBLE PRECISION,
         peso_kg DOUBLE PRECISION,
+        numero_camisola INTEGER,
         escalao TEXT,
         selecao TEXT,
         genero TEXT,
@@ -78,6 +97,7 @@ def initialize_schema() -> None:
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS pe_preferencial TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS altura_cm DOUBLE PRECISION;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS peso_kg DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS numero_camisola INTEGER;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS escalao TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS selecao TEXT;
 
@@ -349,7 +369,7 @@ def _sync_dimension_tables(session_sks: List[int], athlete_sks: List[int], base_
                 df_athletes = df_athletes[df_athletes["athlete_sk"].isin(athlete_sks)].copy()
                 allowed_cols = [
                     "athlete_sk", "atleta_id", "nome", "data_nascimento", "posicao",
-                    "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
+                    "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
                     "genero", "ativo", "created_at", "updated_at"
                 ]
                 df_athletes = df_athletes[[c for c in allowed_cols if c in df_athletes.columns]]
@@ -640,7 +660,7 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_
     else:
         df_dim = pd.DataFrame(columns=[
             "athlete_sk", "atleta_id", "nome", "data_nascimento", "posicao",
-            "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
+            "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
             "genero", "ativo", "created_at", "updated_at"
         ])
 
@@ -668,6 +688,7 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_
                 "nome": profile.get("nome"),
                 "data_nascimento": profile.get("data_nascimento"),
                 "posicao": profile.get("posicao"),
+                "numero_camisola": profile.get("numero_camisola"),
                 "pe_preferencial": profile.get("pe_preferencial"),
                 "altura_cm": profile.get("altura_cm"),
                 "peso_kg": profile.get("peso_kg"),
@@ -681,7 +702,7 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_
             next_id += 1
         elif profile:
             idx = df_dim["atleta_id"].astype(str) == aid
-            for col in ["nome", "data_nascimento", "posicao", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao"]:
+            for col in ["nome", "data_nascimento", "posicao", "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao"]:
                 if col in df_dim.columns and profile.get(col) is not None and not pd.isna(profile.get(col)):
                     df_dim.loc[idx, col] = profile.get(col)
             if "genero" in df_dim.columns and genero is not None:
