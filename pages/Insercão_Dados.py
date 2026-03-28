@@ -249,6 +249,7 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
     existing = st.session_state.get(state_key)
     db_athletes = _load_active_athletes_by_selection(selecao_default)
     athlete_options = db_athletes["atleta_id"].astype(str).tolist() if not db_athletes.empty else []
+    athlete_select_options = [""] + athlete_options
     db_profiles = (
         db_athletes.set_index("atleta_id").to_dict(orient="index")
         if not db_athletes.empty
@@ -256,11 +257,11 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
     )
     base_rows = pd.DataFrame({
         "atleta_id_ficheiro": athlete_ids,
-        "atleta_id": [
-            athlete_id if athlete_id in athlete_options else ""
-            for athlete_id in athlete_ids
-        ],
-    })
+            "atleta_id": [
+                athlete_id if athlete_id in athlete_options else ""
+                for athlete_id in athlete_ids
+            ],
+        })
     if (
         st.session_state.get(state_selection_key) != selecao_default
         or existing is None
@@ -337,13 +338,6 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
         ],
         disabled=[
             "atleta_id_ficheiro",
-            "nome",
-            "numero_camisola",
-            "data_nascimento",
-            "posicao",
-            "pe_preferencial",
-            "altura_cm",
-            "peso_kg",
             "selecao",
         ],
         num_rows="fixed",
@@ -351,8 +345,8 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
             "atleta_id_ficheiro": st.column_config.TextColumn("ID no ficheiro", disabled=True),
             "atleta_id": st.column_config.SelectboxColumn(
                 "Ficha de atleta",
-                options=athlete_options,
-                required=bool(athlete_options),
+                options=athlete_select_options,
+                required=False,
             ),
             "nome": st.column_config.TextColumn("Nome"),
             "numero_camisola": st.column_config.NumberColumn("Nº Camisola", min_value=1, max_value=99, step=1),
@@ -376,7 +370,7 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
         for col in defaults:
             if col == "selecao":
                 resolved_df.at[idx, col] = selecao_default or ""
-            else:
+            elif (pd.isna(resolved_df.at[idx, col]) or resolved_df.at[idx, col] == "") and profile:
                 resolved_df.at[idx, col] = profile.get(col, pd.NA)
 
     st.session_state[state_key] = resolved_df.copy()

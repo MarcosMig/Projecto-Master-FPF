@@ -100,4 +100,9 @@ def load_selections_df(base_dir: str = CLEANDATA_DIR, active_only: bool = True) 
 def load_selection_options(base_dir: str = CLEANDATA_DIR, active_only: bool = True) -> list[str]:
     df = load_selections_df(base_dir=base_dir, active_only=active_only)
     options = df["codigo"].astype(str).str.strip().tolist()
-    return [opt for opt in options if opt]
+    options = [opt for opt in options if opt]
+    if options:
+        return options
+
+    # Keep Streamlit selectors usable even if the backing parquet was emptied.
+    return [str(opt).strip() for opt in SELECOES_OPCOES if str(opt).strip()]
