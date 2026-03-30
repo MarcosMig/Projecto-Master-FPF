@@ -859,39 +859,52 @@ if not st.session_state.auth:
 
 
 # --- INTERFACE SINGLE PAGE ---
-st.title("Validação de Dados")
+st.markdown(
+    f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
+    unsafe_allow_html=True,
+)
 
-with st.sidebar:
-    st.markdown(
-        f"<div style='text-align:left; font-size:18px; color:#9aa0a6;'>User: {st.session_state.login_user} | FPF</div>",
-        unsafe_allow_html=True
-    )
+top_left_col, top_right_col = st.columns(2, gap="large")
 
-    st.header("Dados da Sessão")
-    # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
-    estadio = None
+st.header("1. Dados da Sessão")
+# Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
+estadio = None
+session_col_1, session_col_2, session_col_3, session_col_4 = st.columns([1.1, 1.4, 1.0, 1.2], gap="medium")
+
+with session_col_1:
     data_sessao = st.date_input("Data do Evento")
+
+with session_col_2:
     selecao = st.selectbox("Seleção", options=SELECTION_OPTIONS, index=0 if SELECTION_OPTIONS else None)
-    # Género é inferido da seleção (M/F), não é input manual
-    genero = selecao.split()[-1] if selecao.split() and selecao.split()[-1] in ["M", "F"] else ""
+
+# Género é inferido da seleção (M/F), não é input manual
+genero = selecao.split()[-1] if selecao.split() and selecao.split()[-1] in ["M", "F"] else ""
+
+with session_col_3:
     contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0)
 
-    adversario = ""
+adversario = ""
+with session_col_4:
     if contexto == "Jogo":
         adversario = st.text_input("Adversário")
-    st.divider()
+    else:
+        st.text_input("Adversário", value="", disabled=True)
 
-    st.header("Dados de ATLETAS")
+st.divider()
+top_left_col, top_right_col = st.columns(2, gap="large")
+
+with top_left_col:
+    st.header("2. Dados dos Atletas")
     st.caption(
         "CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
     )
     f_atleta = st.file_uploader(
         "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
-    st.caption("A associaÃ§Ã£o Ã  base de dados sÃ³ Ã© pedida no fim, se escolheres publicar.")
-    st.divider()
+    st.caption("A associação à base de dados só é pedida no fim, se escolheres publicar.")
 
-    st.header("🗺️ Calibração do Campo")
+with top_right_col:
+    st.header("3. Calibração do Campo")
     st.caption(
         "Define os 4 cantos via upload (BL/BR/TL/TR) ou usando o modo 'Pick no mapa'.")
 
@@ -915,6 +928,7 @@ with st.sidebar:
         "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
     )
 st.divider()
+st.title("Validação de Dados")
 
 if (
     metodo_campo == "Pick no mapa (clicar 4 cantos)"
@@ -1165,111 +1179,114 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
 
     if st.session_state.get("df_perf") is not None and not st.session_state.df_perf.empty:
         st.info("Os dados já estão em modo draft. Podes terminar em visualização/download ou avançar para publicação.")
-        publish_mode = st.radio(
-            "Destino final desta sessão",
-            options=["Visualizar / Download", "Publicar na base de dados"],
-            horizontal=True,
-            key="publish_mode",
-        )
-        if publish_mode == "Visualizar / Download":
-            st.info("✅ Dados processados e prontos para serem integrados no Supabase.")
+        action_col_1, action_col_2 = st.columns(2, gap="large")
+        with action_col_1:
+            if st.button("Visualizar / Download", key="btn_visualizar_download", use_container_width=True):
+                st.switch_page("pages/Análise_Performance.py")
+        with action_col_2:
+            publish_clicked = st.button("Publicar na Base de Dados", key="btn_publicar_base", use_container_width=True)
+
+        st.info("✅ Dados processados e prontos para serem integrados no Supabase.")
+        st.caption("Para publicar, cada atleta do ficheiro tem de ser associado a uma ficha da base de dados.")
+
+        athlete_registry_df = None
+        athlete_registry_error = None
+
+        if f_atleta:
+            with st.expander("Ficha de Atletas para Publicação", expanded=True):
+                athlete_registry_df, athlete_registry_error = _build_athlete_registry_editor(
+                    f_atleta,
+                    genero,
+                    selecao,
+                )
         else:
-            st.caption("Para publicar, cada atleta do ficheiro tem de ser associado a uma ficha da base de dados.")
-            athlete_registry_df = None
-            athlete_registry_error = None
+            athlete_registry_error = "Carrega os ficheiros de atletas para conseguires publicar esta sessão."
 
-            if f_atleta:
-                with st.expander("Ficha de Atletas para Publicação", expanded=True):
-                    athlete_registry_df, athlete_registry_error = _build_athlete_registry_editor(
-                        f_atleta,
-                        genero,
-                        selecao,
-                    )
-            else:
-                athlete_registry_error = "Carrega os ficheiros de atletas para conseguires publicar esta sessão."
+        if athlete_registry_error:
+            st.warning(athlete_registry_error)
 
-            if athlete_registry_error:
-                st.warning(athlete_registry_error)
-            publish_payload = st.session_state.get("draft_session_payload") or {}
-            publish_context = st.session_state.get("draft_context") or {}
-            duplicate_sessions_df = _find_potential_duplicate_sessions(
-                data_sessao=publish_payload.get("data_sessao", data_sessao),
-                selecao=publish_context.get("selecao", selecao),
-                genero=publish_context.get("genero", genero),
-                contexto=publish_context.get("contexto", contexto),
-                jogo=publish_payload.get("jogo", adversario),
+        publish_payload = st.session_state.get("draft_session_payload") or {}
+        publish_context = st.session_state.get("draft_context") or {}
+        duplicate_sessions_df = _find_potential_duplicate_sessions(
+            data_sessao=publish_payload.get("data_sessao", data_sessao),
+            selecao=publish_context.get("selecao", selecao),
+            genero=publish_context.get("genero", genero),
+            contexto=publish_context.get("contexto", contexto),
+            jogo=publish_payload.get("jogo", adversario),
+        )
+        allow_duplicate_publish = False
+        if not duplicate_sessions_df.empty:
+            data_txt = pd.to_datetime(
+                publish_payload.get("data_sessao", data_sessao)
+            ).strftime("%d/%m/%Y")
+            st.error(
+                f"Já existem dados publicados para esta sessão em {data_txt}. "
+                "A gravação foi bloqueada para evitar duplicados."
             )
-            allow_duplicate_publish = False
-            if not duplicate_sessions_df.empty:
-                data_txt = pd.to_datetime(
-                    publish_payload.get("data_sessao", data_sessao)
-                ).strftime("%d/%m/%Y")
-                st.error(
-                    f"Já existem dados publicados para esta sessão em {data_txt}. "
-                    "A gravação foi bloqueada para evitar duplicados."
+            st.caption("Sessões potencialmente coincidentes já gravadas:")
+            st.dataframe(duplicate_sessions_df, use_container_width=True, hide_index=True)
+            allow_duplicate_publish = st.checkbox(
+                "Permitir gravação mesmo assim",
+                key="allow_duplicate_publish",
+                help="Usa esta opção apenas se quiseres substituir ou atualizar uma sessão já publicada.",
+            )
+
+        if publish_clicked:
+            progress_bar = st.progress(0, text="A iniciar transferência para o Supabase...")
+            if not duplicate_sessions_df.empty and not allow_duplicate_publish:
+                st.error("Publicação interrompida para evitar duplicação da sessão.")
+                st.stop()
+            progress_text = st.empty()
+
+            def _on_db_progress(event: dict):
+                step = max(int(event.get("step", 0)), 0)
+                total_steps = max(int(event.get("total_steps", 1)), 1)
+                message = str(event.get("message", "A processar..."))
+                pct = min(step / total_steps, 1.0)
+                progress_bar.progress(pct, text=message)
+                progress_text.caption(f"Passo {step}/{total_steps}: {message}")
+
+            try:
+                publish_payload = st.session_state.get("draft_session_payload") or {}
+                publish_context = st.session_state.get("draft_context") or {}
+                df_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish = _prepare_publish_payloads(
+                    df_perf_draft=st.session_state.df_perf,
+                    df_qc_draft=st.session_state.df_qc,
+                    df_samples_draft=st.session_state.df_samples,
+                    df_athlete_session_draft=st.session_state.df_athlete_session,
+                    session_payload=publish_payload,
+                    genero=publish_context.get("genero", genero),
+                    selecao=publish_context.get("selecao", selecao),
+                    athlete_registry_df=athlete_registry_df,
+                    base_dir=CLEANDATA_DIR,
                 )
-                st.caption("Sessões potencialmente coincidentes já gravadas:")
-                st.dataframe(duplicate_sessions_df, use_container_width=True, hide_index=True)
-                allow_duplicate_publish = st.checkbox(
-                    "Permitir gravação mesmo assim",
-                    key="allow_duplicate_publish",
-                    help="Usa esta opção apenas se quiseres substituir ou atualizar uma sessão já publicada.",
+                progress_bar.progress(0.2, text="Dados preparados. A iniciar transferência...")
+                progress_text.caption("Passo de preparação concluído.")
+
+                stats = write_session_data(
+                    df_perf_publish,
+                    df_qc_publish,
+                    df_samples_publish,
+                    df_athlete_session_publish,
+                    progress_callback=_on_db_progress,
                 )
-            if st.button("💾 Gravar na Base", key="btn_save_duckdb"):
-                progress_bar = st.progress(0, text="A iniciar transferência para o Supabase...")
-                if not duplicate_sessions_df.empty and not allow_duplicate_publish:
-                    st.error("Publicação interrompida para evitar duplicação da sessão.")
-                    st.stop()
-                progress_text = st.empty()
+                progress_bar.progress(1.0, text="Transferência concluída.")
+                progress_text.caption("Passo finalizado: todos os envios terminaram.")
 
-                def _on_db_progress(event: dict):
-                    step = max(int(event.get("step", 0)), 0)
-                    total_steps = max(int(event.get("total_steps", 1)), 1)
-                    message = str(event.get("message", "A processar..."))
-                    pct = min(step / total_steps, 1.0)
-                    progress_bar.progress(pct, text=message)
-                    progress_text.caption(f"Passo {step}/{total_steps}: {message}")
+                stats_msg = "📊 **Resumo da Integração:**\n\n"
+                for table, table_stats in stats.items():
+                    if table_stats is not None:
+                        inserted = table_stats.get('inserted', 0)
+                        updated = table_stats.get('updated', 0)
+                        stats_msg += f"• **{table}**: {inserted} inseridos, {updated} atualizados\n"
 
-                try:
-                    publish_payload = st.session_state.get("draft_session_payload") or {}
-                    publish_context = st.session_state.get("draft_context") or {}
-                    df_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish = _prepare_publish_payloads(
-                        df_perf_draft=st.session_state.df_perf,
-                        df_qc_draft=st.session_state.df_qc,
-                        df_samples_draft=st.session_state.df_samples,
-                        df_athlete_session_draft=st.session_state.df_athlete_session,
-                        session_payload=publish_payload,
-                        genero=publish_context.get("genero", genero),
-                        selecao=publish_context.get("selecao", selecao),
-                        athlete_registry_df=athlete_registry_df,
-                        base_dir=CLEANDATA_DIR,
-                    )
-                    progress_bar.progress(0.2, text="Dados preparados. A iniciar transferência...")
-                    progress_text.caption("Passo de preparação concluído.")
-
-                    stats = write_session_data(
-                        df_perf_publish,
-                        df_qc_publish,
-                        df_samples_publish,
-                        df_athlete_session_publish,
-                        progress_callback=_on_db_progress,
-                    )
-                    progress_bar.progress(1.0, text="Transferência concluída.")
-                    progress_text.caption("Passo finalizado: todos os envios terminaram.")
-
-                    stats_msg = "📊 **Resumo da Integração:**\n\n"
-                    for table, table_stats in stats.items():
-                        if table_stats is not None:
-                            inserted = table_stats.get('inserted', 0)
-                            updated = table_stats.get('updated', 0)
-                            stats_msg += f"• **{table}**: {inserted} inseridos, {updated} atualizados\n"
-
-                    st.success("✅ Dados gravados com sucesso no Supabase.")
-                    st.markdown(stats_msg)
-                except Exception as e:
-                    progress_bar.progress(1.0, text="Transferência interrompida.")
-                    progress_text.caption("A transferência foi interrompida por um erro.")
-                    st.error(f"❌ Erro ao gravar: {str(e)}")
+                st.success("✅ Dados gravados com sucesso no Supabase.")
+                st.markdown(stats_msg)
+                st.switch_page("pages/Análise_Performance.py")
+            except Exception as e:
+                progress_bar.progress(1.0, text="Transferência interrompida.")
+                progress_text.caption("A transferência foi interrompida por um erro.")
+                st.error(f"❌ Erro ao gravar: {str(e)}")
     else:
         st.empty()
 
