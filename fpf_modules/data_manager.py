@@ -6,6 +6,7 @@ import os
 import pandas as pd
 
 from .constants import CAMPOS_DIR, CLEANDATA_DIR
+from .supabase_manager import resolve_athlete_sk as resolve_athlete_sk_supabase
 
 
 def save_field_to_parquet(df_new, filename=f"{CAMPOS_DIR}/fields_database.parquet"):
@@ -88,78 +89,14 @@ def append_dedup_parquet(df_new, filename, subset_keys):
 
 
 def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_profiles=None, selecao=None):
-    """Resolve athlete_sk persistente a partir de atleta_id."""
-    path = os.path.join(base_dir, "athletes.parquet")
-    os.makedirs(base_dir, exist_ok=True)
-
-    atletas = pd.Series(dtype="object")
-    if df_metrics is not None and not df_metrics.empty and "atleta_id" in df_metrics.columns:
-        atletas = pd.Series(df_metrics["atleta_id"].dropna().astype(str).unique())
-
-    if os.path.exists(path):
-        df_dim = pd.read_parquet(path)
-    else:
-        df_dim = pd.DataFrame(columns=[
-            "athlete_sk", "atleta_id", "nome", "data_nascimento", "posicao",
-            "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
-            "genero", "ativo", "created_at", "updated_at"
-        ])
-
-    if not df_dim.empty:
-        df_dim["atleta_id"] = df_dim["atleta_id"].astype(str)
-
-    profiles_map = {}
-    if athlete_profiles is not None and not athlete_profiles.empty and "atleta_id" in athlete_profiles.columns:
-        df_profiles = athlete_profiles.copy()
-        df_profiles["atleta_id"] = df_profiles["atleta_id"].astype(str)
-        profiles_map = df_profiles.set_index("atleta_id").to_dict(orient="index")
-
-    existing = dict(zip(df_dim.get("atleta_id", pd.Series(dtype="object")), df_dim.get("athlete_sk", pd.Series(dtype="int64"))))
-    next_id = 1 if df_dim.empty else int(pd.to_numeric(df_dim["athlete_sk"], errors="coerce").max()) + 1
-
-    now_ts = pd.Timestamp.utcnow()
-    new_rows = []
-    for aid in atletas.tolist():
-        profile = profiles_map.get(aid, {})
-        if aid not in existing:
-            existing[aid] = next_id
-            new_rows.append(
-                {
-                    "athlete_sk": next_id,
-                    "atleta_id": aid,
-                    "nome": profile.get("nome"),
-                    "data_nascimento": profile.get("data_nascimento"),
-                    "posicao": profile.get("posicao"),
-                    "numero_camisola": profile.get("numero_camisola"),
-                    "pe_preferencial": profile.get("pe_preferencial"),
-                    "altura_cm": profile.get("altura_cm"),
-                    "peso_kg": profile.get("peso_kg"),
-                    "escalao": profile.get("escalao"),
-                    "selecao": profile.get("selecao", selecao),
-                    "genero": profile.get("genero", genero),
-                    "ativo": True,
-                    "created_at": now_ts,
-                    "updated_at": now_ts,
-                }
-            )
-            next_id += 1
-        elif profile:
-            idx = df_dim["atleta_id"].astype(str) == aid
-            for col in ["nome", "data_nascimento", "posicao", "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao"]:
-                if col in df_dim.columns and profile.get(col) is not None and not pd.isna(profile.get(col)):
-                    df_dim.loc[idx, col] = profile.get(col)
-            if "genero" in df_dim.columns and genero is not None:
-                df_dim.loc[idx, "genero"] = df_dim.loc[idx, "genero"].fillna(profile.get("genero", genero))
-            if "updated_at" in df_dim.columns:
-                df_dim.loc[idx, "updated_at"] = now_ts
-
-    if new_rows:
-        df_new = pd.DataFrame(new_rows)
-        df_dim = pd.concat([df_dim, df_new], ignore_index=True)
-    if new_rows or profiles_map:
-        df_dim.to_parquet(path, index=False)
-
-    return existing
+    """Resolve athlete_sk persistente a partir de atleta_id usando a DB."""
+    return resolve_athlete_sk_supabase(
+        df_metrics,
+        base_dir=base_dir,
+        genero=genero,
+        athlete_profiles=athlete_profiles,
+        selecao=selecao,
+    )
 
 
 

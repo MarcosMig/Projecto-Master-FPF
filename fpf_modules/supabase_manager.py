@@ -6,12 +6,15 @@ Maintains the same interface as the previous duckdb_utils/data_manager modules.
 """
 
 import os
+import mimetypes
 import pandas as pd
+import requests
 import streamlit as st
 from typing import Optional, List, Dict, Callable
 from datetime import date, datetime
 import math
 import time
+from urllib.parse import urlparse
 from .constants import CAMPOS_DIR, CLEANDATA_DIR
 
 try:
@@ -100,6 +103,7 @@ def initialize_schema() -> None:
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS numero_camisola INTEGER;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS escalao TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS selecao TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS foto_url TEXT;
 
     -- Sessions dimension
     CREATE TABLE IF NOT EXISTS sessions (
@@ -219,6 +223,67 @@ def initialize_schema() -> None:
     # For now, we assume the schema was created beforehand in Supabase.
 
 
+def upload_image_to_storage(
+    bucket_name: str,
+    object_path: str,
+    file_bytes: bytes,
+    content_type: Optional[str] = None,
+) -> str:
+    """Upload an image to Supabase Storage and return its public URL."""
+    client = get_supabase_client()
+    storage = client.storage.from_(bucket_name)
+    resolved_content_type = content_type or mimetypes.guess_type(object_path)[0] or "application/octet-stream"
+
+    try:
+        storage.upload(
+            object_path,
+            file_bytes,
+            {"content-type": resolved_content_type, "upsert": "true"},
+        )
+    except Exception as exc:
+        message = str(exc)
+        if "Bucket not found" in message:
+            raise RuntimeError(
+                f"O bucket '{bucket_name}' nao existe no Supabase Storage. "
+                f"Cria esse bucket primeiro para permitir o upload de fotos."
+            ) from exc
+        raise RuntimeError(f"Falha ao enviar imagem para o Supabase Storage: {exc}") from exc
+
+    public_url = storage.get_public_url(object_path)
+    if isinstance(public_url, dict):
+        resolved_url = public_url.get("publicURL") or public_url.get("publicUrl") or public_url.get("data", {}).get("publicUrl") or ""
+    elif hasattr(public_url, "get"):
+        resolved_url = public_url.get("publicURL") or public_url.get("publicUrl") or ""
+    else:
+        resolved_url = str(public_url)
+    if not resolved_url:
+        raise RuntimeError("A imagem foi enviada, mas não foi possível obter o URL público.")
+    return resolved_url
+
+
+def build_public_storage_url(bucket_name: str, object_path: str) -> str:
+    """Build a public URL for a storage object without uploading it."""
+    client = get_supabase_client()
+    storage = client.storage.from_(bucket_name)
+    public_url = storage.get_public_url(object_path)
+    if isinstance(public_url, dict):
+        return public_url.get("publicURL") or public_url.get("publicUrl") or public_url.get("data", {}).get("publicUrl") or ""
+    if hasattr(public_url, "get"):
+        return public_url.get("publicURL") or public_url.get("publicUrl") or ""
+    return str(public_url) or ""
+
+
+def public_url_exists(url: str, timeout_seconds: int = 5) -> bool:
+    """Check whether a public URL is reachable."""
+    if not url:
+        return False
+    try:
+        response = requests.get(url, timeout=timeout_seconds, stream=True)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
 def insert_or_update_table(
     table_name: str,
     df: pd.DataFrame,
@@ -305,6 +370,47 @@ def insert_or_update_table(
     return stats
 
 
+def delete_table_rows(table_name: str, filters: Dict) -> Dict:
+    """Delete rows from a Supabase table using equality filters."""
+    client = get_supabase_client()
+    stats = {"deleted": 0, "success": True, "error": None}
+
+    try:
+        query = client.table(table_name).delete()
+        for col, val in (filters or {}).items():
+            query = query.eq(col, val)
+        response = query.execute()
+        stats["deleted"] = len(response.data) if getattr(response, "data", None) else 0
+    except Exception as exc:
+        stats["success"] = False
+        stats["error"] = str(exc)
+        st.error(f"Error deleting from {table_name}: {exc}")
+    return stats
+
+
+def delete_public_storage_url(bucket_name: str, public_url: str) -> None:
+    """Delete a storage object from its public URL when possible."""
+    resolved_url = str(public_url or "").strip()
+    if not resolved_url:
+        return
+
+    parsed = urlparse(resolved_url)
+    marker = f"/storage/v1/object/public/{bucket_name}/"
+    if marker not in parsed.path:
+        return
+
+    object_path = parsed.path.split(marker, 1)[1]
+    if not object_path:
+        return
+
+    client = get_supabase_client()
+    storage = client.storage.from_(bucket_name)
+    try:
+        storage.remove([object_path])
+    except Exception:
+        pass
+
+
 def _is_transient_supabase_error(error: Exception) -> bool:
     """Detect transient API/proxy failures worth retrying."""
     message = str(error).lower()
@@ -360,25 +466,6 @@ def _dataframe_to_supabase_records(df: pd.DataFrame) -> List[Dict]:
 def _sync_dimension_tables(session_sks: List[int], athlete_sks: List[int], base_dir=None) -> None:
     """Ensure referenced sessions and athletes exist in Supabase before fact inserts."""
     base_dir = base_dir or CLEANDATA_DIR
-
-    if athlete_sks:
-        athletes_path = os.path.join(base_dir, "athletes.parquet")
-        if os.path.exists(athletes_path):
-            df_athletes = pd.read_parquet(athletes_path)
-            if not df_athletes.empty and "athlete_sk" in df_athletes.columns:
-                df_athletes = df_athletes[df_athletes["athlete_sk"].isin(athlete_sks)].copy()
-                allowed_cols = [
-                    "athlete_sk", "atleta_id", "nome", "data_nascimento", "posicao",
-                    "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
-                    "genero", "ativo", "created_at", "updated_at"
-                ]
-                df_athletes = df_athletes[[c for c in allowed_cols if c in df_athletes.columns]]
-                if not df_athletes.empty:
-                    insert_or_update_table(
-                        "athletes",
-                        df_athletes,
-                        pk_columns=["athlete_sk"],
-                    )
 
     if session_sks:
         sessions_path = os.path.join(base_dir, "sessions.parquet")
@@ -647,76 +734,86 @@ def append_dedup_parquet(df_new, filename, subset_keys):
 
 
 def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_profiles=None, selecao=None):
-    """Resolve persistent athlete_sk from atleta_id (using parquet cache)."""
-    path = os.path.join(base_dir, "athletes.parquet")
-    os.makedirs(base_dir, exist_ok=True)
+    """Resolve persistent athlete_sk from atleta_id using Supabase as the source of truth."""
+    initialize_schema()
 
     atletas = pd.Series(dtype="object")
     if df_metrics is not None and not df_metrics.empty and "atleta_id" in df_metrics.columns:
-        atletas = pd.Series(df_metrics["atleta_id"].dropna().astype(str).unique())
+        atletas = pd.Series(df_metrics["atleta_id"].dropna().astype(str).str.strip().unique())
 
-    if os.path.exists(path):
-        df_dim = pd.read_parquet(path)
-    else:
+    try:
+        df_dim = read_table("athletes")
+    except Exception:
+        df_dim = pd.DataFrame()
+
+    if df_dim is None or df_dim.empty:
         df_dim = pd.DataFrame(columns=[
-            "athlete_sk", "atleta_id", "nome", "data_nascimento", "posicao",
-            "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao",
-            "genero", "ativo", "created_at", "updated_at"
+            "athlete_sk", "atleta_id", "nome", "foto_url", "data_nascimento", "posicao",
+            "genero", "ativo"
         ])
 
     if not df_dim.empty:
-        df_dim["atleta_id"] = df_dim["atleta_id"].astype(str)
+        df_dim["atleta_id"] = df_dim["atleta_id"].astype(str).str.strip()
+    existing_rows = (
+        df_dim.drop_duplicates(subset=["atleta_id"], keep="last").set_index("atleta_id").to_dict(orient="index")
+        if not df_dim.empty and "atleta_id" in df_dim.columns
+        else {}
+    )
 
     profiles_map = {}
     if athlete_profiles is not None and not athlete_profiles.empty and "atleta_id" in athlete_profiles.columns:
         df_profiles = athlete_profiles.copy()
-        df_profiles["atleta_id"] = df_profiles["atleta_id"].astype(str)
+        df_profiles["atleta_id"] = df_profiles["atleta_id"].astype(str).str.strip()
         profiles_map = df_profiles.set_index("atleta_id").to_dict(orient="index")
 
-    existing = dict(zip(df_dim.get("atleta_id", pd.Series(dtype="object")), df_dim.get("athlete_sk", pd.Series(dtype="int64"))))
-    next_id = 1 if df_dim.empty else int(pd.to_numeric(df_dim["athlete_sk"], errors="coerce").max()) + 1
+    existing = dict(
+        zip(
+            df_dim.get("atleta_id", pd.Series(dtype="object")),
+            pd.to_numeric(df_dim.get("athlete_sk", pd.Series(dtype="float64")), errors="coerce"),
+        )
+    )
 
+    upload_rows = []
     now_ts = pd.Timestamp.utcnow()
-    new_rows = []
     for aid in atletas.tolist():
+        if not aid:
+            continue
+        if aid not in existing or pd.isna(existing.get(aid)):
+            raise ValueError(
+                f"O atleta '{aid}' nÃ£o existe na base de dados. Cria-o primeiro antes de publicar."
+            )
+
         profile = profiles_map.get(aid, {})
-        if aid not in existing:
-            existing[aid] = next_id
-            new_rows.append({
-                "athlete_sk": next_id,
+        if profile:
+            existing_row = existing_rows.get(aid, {})
+            upload_rows.append({
                 "atleta_id": aid,
-                "nome": profile.get("nome"),
-                "data_nascimento": profile.get("data_nascimento"),
-                "posicao": profile.get("posicao"),
-                "numero_camisola": profile.get("numero_camisola"),
-                "pe_preferencial": profile.get("pe_preferencial"),
-                "altura_cm": profile.get("altura_cm"),
-                "peso_kg": profile.get("peso_kg"),
-                "escalao": profile.get("escalao"),
-                "selecao": profile.get("selecao", selecao),
-                "genero": profile.get("genero", genero),
-                "ativo": True,
-                "created_at": now_ts,
-                "updated_at": now_ts,
+                "nome": profile.get("nome") or existing_row.get("nome"),
+                "foto_url": profile.get("foto_url") or existing_row.get("foto_url"),
+                "data_nascimento": profile.get("data_nascimento") or existing_row.get("data_nascimento"),
+                "posicao": profile.get("posicao") or existing_row.get("posicao"),
+                "genero": profile.get("genero") or existing_row.get("genero") or genero,
+                "ativo": existing_row.get("ativo", True),
             })
-            next_id += 1
-        elif profile:
-            idx = df_dim["atleta_id"].astype(str) == aid
-            for col in ["nome", "data_nascimento", "posicao", "numero_camisola", "pe_preferencial", "altura_cm", "peso_kg", "escalao", "selecao"]:
-                if col in df_dim.columns and profile.get(col) is not None and not pd.isna(profile.get(col)):
-                    df_dim.loc[idx, col] = profile.get(col)
-            if "genero" in df_dim.columns and genero is not None:
-                df_dim.loc[idx, "genero"] = df_dim.loc[idx, "genero"].fillna(profile.get("genero", genero))
-            if "updated_at" in df_dim.columns:
-                df_dim.loc[idx, "updated_at"] = now_ts
 
-    if new_rows:
-        df_new = pd.DataFrame(new_rows)
-        df_dim = pd.concat([df_dim, df_new], ignore_index=True)
-    if new_rows or profiles_map:
-        df_dim.to_parquet(path, index=False)
+    if upload_rows:
+        df_upload = pd.DataFrame(upload_rows).drop_duplicates(subset=["atleta_id"], keep="last")
+        allowed_cols = ["atleta_id", "nome", "foto_url", "data_nascimento", "posicao", "genero", "ativo"]
+        df_upload = df_upload[[c for c in allowed_cols if c in df_upload.columns]]
+        insert_or_update_table("athletes", df_upload, pk_columns=["atleta_id"])
 
-    return existing
+        df_dim = read_table("athletes")
+        if df_dim is None or df_dim.empty:
+            raise RuntimeError("Falha ao refrescar os atletas a partir da base de dados.")
+        df_dim["atleta_id"] = df_dim["atleta_id"].astype(str).str.strip()
+        existing = dict(
+            zip(
+                df_dim.get("atleta_id", pd.Series(dtype="object")),
+                pd.to_numeric(df_dim.get("athlete_sk", pd.Series(dtype="float64")), errors="coerce"),
+            )
+        )
+
+    return {aid: int(sk) for aid, sk in existing.items() if pd.notna(sk)}
 
 
 def resolve_session_sk(session_fingerprint, session_payload, base_dir=CLEANDATA_DIR):

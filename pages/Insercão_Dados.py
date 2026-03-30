@@ -27,7 +27,17 @@ from fpf_modules.constants import (
     COL_LAT, COL_LON, COL_TIME, COL_FASE,
     CLEANDATA_DIR
 )
-from fpf_modules.selections import load_selection_options
+from fpf_modules.draft_manager import (
+    clear_draft_session_state,
+    ensure_draft_session_state,
+    save_draft_outputs,
+    store_draft_results,
+)
+from fpf_modules.reference_data import (
+    load_active_athletes_by_selection,
+    load_field_reference,
+    load_selection_reference,
+)
 
 from fpf_modules.metrics import (
     time_to_seconds,
@@ -65,9 +75,8 @@ from fpf_modules.pipeline import (
 )
 
 from fpf_modules.supabase_manager import (
+    read_table,
     save_field_to_parquet,
-    read_field_from_parquet,
-    append_dedup_parquet,
     resolve_athlete_sk,
     resolve_session_sk,
     write_session_data,
@@ -104,54 +113,40 @@ ATHLETE_PROFILE_COLUMN_MAP = {
 ATHLETE_POSITIONS = ["", "GR", "DD", "DE", "DC", "MD", "ME", "MC", "MDC", "MAC", "ED", "EE", "AV", "PL"]
 ATHLETE_FEET = ["", "Direito", "Esquerdo", "Ambidestro"]
 ATHLETE_ESCALOES = ["", "A", "Sub-23", "Sub-21", "Sub-20", "Sub-19", "Sub-18", "Sub-17", "Sub-16", "Sub-15"]
-SELECTION_OPTIONS = load_selection_options()
-ATHLETES_DB_COLUMNS = [
-    "athlete_sk",
-    "atleta_id",
-    "nome",
-    "numero_camisola",
-    "data_nascimento",
-    "posicao",
-    "pe_preferencial",
-    "altura_cm",
-    "peso_kg",
-    "escalao",
-    "selecao",
-    "genero",
-    "ativo",
-]
+SELECTION_OPTIONS = load_selection_reference()
 
 
-def _load_active_athletes_by_selection(selecao_default: str) -> pd.DataFrame:
-    athletes_path = Path(CLEANDATA_DIR) / "athletes.parquet"
-    if not athletes_path.exists():
-        return pd.DataFrame(columns=ATHLETES_DB_COLUMNS)
+def _find_potential_duplicate_sessions(
+    *,
+    data_sessao,
+    selecao: str,
+    genero: str,
+    contexto: str,
+    jogo: str,
+) -> pd.DataFrame:
+    filters = {
+        "data": str(pd.to_datetime(data_sessao).date()) if pd.notna(data_sessao) else "",
+        "selecao": str(selecao or "").strip(),
+        "genero": str(genero or "").strip(),
+        "contexto": str(contexto or "").strip(),
+        "fase": "Total",
+    }
 
-    try:
-        df = pd.read_parquet(athletes_path)
-    except Exception:
-        return pd.DataFrame(columns=ATHLETES_DB_COLUMNS)
+    if str(contexto or "").strip() == "Jogo":
+        filters["jogo"] = str(jogo or "").strip()
 
-    for col in ATHLETES_DB_COLUMNS:
-        if col not in df.columns:
-            df[col] = pd.NA
+    df_existing = read_table("performance_metrics", filters=filters)
+    if df_existing is None or df_existing.empty:
+        return pd.DataFrame()
 
-    df = df[ATHLETES_DB_COLUMNS].copy()
-    if df.empty:
-        return df
-
-    df["atleta_id"] = df["atleta_id"].astype(str).str.strip()
-    df["selecao"] = df["selecao"].astype("string").fillna("").str.strip()
-    df["ativo"] = df["ativo"].fillna(True).astype(bool)
-    df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce").dt.date
-    df["altura_cm"] = pd.to_numeric(df["altura_cm"], errors="coerce")
-    df["peso_kg"] = pd.to_numeric(df["peso_kg"], errors="coerce")
-
-    df = df[df["atleta_id"].ne("") & df["ativo"]]
-    if selecao_default:
-        df = df[df["selecao"].eq(str(selecao_default).strip())]
-
-    return df.sort_values(["nome", "atleta_id"], na_position="last").drop_duplicates(subset=["atleta_id"], keep="last")
+    keep_cols = [
+        col for col in [
+            "session_sk", "data", "selecao", "genero", "contexto", "jogo", "fase", "atleta_id"
+        ] if col in df_existing.columns
+    ]
+    return df_existing[keep_cols].drop_duplicates().sort_values(
+        [c for c in ["data", "session_sk", "atleta_id"] if c in keep_cols]
+    )
 
 
 def _detect_hr_col(df: pd.DataFrame):
@@ -208,11 +203,13 @@ def _normalize_athlete_registry_df(df: pd.DataFrame, genero_default: str, seleca
     if df is None or df.empty:
         return None, None
 
+    if "atleta_id_ficheiro" not in df.columns:
+        df["atleta_id_ficheiro"] = df.get("atleta_id")
     if "atleta_id" not in df.columns:
         return None, "A ficha de atletas tem de incluir atleta_id."
 
     keep_cols = [
-        "atleta_id", "nome", "numero_camisola", "data_nascimento", "posicao", "pe_preferencial",
+        "atleta_id_ficheiro", "atleta_id", "nome", "numero_camisola", "data_nascimento", "posicao", "pe_preferencial",
         "altura_cm", "peso_kg", "escalao", "selecao"
     ]
     for col in keep_cols:
@@ -220,8 +217,14 @@ def _normalize_athlete_registry_df(df: pd.DataFrame, genero_default: str, seleca
             df[col] = pd.NA
 
     df = df[keep_cols].copy()
+    df["atleta_id_ficheiro"] = (
+        df["atleta_id_ficheiro"]
+        .astype(str)
+        .str.strip()
+        .str.replace(r"^0+(?=\d+$)", "", regex=True)
+    )
     df["atleta_id"] = df["atleta_id"].astype(str).str.strip()
-    df = df[df["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
+    df = df[df["atleta_id_ficheiro"].ne("")].drop_duplicates(subset=["atleta_id_ficheiro"], keep="last")
 
     if df.empty:
         return None, "O cadastro de atletas não contém atleta_id válidos."
@@ -246,24 +249,45 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
 
     state_key = "athlete_registry_editor_df"
     state_selection_key = "athlete_registry_editor_selection"
+    selection_filter_key = "athlete_registry_selection_filter"
     existing = st.session_state.get(state_key)
-    db_athletes = _load_active_athletes_by_selection(selecao_default)
+
+    selection_options = ["Masculino", "Feminino"]
+    genero_code = str(genero_default or "").strip().upper()
+    default_selection = "Masculino" if genero_code == "M" else "Feminino" if genero_code == "F" else selection_options[0]
+    current_selection = st.session_state.get(selection_filter_key, default_selection)
+    if current_selection not in selection_options:
+        current_selection = default_selection
+
+    selected_selection = st.selectbox(
+        "Genero para procurar atletas",
+        options=selection_options,
+        index=selection_options.index(current_selection),
+        key=selection_filter_key,
+    )
+
+    db_athletes = load_active_athletes_by_selection(selected_selection)
     athlete_options = db_athletes["atleta_id"].astype(str).tolist() if not db_athletes.empty else []
-    athlete_select_options = [""] + athlete_options
     db_profiles = (
         db_athletes.set_index("atleta_id").to_dict(orient="index")
         if not db_athletes.empty
         else {}
     )
+    athlete_display_map = {"": ""}
+    for athlete_id in athlete_options:
+        profile = db_profiles.get(athlete_id, {})
+        nome = str(profile.get("nome") or "").strip()
+        athlete_display_map[athlete_id] = f"{nome} ({athlete_id})" if nome else athlete_id
+    display_to_athlete_id = {
+        display_label: athlete_id
+        for athlete_id, display_label in athlete_display_map.items()
+    }
     base_rows = pd.DataFrame({
         "atleta_id_ficheiro": athlete_ids,
-            "atleta_id": [
-                athlete_id if athlete_id in athlete_options else ""
-                for athlete_id in athlete_ids
-            ],
-        })
+        "atleta_id": ["" for _ in athlete_ids],
+    })
     if (
-        st.session_state.get(state_selection_key) != selecao_default
+        st.session_state.get(state_selection_key) != selected_selection
         or existing is None
         or not isinstance(existing, pd.DataFrame)
         or "atleta_id_ficheiro" not in existing.columns
@@ -291,7 +315,7 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
         "pe_preferencial": "",
         "altura_cm": np.nan,
         "peso_kg": np.nan,
-        "selecao": selecao_default or "",
+        "selecao": selected_selection or "",
     }
     for col, default in defaults.items():
         if col not in editor_df.columns:
@@ -306,60 +330,66 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
             continue
         for col in defaults:
             if col == "selecao":
-                editor_df.at[idx, col] = selecao_default or ""
+                editor_df.at[idx, col] = selected_selection or ""
                 continue
             current_value = editor_df.at[idx, col]
             if pd.isna(current_value) or current_value == "":
                 editor_df.at[idx, col] = profile.get(col, current_value)
 
-    editor_df["selecao"] = selecao_default or ""
+    editor_df["selecao"] = selected_selection or ""
 
-    if selecao_default:
-        st.caption(f"Atletas ativos na base de dados para {selecao_default}: {len(db_athletes)}")
-    if selecao_default and not athlete_options:
-        st.warning(f"Sem atletas ativos registados para a seleção {selecao_default}.")
+    if selected_selection:
+        st.caption(f"Atletas ativos na base de dados para {selected_selection}: {len(db_athletes)}")
+    if selected_selection and not athlete_options:
+        st.warning(f"Sem atletas ativos registados para {selected_selection}.")
 
-    edited_df = st.data_editor(
-        editor_df,
-        key="athlete_registry_editor",
-        hide_index=True,
-        use_container_width=True,
-        column_order=[
-            "atleta_id_ficheiro",
-            "atleta_id",
-            "nome",
-            "numero_camisola",
-            "data_nascimento",
-            "posicao",
-            "pe_preferencial",
-            "altura_cm",
-            "peso_kg",
-            "selecao",
-        ],
-        disabled=[
-            "atleta_id_ficheiro",
-            "selecao",
-        ],
-        num_rows="fixed",
-        column_config={
-            "atleta_id_ficheiro": st.column_config.TextColumn("ID no ficheiro", disabled=True),
-            "atleta_id": st.column_config.SelectboxColumn(
-                "Ficha de atleta",
-                options=athlete_select_options,
-                required=False,
-            ),
-            "nome": st.column_config.TextColumn("Nome"),
-            "numero_camisola": st.column_config.NumberColumn("Nº Camisola", min_value=1, max_value=99, step=1),
-            "data_nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY"),
-            "posicao": st.column_config.SelectboxColumn("Posição", options=ATHLETE_POSITIONS),
-            "pe_preferencial": st.column_config.SelectboxColumn("Pé Preferencial", options=ATHLETE_FEET),
-            "altura_cm": st.column_config.NumberColumn("Altura (cm)", min_value=0, max_value=260, step=1),
-            "peso_kg": st.column_config.NumberColumn("Peso (kg)", min_value=0, max_value=200, step=1),
-            "escalao": st.column_config.SelectboxColumn("Escalão", options=ATHLETE_ESCALOES),
-            "selecao": st.column_config.TextColumn("Seleção"),
-        },
-    )
-    resolved_df = edited_df.copy()
+    header_left, header_right = st.columns([1, 1.25], gap="medium")
+    header_left.markdown("**ID no ficheiro**")
+    header_right.markdown("**Atleta da base de dados**")
+
+    selected_ids = set()
+    resolved_rows = []
+    display_labels = list(display_to_athlete_id.keys())
+
+    for idx, row in editor_df.reset_index(drop=True).iterrows():
+        row_left, row_right = st.columns([1, 1.25], gap="medium")
+        atleta_ficheiro = str(row.get("atleta_id_ficheiro", "")).strip()
+        current_athlete_id = str(row.get("atleta_id", "")).strip()
+        if current_athlete_id and current_athlete_id in selected_ids:
+            current_athlete_id = ""
+        current_label = athlete_display_map.get(current_athlete_id, "")
+
+        row_left.text(atleta_ficheiro)
+
+        available_labels = [""]
+        for label in display_labels:
+            athlete_id = display_to_athlete_id.get(label, "")
+            if not athlete_id:
+                continue
+            if athlete_id == current_athlete_id or athlete_id not in selected_ids:
+                available_labels.append(label)
+
+        available_labels = list(dict.fromkeys(available_labels))
+        if current_label and current_label not in available_labels:
+            available_labels.append(current_label)
+
+        selected_label = row_right.selectbox(
+            "Atleta da base de dados",
+            options=available_labels,
+            index=available_labels.index(current_label) if current_label in available_labels else 0,
+            key=f"athlete_registry_row_{selected_selection}_{idx}",
+            label_visibility="collapsed",
+        )
+
+        selected_athlete_id = display_to_athlete_id.get(selected_label, "")
+        if selected_athlete_id:
+            selected_ids.add(selected_athlete_id)
+
+        row_data = row.to_dict()
+        row_data["atleta_id"] = selected_athlete_id
+        resolved_rows.append(row_data)
+
+    resolved_df = pd.DataFrame(resolved_rows)
     for col in defaults:
         if col not in resolved_df.columns:
             resolved_df[col] = pd.NA
@@ -369,13 +399,13 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
         profile = db_profiles.get(selected_athlete_id, {})
         for col in defaults:
             if col == "selecao":
-                resolved_df.at[idx, col] = selecao_default or ""
+                resolved_df.at[idx, col] = selected_selection or ""
             elif (pd.isna(resolved_df.at[idx, col]) or resolved_df.at[idx, col] == "") and profile:
                 resolved_df.at[idx, col] = profile.get(col, pd.NA)
 
     st.session_state[state_key] = resolved_df.copy()
-    st.session_state[state_selection_key] = selecao_default
-    return _normalize_athlete_registry_df(resolved_df, genero_default, selecao_default)
+    st.session_state[state_selection_key] = selected_selection
+    return _normalize_athlete_registry_df(resolved_df, genero_default, selected_selection)
 
 
 def _parse_report_sections(report_txt: str):
@@ -416,10 +446,11 @@ def _parse_report_sections(report_txt: str):
     return title, sections
 
 
-def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
+def _build_samples_export(out_files, session_fingerprint: str, athlete_map: dict | None = None):
     sample_frames = []
     athlete_session_rows = []
     processed_at = pd.Timestamp.utcnow()
+    athlete_map = athlete_map or {}
 
     for pth in out_files:
         df_sync = pd.read_csv(pth, sep=";")
@@ -431,8 +462,7 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
         hr_col = _detect_hr_col(df_sync)
 
         sample_df = pd.DataFrame({
-            "session_sk": session_sk,
-            "athlete_sk": athlete_sk,
+            "session_fingerprint": session_fingerprint,
             "atleta_id": str(athlete_id),
             "fase": df_sync[COL_FASE] if COL_FASE in df_sync.columns else pd.NA,
             "time": df_sync[COL_TIME] if COL_TIME in df_sync.columns else pd.NA,
@@ -490,8 +520,7 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
 
         fases_presentes = sorted([f for f in sample_df["fase"].dropna().astype(str).unique().tolist() if f in ["Warm-Up", "1P", "2P"]], key=lambda x: PHASE_MAP.get(x, 99))
         athlete_session_rows.append({
-            "session_sk": session_sk,
-            "athlete_sk": athlete_sk,
+            "session_fingerprint": session_fingerprint,
             "atleta_id": str(athlete_id),
             "participou_warmup": "Warm-Up" in fases_presentes,
             "participou_1p": "1P" in fases_presentes,
@@ -513,6 +542,175 @@ def _build_samples_export(out_files, session_sk: int, athlete_map: dict):
         # Keep as datetime for parquet compatibility (don't convert to string)
     
     return df_samples, df_athlete_session
+
+
+def _build_draft_exports(df_metrics: pd.DataFrame, out_files, session_payload: dict, field_data: pd.DataFrame):
+    df_metrics_draft = df_metrics.copy()
+    df_metrics_draft["session_fingerprint"] = session_payload["session_fingerprint"]
+    df_metrics_draft["session_id_hex"] = session_payload["session_id_hex"]
+    df_metrics_draft["phase_id"] = df_metrics_draft["fase"].map(PHASE_MAP)
+
+    perf_cols = [
+        "duracao_min", "dist_m", "m_min",
+        "vmax_mps", "peak_1m_m_min",
+        "hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints",
+        "n_acc_2_5", "n_dec_3_0",
+        "active_time_min", "active_pct",
+    ]
+    qc_cols = [
+        "n_points", "pct_time_valid", "n_gaps_gt2s",
+        "qc_grade", "qc_flags", "vmax_mps_qc", "n_jumps_gt15m", "n_gaps_gt2s_qc",
+    ]
+    base_cols = [
+        "session_fingerprint", "session_id_hex", "atleta_id", "phase_id", "fase",
+        "data", "selecao", "genero", "contexto", "jogo",
+    ]
+
+    df_perf = df_metrics_draft[base_cols + perf_cols].copy()
+    df_qc = df_metrics_draft[["session_fingerprint", "session_id_hex", "atleta_id", "phase_id", "fase"] + qc_cols].copy()
+    df_samples, df_athlete_session = _build_samples_export(
+        out_files,
+        session_payload["session_fingerprint"],
+    )
+    if not df_samples.empty:
+        df_samples = df_samples.drop_duplicates(
+            subset=["session_fingerprint", "atleta_id", "phase_id", "time"],
+            keep="last",
+        )
+
+    df_tracking = normalize_tracking_data(
+        df_samples,
+        dist_x=field_data['dist_x'][0],
+        dist_y=field_data['dist_y'][0]
+    )
+
+    return df_metrics_draft, df_perf, df_qc, df_samples, df_athlete_session, df_tracking
+
+
+def _validate_publish_registry(athlete_registry_df: pd.DataFrame, athlete_ids_expected: list[str]):
+    if athlete_registry_df is None or athlete_registry_df.empty:
+        return None, "Preenche a ficha de atletas antes de publicar na base de dados."
+
+    registry_df = athlete_registry_df.copy()
+    registry_df["atleta_id_ficheiro"] = (
+        registry_df["atleta_id_ficheiro"]
+        .astype(str)
+        .str.strip()
+        .str.replace(r"^0+(?=\d+$)", "", regex=True)
+    )
+    registry_df["atleta_id"] = registry_df["atleta_id"].astype(str).str.strip()
+
+    missing_rows = registry_df[registry_df["atleta_id"].eq("")]
+    if not missing_rows.empty:
+        missing_ids = ", ".join(sorted(missing_rows["atleta_id_ficheiro"].tolist()))
+        return None, f"Falta associar os atletas do ficheiro a uma ficha da base: {missing_ids}."
+
+    registry_df = registry_df.drop_duplicates(subset=["atleta_id_ficheiro"], keep="last")
+    athlete_ids_expected = [
+        str(v).strip()
+        for v in athlete_ids_expected
+    ]
+    athlete_ids_expected = [
+        pd.Series([v]).astype(str).str.replace(r"^0+(?=\d+$)", "", regex=True).iloc[0]
+        for v in athlete_ids_expected
+    ]
+    missing_expected = sorted(set(athlete_ids_expected) - set(registry_df["atleta_id_ficheiro"].tolist()))
+    if missing_expected:
+        return None, f"Faltam associaÃ§Ãµes para os atletas: {', '.join(missing_expected)}."
+
+    return registry_df, None
+
+
+def _prepare_publish_payloads(
+    *,
+    df_perf_draft: pd.DataFrame,
+    df_qc_draft: pd.DataFrame,
+    df_samples_draft: pd.DataFrame,
+    df_athlete_session_draft: pd.DataFrame,
+    session_payload: dict,
+    genero: str,
+    selecao: str,
+    athlete_registry_df: pd.DataFrame,
+    base_dir: str,
+):
+    athlete_ids_expected = sorted(df_perf_draft["atleta_id"].dropna().astype(str).unique().tolist())
+    registry_df, registry_error = _validate_publish_registry(athlete_registry_df, athlete_ids_expected)
+    if registry_error:
+        raise ValueError(registry_error)
+
+    athlete_target_map = dict(
+        zip(
+            registry_df["atleta_id_ficheiro"].astype(str),
+            registry_df["atleta_id"].astype(str),
+        )
+    )
+    athlete_profiles = registry_df.drop(columns=["atleta_id_ficheiro"]).copy()
+    athlete_profiles = athlete_profiles.drop_duplicates(subset=["atleta_id"], keep="last")
+
+    session_sk = resolve_session_sk(
+        session_payload["session_fingerprint"],
+        session_payload,
+        base_dir,
+    )
+
+    athlete_seed = pd.DataFrame({"atleta_id": sorted(set(athlete_target_map.values()))})
+    athlete_map = resolve_athlete_sk(
+        athlete_seed,
+        base_dir,
+        genero=genero,
+        athlete_profiles=athlete_profiles,
+        selecao=selecao,
+    )
+
+    def _map_for_publish(df: pd.DataFrame):
+        if df is None or df.empty:
+            return df
+        mapped = df.copy()
+        source_ids = mapped["atleta_id"].astype(str)
+        mapped["atleta_id"] = source_ids.map(athlete_target_map)
+        if mapped["atleta_id"].isna().any():
+            missing_ids = sorted(source_ids[mapped["atleta_id"].isna()].unique().tolist())
+            raise ValueError(
+                f"NÃ£o foi possÃ­vel mapear todos os atletas para publicaÃ§Ã£o: {', '.join(missing_ids)}."
+            )
+        mapped["session_sk"] = session_sk
+        mapped["athlete_sk"] = mapped["atleta_id"].astype(str).map(athlete_map)
+        return mapped
+
+    df_perf_publish = _map_for_publish(df_perf_draft)
+    df_qc_publish = _map_for_publish(df_qc_draft)
+    df_samples_publish = _map_for_publish(df_samples_draft)
+    df_athlete_session_publish = _map_for_publish(df_athlete_session_draft)
+
+    df_perf_publish = df_perf_publish[
+        [
+            "session_sk", "athlete_sk", "atleta_id", "phase_id", "fase", "data", "selecao", "genero",
+            "contexto", "jogo", "duracao_min", "dist_m", "m_min", "vmax_mps", "peak_1m_m_min",
+            "hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints", "n_acc_2_5", "n_dec_3_0",
+            "active_time_min", "active_pct",
+        ]
+    ].copy()
+    df_qc_publish = df_qc_publish[
+        [
+            "session_sk", "athlete_sk", "atleta_id", "phase_id", "fase", "n_points",
+            "pct_time_valid", "n_gaps_gt2s", "qc_grade", "qc_flags", "vmax_mps_qc",
+            "n_jumps_gt15m", "n_gaps_gt2s_qc",
+        ]
+    ].copy()
+    df_samples_publish = df_samples_publish[
+        [
+            "session_sk", "athlete_sk", "atleta_id", "fase", "time", "time_evento_s", "time_evento",
+            "periodo_jogo", "minuto_jogo", "lat", "lon", "x_utm", "y_utm", "hr_bpm", "phase_id",
+        ]
+    ].copy()
+    df_athlete_session_publish = df_athlete_session_publish[
+        [
+            "session_sk", "athlete_sk", "atleta_id", "participou_warmup", "participou_1p",
+            "participou_2p", "fases_disponiveis", "n_samples", "tem_hr", "processado_em",
+        ]
+    ].copy()
+
+    return df_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="FPF UTM Engine v16", layout="wide", initial_sidebar_state="collapsed")
@@ -541,22 +739,7 @@ if not st.session_state.auth:
     """, unsafe_allow_html=True)
 
 # --- Persistência de outputs (evita desaparecer após zoom/scroll no mapa) ---
-if "df_metrics" not in st.session_state:
-    st.session_state.df_metrics = None
-if "report_txt" not in st.session_state:
-    st.session_state.report_txt = None
-if "manual_metricas_txt" not in st.session_state:
-    st.session_state.manual_metricas_txt = None
-if "process_done" not in st.session_state:
-    st.session_state.process_done = False
-if "df_perf" not in st.session_state:
-    st.session_state.df_perf = None
-if "df_qc" not in st.session_state:
-    st.session_state.df_qc = None
-if "df_samples" not in st.session_state:
-    st.session_state.df_samples = None
-if "df_athlete_session" not in st.session_state:
-    st.session_state.df_athlete_session = None
+ensure_draft_session_state()
 
 # --- Persistência para 'Pick no mapa' (cantos do campo) ---
 if "pick_corners" not in st.session_state:
@@ -705,16 +888,7 @@ with st.sidebar:
     f_atleta = st.file_uploader(
         "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
     )
-    if f_atleta:
-        with st.expander("Ficha de Atletas", expanded=False):
-            st.caption("Preenche diretamente a ficha dos atletas detetados nos ficheiros carregados.")
-            athlete_registry_df_sidebar, athlete_registry_error_sidebar = _build_athlete_registry_editor(
-                f_atleta, genero, selecao
-            )
-            if athlete_registry_error_sidebar:
-                st.warning(athlete_registry_error_sidebar)
-    else:
-        athlete_registry_df_sidebar, athlete_registry_error_sidebar = None, None
+    st.caption("A associaÃ§Ã£o Ã  base de dados sÃ³ Ã© pedida no fim, se escolheres publicar.")
     st.divider()
 
     st.header("🗺️ Calibração do Campo")
@@ -885,6 +1059,81 @@ def _build_technical_metric_groups():
             "n_gaps_gt2s_qc",
         ],
     }
+
+
+def _build_totals_by_athlete(df_metrics: pd.DataFrame) -> pd.DataFrame:
+    if df_metrics is None or df_metrics.empty or "atleta_id" not in df_metrics.columns:
+        return pd.DataFrame()
+
+    totals_df = df_metrics.copy()
+    if "fase" in totals_df.columns:
+        totals_df = totals_df[totals_df["fase"].astype(str).str.strip().eq("Total")].copy()
+    if totals_df.empty:
+        return pd.DataFrame()
+
+    duration_col = "duracao_min"
+    per90_source_cols = [
+        "dist_m",
+        "hsr_dist_m",
+        "sprint_dist_m",
+        "active_time_min",
+        "n_sprints",
+        "n_acc_2_5",
+        "n_dec_3_0",
+    ]
+
+    for col in [duration_col] + per90_source_cols:
+        if col in totals_df.columns:
+            totals_df[col] = pd.to_numeric(totals_df[col], errors="coerce")
+
+    duration = pd.to_numeric(totals_df.get(duration_col), errors="coerce")
+    valid_duration = duration.notna() & (duration > 0)
+
+    rename_map = {
+        "dist_m": "dist_m_90",
+        "hsr_dist_m": "hsr_dist_m_90",
+        "sprint_dist_m": "sprint_dist_m_90",
+        "active_time_min": "active_time_min_90",
+        "n_sprints": "n_sprints_90",
+        "n_acc_2_5": "n_acc_2_5_90",
+        "n_dec_3_0": "n_dec_3_0_90",
+    }
+
+    for source_col, target_col in rename_map.items():
+        if source_col in totals_df.columns:
+            totals_df[target_col] = np.where(
+                valid_duration,
+                pd.to_numeric(totals_df[source_col], errors="coerce") / duration * 90.0,
+                np.nan,
+            )
+
+    preferred_cols = [
+        "atleta_id",
+        "fase",
+        "duracao_min",
+        "dist_m",
+        "dist_m_90",
+        "m_min",
+        "hsr_dist_m",
+        "hsr_dist_m_90",
+        "hsr_pct",
+        "sprint_dist_m",
+        "sprint_dist_m_90",
+        "n_sprints",
+        "n_sprints_90",
+        "n_acc_2_5",
+        "n_acc_2_5_90",
+        "n_dec_3_0",
+        "n_dec_3_0_90",
+        "active_time_min",
+        "active_time_min_90",
+        "active_pct",
+        "vmax_mps",
+        "peak_1m_m_min",
+    ]
+    available_cols = [col for col in preferred_cols if col in totals_df.columns]
+    totals_df = totals_df[available_cols].copy()
+    return round_metrics_dataframe(totals_df)
 
 
 def _order_technical_report_sections(report_sections):
@@ -1192,7 +1441,7 @@ try:
         )
 
     elif metodo_campo == "Escolher um campo guardado anteriormente":
-        df_campos = read_field_from_parquet()
+        df_campos = load_field_reference()
 
         if df_campos is None or df_campos.empty:
             st.warning("Ainda não existem campos guardados.")
@@ -1301,12 +1550,6 @@ st.divider()
 
 # Audit by athlete phases
 st.header("Auditoria de Atletas")
-athlete_registry_df, athlete_registry_error = athlete_registry_df_sidebar, athlete_registry_error_sidebar
-if athlete_registry_error:
-    st.warning(athlete_registry_error)
-elif athlete_registry_df is not None:
-    st.caption(f"Ficha de atletas preenchida: {len(athlete_registry_df)} registos.")
-
 audit_data = {}
 for f in f_atleta:
     aid = get_atleta_id(f.name)
@@ -1663,61 +1906,31 @@ if btn:
                 "rotation_rad": float(angulo_rad),
                 "engine_version": ENGINE_VERSION,
             }
-            session_sk = resolve_session_sk(session_fingerprint, session_payload, CLEANDATA_DIR)
-            athlete_map = resolve_athlete_sk(
+            (
                 df_metrics,
-                CLEANDATA_DIR,
-                genero=genero,
-                athlete_profiles=athlete_registry_df,
-                selecao=selecao,
-            )
-
-            df_metrics["session_sk"] = session_sk
-            df_metrics["athlete_sk"] = df_metrics["atleta_id"].astype(str).map(athlete_map)
-            df_metrics["phase_id"] = df_metrics["fase"].map(PHASE_MAP)
-
-            perf_cols = [
-                "duracao_min", "dist_m", "m_min",
-                "vmax_mps", "peak_1m_m_min",
-                "hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints",
-                "n_acc_2_5", "n_dec_3_0",
-                "active_time_min", "active_pct",
-            ]
-            qc_cols = [
-                "n_points", "pct_time_valid", "n_gaps_gt2s",
-                "qc_grade", "qc_flags", "vmax_mps_qc", "n_jumps_gt15m", "n_gaps_gt2s_qc",
-            ]
-            base_cols = ["session_sk", "athlete_sk", "atleta_id", "phase_id", "fase", "data", "selecao", "genero", "contexto", "jogo"]
-
-            df_perf = df_metrics[base_cols + perf_cols].copy()
-            df_qc = df_metrics[["session_sk", "athlete_sk", "atleta_id", "phase_id", "fase"] + qc_cols].copy()
-            df_samples, df_athlete_session = _build_samples_export(out_files, session_sk, athlete_map)
-            if not df_samples.empty:
-                df_samples = df_samples.drop_duplicates(
-                    subset=["session_sk", "athlete_sk", "phase_id", "time"],
-                    keep="last",
-                )
-
-            # Normalizar coordenadas StatsBomb
-            df_tracking = normalize_tracking_data(
+                df_perf,
+                df_qc,
                 df_samples,
-                dist_x=field_data['dist_x'][0],
-                dist_y=field_data['dist_y'][0]
+                df_athlete_session,
+                df_tracking,
+            ) = _build_draft_exports(
+                df_metrics,
+                out_files,
+                session_payload,
+                field_data,
             )
-            append_dedup_parquet(df_perf, str(Path(CLEANDATA_DIR) / "performance_metrics.parquet"), ["session_sk", "athlete_sk", "phase_id"])
-            append_dedup_parquet(df_qc, str(Path(CLEANDATA_DIR) / "quality_metrics.parquet"), ["session_sk", "athlete_sk", "phase_id"])
-            append_dedup_parquet(df_samples, str(Path(CLEANDATA_DIR) / "samples.parquet"), ["session_sk", "athlete_sk", "phase_id", "time"])
-            append_dedup_parquet(df_athlete_session, str(Path(CLEANDATA_DIR) / "athlete_session.parquet"), ["session_sk", "athlete_sk"])
-            append_dedup_parquet(df_tracking, str(Path(CLEANDATA_DIR) / "tracking.parquet"), ["session_sk", "athlete_sk", "phase_id", "time"])
-
-            st.session_state.df_perf = df_perf
-            st.session_state.df_qc = df_qc
-            st.session_state.df_samples = df_samples
-            st.session_state.df_athlete_session = df_athlete_session
+            save_draft_outputs(
+                df_perf=df_perf,
+                df_qc=df_qc,
+                df_samples=df_samples,
+                df_athlete_session=df_athlete_session,
+                df_tracking=df_tracking,
+                base_dir=CLEANDATA_DIR,
+            )
 
             df_time_audit = pd.DataFrame(audit_time_rows)
             st.session_state.df_time_audit = df_time_audit
-            st.session_state.manual_metricas_txt = _build_manual_metricas_txt()
+            manual_metricas_txt = _build_manual_metricas_txt()
 
             status.update(label="Construção do relatório...", state="running")
             # Build report (rotação mantida)
@@ -1853,9 +2066,22 @@ if btn:
             report_txt = "\n".join(report_lines)
 
             # Persistir outputs (map zoom/scroll dispara rerun do Streamlit)
-            st.session_state.df_metrics = df_metrics
-            st.session_state.report_txt = report_txt
-            st.session_state.process_done = True
+            store_draft_results(
+                df_metrics=df_metrics,
+                report_txt=report_txt,
+                manual_metricas_txt=manual_metricas_txt,
+                df_perf=df_perf,
+                df_qc=df_qc,
+                df_samples=df_samples,
+                df_athlete_session=df_athlete_session,
+                df_time_audit=df_time_audit,
+                draft_session_payload=session_payload,
+                draft_context={
+                    "genero": genero,
+                    "selecao": selecao,
+                    "contexto": contexto,
+                },
+            )
             status.update(label="Finalizado.", state="complete")
 
     st.success(
@@ -1937,6 +2163,8 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
 
     df_export = df_display[id_cols + ordered_metric_cols].copy()
     df_display_ui = format_metrics_display_dataframe(df_display)
+    df_totals_by_athlete = _build_totals_by_athlete(df_display)
+    df_totals_by_athlete_ui = format_metrics_display_dataframe(df_totals_by_athlete)
 
     st.subheader("Métricas Performance")
     for familia, cols in performance_metric_groups.items():
@@ -1960,17 +2188,83 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
             mime="text/csv",
         )
 
+    if not df_totals_by_athlete.empty:
+        st.subheader("Totais por Atleta")
+        st.caption("Resumo da fase Total com metricas absolutas e normalizadas por 90 minutos.")
+        st.dataframe(
+            df_totals_by_athlete_ui,
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.download_button(
+            "Download Totais por Atleta (.csv)",
+            data=df_totals_by_athlete.to_csv(index=False).encode("utf-8"),
+            file_name="totais_por_atleta_90.csv",
+            mime="text/csv",
+            key="download_totals_by_athlete",
+        )
+
 
     st.subheader("Integração na Base de Dados")
 
     if st.session_state.get("df_perf") is not None and not st.session_state.df_perf.empty:
-        col1, col2 = st.columns([3.95, 1.05])
-        with col1:
+        st.info("Os dados jÃ¡ estÃ£o em modo draft. Podes terminar em visualizaÃ§Ã£o/download ou avanÃ§ar para publicaÃ§Ã£o.")
+        publish_mode = st.radio(
+            "Destino final desta sessÃ£o",
+            options=["Visualizar / Download", "Publicar na base de dados"],
+            horizontal=True,
+            key="publish_mode",
+        )
+        if publish_mode == "Visualizar / Download":
             st.info("✅ Dados processados e prontos para serem integrados no Supabase.")
         
-        with col2:
+        else:
+            st.caption("Para publicar, cada atleta do ficheiro tem de ser associado a uma ficha da base de dados.")
+            athlete_registry_df = None
+            athlete_registry_error = None
+
+            if f_atleta:
+                with st.expander("Ficha de Atletas para PublicaÃ§Ã£o", expanded=True):
+                    athlete_registry_df, athlete_registry_error = _build_athlete_registry_editor(
+                        f_atleta,
+                        genero,
+                        selecao,
+                    )
+            else:
+                athlete_registry_error = "Carrega os ficheiros de atletas para conseguires publicar esta sessÃ£o."
+
+            if athlete_registry_error:
+                st.warning(athlete_registry_error)
+            publish_payload = st.session_state.get("draft_session_payload") or {}
+            publish_context = st.session_state.get("draft_context") or {}
+            duplicate_sessions_df = _find_potential_duplicate_sessions(
+                data_sessao=publish_payload.get("data_sessao", data_sessao),
+                selecao=publish_context.get("selecao", selecao),
+                genero=publish_context.get("genero", genero),
+                contexto=publish_context.get("contexto", contexto),
+                jogo=publish_payload.get("jogo", adversario),
+            )
+            allow_duplicate_publish = False
+            if not duplicate_sessions_df.empty:
+                data_txt = pd.to_datetime(
+                    publish_payload.get("data_sessao", data_sessao)
+                ).strftime("%d/%m/%Y")
+                st.error(
+                    f"Já existem dados publicados para esta sessão em {data_txt}. "
+                    "A gravação foi bloqueada para evitar duplicados."
+                )
+                st.caption("Sessões potencialmente coincidentes já gravadas:")
+                st.dataframe(duplicate_sessions_df, use_container_width=True, hide_index=True)
+                allow_duplicate_publish = st.checkbox(
+                    "Permitir gravação mesmo assim",
+                    key="allow_duplicate_publish",
+                    help="Usa esta opção apenas se quiseres substituir ou atualizar uma sessão já publicada.",
+                )
             if st.button("💾 Gravar na Base", key="btn_save_duckdb"):
                 progress_bar = st.progress(0, text="A iniciar transferência para o Supabase...")
+                if not duplicate_sessions_df.empty and not allow_duplicate_publish:
+                    st.error("Publicação interrompida para evitar duplicação da sessão.")
+                    st.stop()
                 progress_text = st.empty()
 
                 def _on_db_progress(event: dict):
@@ -1982,11 +2276,27 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                     progress_text.caption(f"Passo {step}/{total_steps}: {message}")
 
                 try:
+                    publish_payload = st.session_state.get("draft_session_payload") or {}
+                    publish_context = st.session_state.get("draft_context") or {}
+                    df_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish = _prepare_publish_payloads(
+                        df_perf_draft=st.session_state.df_perf,
+                        df_qc_draft=st.session_state.df_qc,
+                        df_samples_draft=st.session_state.df_samples,
+                        df_athlete_session_draft=st.session_state.df_athlete_session,
+                        session_payload=publish_payload,
+                        genero=publish_context.get("genero", genero),
+                        selecao=publish_context.get("selecao", selecao),
+                        athlete_registry_df=athlete_registry_df,
+                        base_dir=CLEANDATA_DIR,
+                    )
+                    progress_bar.progress(0.2, text="Dados preparados. A iniciar transferÃªncia...")
+                    progress_text.caption("Passo de preparaÃ§Ã£o concluÃ­do.")
+
                     stats = write_session_data(
-                        st.session_state.df_perf,
-                        st.session_state.df_qc,
-                        st.session_state.df_samples,
-                        st.session_state.df_athlete_session,
+                        df_perf_publish,
+                        df_qc_publish,
+                        df_samples_publish,
+                        df_athlete_session_publish,
                         progress_callback=_on_db_progress,
                     )
                     progress_bar.progress(1.0, text="Transferência concluída.")
@@ -2058,12 +2368,5 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
 
     # (Opcional) botão para limpar resultados
     if clear_results:
-        st.session_state.df_metrics = None
-        st.session_state.report_txt = None
-        st.session_state.manual_metricas_txt = None
-        st.session_state.df_perf = None
-        st.session_state.df_qc = None
-        st.session_state.df_samples = None
-        st.session_state.df_athlete_session = None
-        st.session_state.process_done = False
+        clear_draft_session_state()
         st.rerun()

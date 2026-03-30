@@ -1,224 +1,414 @@
-import os
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
-from fpf_modules.constants import CLEANDATA_DIR
-from fpf_modules.selections import load_selection_options
+from fpf_modules.supabase_manager import (
+    delete_public_storage_url,
+    delete_table_rows,
+    initialize_schema,
+    insert_or_update_table,
+    read_table,
+    upload_image_to_storage,
+)
 
 
-ATHLETES_PATH = Path(CLEANDATA_DIR) / "athletes.parquet"
 ATHLETE_COLUMNS = [
     "athlete_sk",
     "atleta_id",
     "nome",
-    "numero_camisola",
+    "foto_url",
     "data_nascimento",
     "posicao",
-    "pe_preferencial",
-    "altura_cm",
-    "peso_kg",
-    "escalao",
-    "selecao",
     "genero",
     "ativo",
-    "created_at",
-    "updated_at",
+]
+ATHLETE_UPLOAD_COLUMNS = [
+    "atleta_id",
+    "nome",
+    "foto_url",
+    "data_nascimento",
+    "posicao",
+    "genero",
+    "ativo",
 ]
 ATHLETE_POSITIONS = ["", "GR", "DD", "DE", "DC", "MD", "ME", "MC", "MDC", "MAC", "ED", "EE", "AV", "PL"]
-ATHLETE_FEET = ["", "Direito", "Esquerdo", "Ambidestro"]
-SELECTION_OPTIONS = load_selection_options()
+GENDER_OPTIONS = ["Masculino", "Feminino"]
+ATHLETE_PHOTO_BUCKET = "athlete-photos"
+ATHLETE_PHOTO_UPLOADER_KEY = "athlete_photo_uploader"
 
 
 def _empty_athletes_df() -> pd.DataFrame:
     return pd.DataFrame(columns=ATHLETE_COLUMNS)
 
 
-def _selection_to_genero(selecao: str) -> str:
-    parts = str(selecao).split()
-    return parts[-1] if parts and parts[-1] in ["M", "F"] else ""
-
-
-def _selection_to_escalao(selecao: str) -> str:
-    value = str(selecao).strip()
-    if not value:
+def _clean_text_value(value):
+    if pd.isna(value):
         return ""
-    parts = value.rsplit(" ", 1)
-    return parts[0] if len(parts) == 2 else value
+    text = str(value).strip()
+    return "" if text in {"", "None", "nan", "NaT", "<NA>"} else text
+
+
+def _split_full_name(full_name: str) -> tuple[str, str]:
+    value = _clean_text_value(full_name)
+    if not value:
+        return "", ""
+    parts = value.split()
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:])
+
+
+def _compose_full_name(nome: str, sobrenome: str) -> str:
+    return " ".join(part for part in [_clean_text_value(nome), _clean_text_value(sobrenome)] if part).strip()
+
+
+def _genero_label_to_code(value: str) -> str:
+    mapping = {
+        "Masculino": "M",
+        "Feminino": "F",
+        "M": "M",
+        "F": "F",
+    }
+    return mapping.get(_clean_text_value(value), "")
+
+
+def _genero_code_to_label(value: str) -> str:
+    mapping = {
+        "M": "Masculino",
+        "F": "Feminino",
+    }
+    return mapping.get(_clean_text_value(value), "")
+
+
+def _generate_internal_atleta_id(df: pd.DataFrame) -> str:
+    if df is None or df.empty or "atleta_id" not in df.columns:
+        return "ATH-00001"
+
+    existing_ids = df["atleta_id"].map(_clean_text_value)
+    numeric_suffixes = (
+        existing_ids.str.extract(r"ATH-(\d+)", expand=False)
+        .dropna()
+        .astype(int)
+    )
+    next_number = 1 if numeric_suffixes.empty else int(numeric_suffixes.max()) + 1
+    return f"ATH-{next_number:05d}"
 
 
 def _load_athletes() -> pd.DataFrame:
-    if not ATHLETES_PATH.exists():
+    initialize_schema()
+    df = read_table("athletes")
+    if df is None or df.empty:
         return _empty_athletes_df()
 
-    df = pd.read_parquet(ATHLETES_PATH)
     for col in ATHLETE_COLUMNS:
         if col not in df.columns:
             df[col] = pd.NA
 
     df = df[ATHLETE_COLUMNS].copy()
     if not df.empty:
-        df["atleta_id"] = df["atleta_id"].astype(str)
-        df["numero_camisola"] = pd.to_numeric(df["numero_camisola"], errors="coerce")
+        for col in ["atleta_id", "nome", "posicao", "genero", "foto_url"]:
+            df[col] = df[col].map(_clean_text_value)
         df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce").dt.date
-        df["altura_cm"] = pd.to_numeric(df["altura_cm"], errors="coerce")
-        df["peso_kg"] = pd.to_numeric(df["peso_kg"], errors="coerce")
         df["ativo"] = df["ativo"].fillna(True).astype(bool)
-        df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce")
-        df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
 
     return df.sort_values(["ativo", "nome", "atleta_id"], ascending=[False, True, True], na_position="last")
 
 
 def _save_athletes(df: pd.DataFrame) -> None:
-    os.makedirs(CLEANDATA_DIR, exist_ok=True)
+    initialize_schema()
     save_df = df.copy()
-    save_df["atleta_id"] = save_df["atleta_id"].astype(str).str.strip()
+    for col in ["atleta_id", "nome", "posicao", "genero", "foto_url"]:
+        save_df[col] = save_df[col].map(_clean_text_value)
     save_df = save_df[save_df["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
-    save_df["numero_camisola"] = pd.to_numeric(save_df["numero_camisola"], errors="coerce")
     save_df["data_nascimento"] = pd.to_datetime(save_df["data_nascimento"], errors="coerce").dt.date
-    save_df["altura_cm"] = pd.to_numeric(save_df["altura_cm"], errors="coerce")
-    save_df["peso_kg"] = pd.to_numeric(save_df["peso_kg"], errors="coerce")
     save_df["ativo"] = save_df["ativo"].fillna(True).astype(bool)
-    save_df["selecao"] = save_df["selecao"].astype(str).str.strip()
-    save_df["genero"] = save_df["selecao"].map(_selection_to_genero)
-    save_df["escalao"] = save_df["selecao"].map(_selection_to_escalao)
-    save_df.to_parquet(ATHLETES_PATH, index=False)
+    save_df["genero"] = save_df["genero"].map(_genero_label_to_code)
+
+    stats = insert_or_update_table(
+        "athletes",
+        save_df[ATHLETE_UPLOAD_COLUMNS],
+        pk_columns=["atleta_id"],
+    )
+    if not stats.get("success", False):
+        raise RuntimeError(stats.get("error") or "Falha ao guardar atletas na base de dados.")
 
 
-def _next_athlete_sk(df: pd.DataFrame) -> int:
-    if df.empty or "athlete_sk" not in df.columns:
-        return 1
-    values = pd.to_numeric(df["athlete_sk"], errors="coerce").dropna()
-    return 1 if values.empty else int(values.max()) + 1
+def _format_birth_date(value) -> str:
+    if pd.isna(value) or value in ("", None):
+        return "-"
+    try:
+        return pd.to_datetime(value).strftime("%d/%m/%Y")
+    except Exception:
+        return str(value)
 
 
-def _editor_view(df: pd.DataFrame) -> pd.DataFrame:
-    display_cols = [
-        "atleta_id",
-        "nome",
-        "numero_camisola",
-        "data_nascimento",
-        "posicao",
-        "pe_preferencial",
-        "altura_cm",
-        "peso_kg",
-        "selecao",
-        "ativo",
-    ]
-    return st.data_editor(
-        df[display_cols],
-        hide_index=True,
-        use_container_width=True,
-        column_order=display_cols,
-        num_rows="dynamic",
-        column_config={
-            "atleta_id": st.column_config.TextColumn("Atleta ID", required=True),
-            "nome": st.column_config.TextColumn("Nome"),
-            "numero_camisola": st.column_config.NumberColumn("Nº Camisola", min_value=1, max_value=99, step=1),
-            "data_nascimento": st.column_config.DateColumn("Nascimento", format="DD/MM/YYYY"),
-            "posicao": st.column_config.SelectboxColumn("Posição", options=ATHLETE_POSITIONS),
-            "pe_preferencial": st.column_config.SelectboxColumn("Pé Preferencial", options=ATHLETE_FEET),
-            "altura_cm": st.column_config.NumberColumn("Altura (cm)", min_value=0, max_value=260, step=1),
-            "peso_kg": st.column_config.NumberColumn("Peso (kg)", min_value=0, max_value=200, step=1),
-            "selecao": st.column_config.SelectboxColumn("Seleção", options=[""] + SELECTION_OPTIONS),
-            "ativo": st.column_config.CheckboxColumn("Ativo"),
-        },
-        key="athletes_editor",
+def _delete_athlete(atleta_id: str, foto_url: str) -> None:
+    stats = delete_table_rows("athletes", {"atleta_id": atleta_id})
+    if not stats.get("success", False):
+        raise RuntimeError(stats.get("error") or "Falha ao eliminar atleta.")
+    delete_public_storage_url(ATHLETE_PHOTO_BUCKET, foto_url)
+
+
+def _save_athlete_photo(row: pd.Series, foto) -> None:
+    atleta_id = _clean_text_value(row.get("atleta_id"))
+    if not atleta_id:
+        raise RuntimeError("Nao foi possivel identificar o atleta para atualizar a foto.")
+
+    extension = foto.name.rsplit(".", 1)[-1].lower() if "." in foto.name else "jpg"
+    object_path = f"{atleta_id}/{atleta_id}.{extension}"
+    foto_url = upload_image_to_storage(
+        ATHLETE_PHOTO_BUCKET,
+        object_path,
+        foto.getvalue(),
+        foto.type,
     )
 
+    updated_row = pd.DataFrame(
+        [{
+            "atleta_id": atleta_id,
+            "nome": _clean_text_value(row.get("nome")),
+            "foto_url": foto_url,
+            "data_nascimento": row.get("data_nascimento"),
+            "posicao": _clean_text_value(row.get("posicao")),
+            "genero": _clean_text_value(row.get("genero")),
+            "ativo": bool(row.get("ativo")),
+        }]
+    )
+    _save_athletes(updated_row)
 
-def _merge_edited_rows(original_df: pd.DataFrame, edited_df: pd.DataFrame) -> pd.DataFrame:
-    now_ts = pd.Timestamp.utcnow()
-    original_meta = original_df.set_index("atleta_id")[["created_at", "updated_at"]].to_dict(orient="index") if not original_df.empty else {}
 
-    merged = edited_df.copy()
-    merged["atleta_id"] = merged["atleta_id"].astype(str).str.strip()
-    merged = merged[merged["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
-    merged["created_at"] = merged["atleta_id"].map(lambda aid: original_meta.get(aid, {}).get("created_at", now_ts))
-    merged["updated_at"] = now_ts
-    merged["genero"] = merged["selecao"].map(_selection_to_genero)
-    merged["escalao"] = merged["selecao"].map(_selection_to_escalao)
+def _save_athlete_details(
+    row: pd.Series,
+    nome: str,
+    sobrenome: str,
+    data_nascimento,
+    genero_label: str,
+    posicao: str,
+    ativo: bool,
+) -> None:
+    atleta_id = _clean_text_value(row.get("atleta_id"))
+    if not atleta_id:
+        raise RuntimeError("Nao foi possivel identificar o atleta para atualizar.")
 
-    for col in ATHLETE_COLUMNS:
-        if col not in merged.columns:
-            merged[col] = pd.NA
+    nome = _clean_text_value(nome)
+    sobrenome = _clean_text_value(sobrenome)
+    genero = _genero_label_to_code(genero_label)
 
-    return merged[ATHLETE_COLUMNS].copy()
+    if not nome:
+        raise RuntimeError("O campo Nome e obrigatorio.")
+    if not sobrenome:
+        raise RuntimeError("O campo Sobrenome e obrigatorio.")
+    if not genero:
+        raise RuntimeError("O campo Genero e obrigatorio.")
+
+    updated_row = pd.DataFrame(
+        [{
+            "atleta_id": atleta_id,
+            "nome": _compose_full_name(nome, sobrenome),
+            "foto_url": _clean_text_value(row.get("foto_url")),
+            "data_nascimento": data_nascimento,
+            "posicao": _clean_text_value(posicao),
+            "genero": genero,
+            "ativo": bool(ativo),
+        }]
+    )
+    _save_athletes(updated_row)
+
+
+def _render_athlete_ficha(row: pd.Series) -> None:
+    athlete_name = _clean_text_value(row.get("nome")) or _clean_text_value(row.get("atleta_id")) or "Atleta"
+    with st.expander(athlete_name, expanded=False):
+        left_col, right_col = st.columns([1.0, 1.8], gap="large")
+
+        with left_col:
+            foto_url = _clean_text_value(row.get("foto_url"))
+            if foto_url:
+                st.image(foto_url, use_container_width=True)
+            else:
+                st.caption("Sem foto registada.")
+            foto_update = st.file_uploader(
+                "Atualizar foto",
+                type=["png", "jpg", "jpeg", "webp"],
+                key=f"update_photo_{_clean_text_value(row.get('atleta_id'))}",
+            )
+            if foto_update is not None:
+                if st.button("Guardar foto", key=f"save_photo_{_clean_text_value(row.get('atleta_id'))}"):
+                    _save_athlete_photo(row, foto_update)
+                    st.success("Foto atualizada com sucesso.")
+                    st.rerun()
+
+        with right_col:
+            nome, sobrenome = _split_full_name(row.get("nome"))
+            genero_label = _genero_code_to_label(row.get("genero")) or "-"
+            ativo_label = "Sim" if bool(row.get("ativo")) else "Nao"
+
+            info_left, info_right = st.columns(2)
+            info_left.markdown(f"**Nome:** {nome or '-'}")
+            info_left.markdown(f"**Sobrenome:** {sobrenome or '-'}")
+            info_left.markdown(f"**Nascimento:** {_format_birth_date(row.get('data_nascimento'))}")
+            info_right.markdown(f"**Genero:** {genero_label}")
+            info_right.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
+            info_right.markdown(f"**Ativo:** {ativo_label}")
+
+            st.caption(f"ID interno: {_clean_text_value(row.get('atleta_id')) or '-'}")
+
+            action_col1, action_col2 = st.columns(2)
+            edit_key = f"edit_mode_{_clean_text_value(row.get('atleta_id'))}"
+
+            if action_col1.button("Editar atleta", key=f"edit_{_clean_text_value(row.get('atleta_id'))}"):
+                st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+                st.rerun()
+
+            if action_col2.button("Eliminar atleta", key=f"delete_{_clean_text_value(row.get('atleta_id'))}"):
+                _delete_athlete(_clean_text_value(row.get("atleta_id")), _clean_text_value(row.get("foto_url")))
+                st.success("Atleta eliminado com sucesso.")
+                st.rerun()
+
+            if st.session_state.get(edit_key, False):
+                st.markdown("**Editar atleta**")
+                default_nome, default_sobrenome = _split_full_name(row.get("nome"))
+                with st.form(f"edit_athlete_form_{_clean_text_value(row.get('atleta_id'))}"):
+                    form_col1, form_col2 = st.columns(2)
+                    nome_edit = form_col1.text_input("Nome", value=default_nome)
+                    sobrenome_edit = form_col2.text_input("Sobrenome", value=default_sobrenome)
+
+                    form_col3, form_col4, form_col5 = st.columns(3)
+                    data_edit = form_col3.date_input(
+                        "Data de nascimento",
+                        value=row.get("data_nascimento") if pd.notna(row.get("data_nascimento")) else None,
+                        format="DD/MM/YYYY",
+                    )
+                    genero_edit = form_col4.selectbox(
+                        "Genero",
+                        GENDER_OPTIONS,
+                        index=GENDER_OPTIONS.index(genero_label) if genero_label in GENDER_OPTIONS else 0,
+                    )
+                    posicao_edit = form_col5.selectbox(
+                        "Posicao",
+                        ATHLETE_POSITIONS,
+                        index=ATHLETE_POSITIONS.index(_clean_text_value(row.get("posicao")))
+                        if _clean_text_value(row.get("posicao")) in ATHLETE_POSITIONS else 0,
+                    )
+                    ativo_edit = st.checkbox("Ativo", value=bool(row.get("ativo")))
+
+                    save_edit = st.form_submit_button("Guardar alterações", type="primary")
+
+                if save_edit:
+                    _save_athlete_details(
+                        row,
+                        nome_edit,
+                        sobrenome_edit,
+                        data_edit,
+                        genero_edit,
+                        posicao_edit,
+                        ativo_edit,
+                    )
+                    st.session_state[edit_key] = False
+                    st.success("Atleta atualizado com sucesso.")
+                    st.rerun()
 
 
 st.title("Atletas")
-st.caption("Consulta, edita e cria fichas de atleta para enriquecer a base analítica.")
+st.caption("Consulta e cria fichas base de atleta para enriquecer a base analitica.")
 
 athletes_df = _load_athletes()
 tab_view, tab_insert = st.tabs(["Visualizar", "Inserir"])
 
 with tab_view:
-    st.subheader("Fichas registadas")
-    edited_df = _editor_view(athletes_df if not athletes_df.empty else _empty_athletes_df())
+    st.subheader("Atletas Registados")
+    gender_filter_options = ["Todos", "Masculino", "Feminino"]
+    selected_gender_label = st.selectbox(
+        "Genero",
+        options=gender_filter_options,
+        key="athletes_view_gender_filter",
+    )
 
-    if st.button("Guardar alterações", type="primary", key="save_athletes_table"):
-        final_df = _merge_edited_rows(athletes_df, edited_df)
-        duplicate_ids = final_df["atleta_id"].duplicated(keep=False)
-        if duplicate_ids.any():
-            st.error("Existem atleta_id duplicados. Corrige-os antes de guardar.")
-        else:
-            _save_athletes(final_df)
-            st.success("Fichas de atletas atualizadas com sucesso.")
-            st.rerun()
+    if athletes_df.empty or selected_gender_label == "Todos":
+        view_df = athletes_df if not athletes_df.empty else _empty_athletes_df()
+    else:
+        gender_code = _genero_label_to_code(selected_gender_label)
+        view_df = athletes_df[athletes_df["genero"].map(_clean_text_value).eq(gender_code)].copy()
+
+    if view_df.empty:
+        st.info("Sem atletas registados para este filtro.")
+    else:
+        for _, athlete_row in view_df.reset_index(drop=True).iterrows():
+            _render_athlete_ficha(athlete_row)
 
 with tab_insert:
     st.subheader("Novo atleta")
     with st.form("new_athlete_form", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        atleta_id = col1.text_input("Atleta ID")
-        nome = col2.text_input("Nome")
+        photo_col, details_col = st.columns([1.05, 1.95], gap="large")
 
-        col3, col4, col5 = st.columns(3)
-        data_nascimento = col3.date_input("Data de nascimento", value=None, format="DD/MM/YYYY")
-        posicao = col4.selectbox("Posição", ATHLETE_POSITIONS)
-        numero_camisola = col5.number_input("Nº Camisola", min_value=1, max_value=99, step=1, value=None)
+        with photo_col:
+            st.markdown("**Foto do atleta**")
+            photo_preview = st.empty()
+            foto = st.file_uploader(
+                "Upload da foto",
+                type=["png", "jpg", "jpeg", "webp"],
+                key=ATHLETE_PHOTO_UPLOADER_KEY,
+                label_visibility="collapsed",
+            )
+            if foto is not None:
+                photo_preview.image(foto, use_container_width=True)
+            else:
+                photo_preview.caption("Sem foto carregada.")
+            st.caption("Upload da foto")
 
-        col6, col7, col8 = st.columns(3)
-        pe_preferencial = col6.selectbox("Pé Preferencial", ATHLETE_FEET)
-        altura_cm = col7.number_input("Altura (cm)", min_value=0, max_value=260, step=1, value=None)
-        peso_kg = col8.number_input("Peso (kg)", min_value=0, max_value=200, step=1, value=None)
+        with details_col:
+            st.markdown("**Dados do atleta**")
+            col1, col2 = st.columns(2)
+            nome = col1.text_input("Nome")
+            sobrenome = col2.text_input("Sobrenome")
 
-        col9, col10 = st.columns(2)
-        selecao = col9.selectbox("Seleção", [""] + SELECTION_OPTIONS)
-        ativo = col10.checkbox("Ativo", value=True)
+            col3, col4, col5 = st.columns(3)
+            data_nascimento = col3.date_input("Data de nascimento", value=None, format="DD/MM/YYYY")
+            genero_label = col4.selectbox("Genero", GENDER_OPTIONS)
+            posicao = col5.selectbox("Posicao", ATHLETE_POSITIONS)
+
+            ativo = st.checkbox("Ativo", value=True)
 
         submitted = st.form_submit_button("Inserir atleta", type="primary")
 
     if submitted:
-        atleta_id = str(atleta_id).strip()
-        if not atleta_id:
-            st.error("O campo Atleta ID é obrigatório.")
-        elif not athletes_df.empty and athletes_df["atleta_id"].astype(str).eq(atleta_id).any():
-            st.error("Já existe um atleta com esse Atleta ID.")
+        nome = _clean_text_value(nome)
+        sobrenome = _clean_text_value(sobrenome)
+        genero = _genero_label_to_code(genero_label)
+        atleta_id = _generate_internal_atleta_id(athletes_df)
+
+        if not nome:
+            st.error("O campo Nome e obrigatorio.")
+        elif not sobrenome:
+            st.error("O campo Sobrenome e obrigatorio.")
+        elif not genero:
+            st.error("O campo Genero e obrigatorio.")
+        elif foto is None:
+            st.error("A foto do atleta e obrigatoria.")
         else:
-            now_ts = pd.Timestamp.utcnow()
-            new_row = pd.DataFrame(
-                [{
-                    "athlete_sk": _next_athlete_sk(athletes_df),
-                    "atleta_id": atleta_id,
-                    "nome": nome or pd.NA,
-                    "numero_camisola": numero_camisola,
-                    "data_nascimento": data_nascimento,
-                    "posicao": posicao,
-                    "pe_preferencial": pe_preferencial,
-                    "altura_cm": altura_cm,
-                    "peso_kg": peso_kg,
-                    "escalao": _selection_to_escalao(selecao),
-                    "selecao": selecao,
-                    "genero": _selection_to_genero(selecao),
-                    "ativo": ativo,
-                    "created_at": now_ts,
-                    "updated_at": now_ts,
-                }]
-            )
-            final_df = pd.concat([athletes_df, new_row], ignore_index=True)
-            _save_athletes(final_df[ATHLETE_COLUMNS])
-            st.success("Novo atleta criado com sucesso.")
-            st.rerun()
+            try:
+                extension = foto.name.rsplit(".", 1)[-1].lower() if "." in foto.name else "jpg"
+                object_path = f"{atleta_id}/{atleta_id}.{extension}"
+                foto_url = upload_image_to_storage(
+                    ATHLETE_PHOTO_BUCKET,
+                    object_path,
+                    foto.getvalue(),
+                    foto.type,
+                )
+                new_row = pd.DataFrame(
+                    [{
+                        "atleta_id": atleta_id,
+                        "nome": _compose_full_name(nome, sobrenome),
+                        "foto_url": foto_url,
+                        "data_nascimento": data_nascimento,
+                        "posicao": posicao,
+                        "genero": genero,
+                        "ativo": ativo,
+                    }]
+                )
+                final_df = pd.concat([athletes_df, new_row], ignore_index=True)
+                _save_athletes(final_df)
+            except RuntimeError as exc:
+                st.error(str(exc))
+            else:
+                st.session_state.pop(ATHLETE_PHOTO_UPLOADER_KEY, None)
+                st.success("Novo atleta criado com sucesso.")
+                st.rerun()

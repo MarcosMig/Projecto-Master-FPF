@@ -1,332 +1,502 @@
-import pandas as pd
 import numpy as np
+import pandas as pd
 import streamlit as st
-import mplsoccer as mpl
-import matplotlib.pyplot as plt
-from fpf_modules.constants import CLEANDATA_DIR
-from fpf_modules.selections import load_selection_options
-from fpf_modules.utils import format_metrics_display_dataframe
-from scipy.spatial import ConvexHull, QhullError
 
-SELECTION_OPTIONS = load_selection_options()
+from fpf_modules.supabase_manager import initialize_schema, read_table
 
-# TODO 1. Converter métricas em m2
-# TODO 2. Alterar Heat map posicional de plotly para mplsoccer
 
-# Estilo para as métricas
-st.markdown("""
-    <style>
-    /* Estilo Cartas Métricas Partida */
-    .fpt-kpi-container {
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-        margin-bottom: 20px;
-    }
-    .fpt-kpi-card {
-        background-color: #1e1e1e;
-        border-left: 5px solid #E30613; /* Linha vermelha FPF */
-        padding: 20px;
-        border-radius: 8px;
-        box-shadow: 2px 2px 10px rgba(0,0,0,0.3);
-        flex: 1;
-    }
-    .fpt-kpi-label {
-        color: #9aa0a6;
-        font-size: 14px;
-        font-weight: bold;
-        text-transform: uppercase;
-        margin-bottom: 5px;
-    }
-    .fpt-kpi-value {
-        color: #ffffff;
-        font-size: 24px;
-        font-weight: 800;
-    }
-</style>
-    """, unsafe_allow_html=True)
+st.set_page_config(page_title="Análises Individuais", layout="wide")
 
-def kpi_card(label, value):
-    st.markdown(f"""
-        <div class="fpt-kpi-card">
-            <div class="fpt-kpi-label">{label}</div>
-            <div class="fpt-kpi-value">{value}</div>
-        </div>
-    """, unsafe_allow_html=True)
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="FPF | Positional Analysis", layout="wide")
+PROFILE_OPTIONS = [
+    "Jogo | Global",
+    "Jogo | Últimos 5",
+    "Jogo | Últimos 10",
+    "Treino | Global",
+    "Treino | Últimos 5",
+    "Treino | Últimos 10",
+]
 
-# Incializar Paineis
-tab_metrics, tab_visual = st.tabs(["📊 Métricas de Performance", "📍 Análise Posicional"])
+COMPARISON_MODES = [
+    "Perfil vs Perfil",
+    "Jogo vs Perfil",
+    "Jogo vs Jogo",
+]
 
-# --- CARREGAMENTO E PROCESSAMENTO ---
-@st.cache_data
-def load_and_merge_data():
-    perf = pd.read_parquet(f"{CLEANDATA_DIR}/performance_metrics.parquet")
-    tracking = pd.read_parquet(f"{CLEANDATA_DIR}/tracking.parquet")
-    sessions = pd.read_parquet(f"{CLEANDATA_DIR}/sessions.parquet")
+DISPLAY_METRICS = [
+    ("dist_m_90", "Distância / 90"),
+    ("m_min", "m/min"),
+    ("hsr_pct", "HSR %"),
+    ("active_pct", "Ativo %"),
+    ("active_time_min_90", "Tempo Ativo / 90"),
+    ("hsr_dist_m_90", "Distância HSR / 90"),
+    ("sprint_dist_m_90", "Distância Sprint / 90"),
+    ("n_sprints_90", "Nº Sprints / 90"),
+    ("n_acc_2_5_90", "Acc / 90"),
+    ("n_dec_3_0_90", "Dec / 90"),
+    ("vmax_mps_peak", "Vmax Pico"),
+    ("peak_1m_m_min_peak", "Pico 1m"),
+]
 
-    # Merge de metadados no tracking
-    cols_meta = ['data', 'selecao', 'contexto', 'jogo', 'session_sk']
-    df_merged = pd.merge(
-        tracking,
-        sessions[cols_meta],
-        how='left',
-        on='session_sk'
+SUM_METRICS = [
+    "duracao_min",
+    "dist_m",
+    "hsr_dist_m",
+    "sprint_dist_m",
+    "n_sprints",
+    "n_acc_2_5",
+    "n_dec_3_0",
+    "active_time_min",
+]
+
+PHOTO_WIDTH = 120
+PHOTO_HEIGHT = 120
+TOP_BLOCK_HEIGHT = 160
+LABEL_BLOCK_HEIGHT = 34
+HEADER_GAP_HEIGHT = 20
+DELTA_TOP_HEIGHT = 93
+
+
+def _clean_text(value) -> str:
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text in {"", "None", "nan", "NaT", "<NA>"} else text
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _load_athletes() -> pd.DataFrame:
+    initialize_schema()
+    df = read_table("athletes")
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["atleta_id", "nome", "foto_url", "posicao", "genero", "ativo"])
+
+    for col in ["atleta_id", "nome", "foto_url", "posicao", "genero"]:
+        if col not in df.columns:
+            df[col] = pd.NA
+        df[col] = df[col].map(_clean_text)
+
+    if "ativo" not in df.columns:
+        df["ativo"] = True
+    df["ativo"] = df["ativo"].fillna(True).astype(bool)
+
+    return (
+        df[df["atleta_id"].ne("") & df["ativo"]]
+        .drop_duplicates(subset=["atleta_id"], keep="last")
+        .sort_values(["nome", "atleta_id"], na_position="last")
+        .reset_index(drop=True)
     )
-    return perf, df_merged
-
-try:
-    df_perf, tracking_df = load_and_merge_data()
-except Exception as e:
-    st.error(f"Erro ao processar dados: {e}")
-    st.stop()
-
-@st.cache_data
-def calcular_compactacao(tracking_df):
-    """Calcula compactação Vertical e Horizontal por Frame.
-
-    Args:
-        tracking_df (_type_): DataFrame que contem tracking data.
-
-    Returns:
-        pd.DataFrame: DataFrame com a compactação vertical e horizontal por frame.
-    """
-    if 'time_evento_s' in tracking_df.columns:
-
-        # Agrupar por tempo
-        frame_data = tracking_df.groupby('time_evento_s').agg(
-            x_min=('x_tr', 'min'),
-            x_max=('x_tr', 'max'),
-            y_min=('y_tr', 'min'),
-            y_max=('y_tr', 'max')
-        )
-
-        frame_data['comp_vertical'] = round( frame_data['x_max'] - frame_data['x_min'], 2)
-        frame_data['comp_horizontal'] = round( frame_data['y_max'] - frame_data['y_min'], 2)
-
-        frame_data = frame_data.drop(columns={'x_min', 'x_max', 'y_min', 'y_max'}).reset_index()
-
-        return frame_data
 
 
-@st.cache_data
-def calcular_area_media(tracking_df, dist_x, dist_y):
-    df = tracking_df.copy()
+@st.cache_data(show_spinner=False, ttl=300)
+def _load_perf_sessions() -> pd.DataFrame:
+    initialize_schema()
+    df = read_table("vw_perf_total_session")
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-   # fator_conversao = (dist_x * dist_y) / (120 * 80)  # StatsBomb → m²
-    areas = []
+    numeric_cols = [
+        "duracao_min",
+        "dist_m",
+        "m_min",
+        "vmax_mps",
+        "peak_1m_m_min",
+        "hsr_dist_m",
+        "hsr_pct",
+        "sprint_dist_m",
+        "n_sprints",
+        "n_acc_2_5",
+        "n_dec_3_0",
+        "active_time_min",
+        "active_pct",
+    ]
+    for col in ["atleta_id", "contexto", "jogo", "selecao", "genero"]:
+        if col not in df.columns:
+            df[col] = pd.NA
+        df[col] = df[col].map(_clean_text)
 
-    for _, frame in df.groupby('time'):
-        pts = frame[['x_tr', 'y_tr']].dropna().values
+    if "data" in df.columns:
+        df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        if len(pts) >= 3:
-            try:
-                hull = ConvexHull(pts)
-                areas.append(hull.volume) # * fator_conversao)
-            except QhullError:
-                continue
+    return df
+
+
+def _parse_profile_option(profile_option: str) -> tuple[str, int | None]:
+    contexto_txt, janela_txt = [part.strip() for part in profile_option.split("|", 1)]
+    if "Últimos 5" in janela_txt:
+        return contexto_txt, 5
+    if "Últimos 10" in janela_txt:
+        return contexto_txt, 10
+    return contexto_txt, None
+
+
+def _aggregate_profile(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        return {}
+
+    agg = {}
+    for metric in SUM_METRICS:
+        agg[f"{metric}_total"] = float(df[metric].sum()) if metric in df.columns else np.nan
+
+    dur = agg.get("duracao_min_total", np.nan)
+    dist = agg.get("dist_m_total", np.nan)
+    hsr = agg.get("hsr_dist_m_total", np.nan)
+    sprint = agg.get("sprint_dist_m_total", np.nan)
+    active_time = agg.get("active_time_min_total", np.nan)
+    n_sprints = agg.get("n_sprints_total", np.nan)
+    n_acc = agg.get("n_acc_2_5_total", np.nan)
+    n_dec = agg.get("n_dec_3_0_total", np.nan)
+
+    agg["n_sessoes"] = int(df["session_sk"].nunique()) if "session_sk" in df.columns else int(len(df))
+    agg["primeira_data"] = df["data"].min() if "data" in df.columns else pd.NaT
+    agg["ultima_data"] = df["data"].max() if "data" in df.columns else pd.NaT
+    agg["m_min"] = (dist / dur) if pd.notna(dur) and dur > 0 else np.nan
+    agg["hsr_pct"] = (hsr / dist * 100.0) if pd.notna(dist) and dist > 0 else np.nan
+    agg["active_pct"] = (active_time / dur * 100.0) if pd.notna(dur) and dur > 0 else np.nan
+    agg["dist_m_90"] = (dist / dur * 90.0) if pd.notna(dur) and dur > 0 else np.nan
+    agg["hsr_dist_m_90"] = (hsr / dur * 90.0) if pd.notna(dur) and dur > 0 else np.nan
+    agg["sprint_dist_m_90"] = (sprint / dur * 90.0) if pd.notna(dur) and dur > 0 else np.nan
+    agg["n_sprints_90"] = (n_sprints / dur * 90.0) if pd.notna(dur) and dur > 0 else np.nan
+    agg["n_acc_2_5_90"] = (n_acc / dur * 90.0) if pd.notna(dur) and dur > 0 else np.nan
+    agg["n_dec_3_0_90"] = (n_dec / dur * 90.0) if pd.notna(dur) and dur > 0 else np.nan
+    agg["active_time_min_90"] = (active_time / dur * 90.0) if pd.notna(dur) and dur > 0 else np.nan
+    agg["vmax_mps_peak"] = float(df["vmax_mps"].max()) if "vmax_mps" in df.columns else np.nan
+    agg["peak_1m_m_min_peak"] = float(df["peak_1m_m_min"].max()) if "peak_1m_m_min" in df.columns else np.nan
+    return agg
+
+
+def _build_profile_snapshot(
+    athletes_df: pd.DataFrame,
+    perf_df: pd.DataFrame,
+    athlete_id: str,
+    profile_option: str,
+) -> dict:
+    athlete_row = athletes_df[athletes_df["atleta_id"].eq(athlete_id)].head(1)
+    if athlete_row.empty:
+        return {}
+
+    athlete_info = athlete_row.iloc[0].to_dict()
+    contexto, window_size = _parse_profile_option(profile_option)
+    df_athlete = perf_df[
+        perf_df["atleta_id"].eq(athlete_id) &
+        perf_df["contexto"].eq(contexto)
+    ].copy()
+
+    if not df_athlete.empty and window_size is not None and "data" in df_athlete.columns:
+        df_athlete = df_athlete.sort_values(["data", "session_sk"], ascending=[False, False]).head(window_size)
 
     return {
-        'mean': round(np.mean(areas), 2),
-        'median': round(np.median(areas), 2),
-        'std': round(np.std(areas), 2)
-    } if areas else None
+        "kind": "profile",
+        "athlete": athlete_info,
+        "label": profile_option,
+        "sessions_df": df_athlete,
+        "metrics": _aggregate_profile(df_athlete),
+    }
 
-# --- SIDEBAR: FILTROS E CONTROLES ---
-def converter_para_relogio_fpf(segundos_totais):
-    """
-    Exemplo: 4150.3s -> '69:10.3'
-    (Minuto 69, Segundo 10, Frame 3)
-    """
-    minutos = int(segundos_totais // 60)
-    segundos = int(segundos_totais % 60)
-    frame = int(round((segundos_totais % 1) * 10))
-    if frame == 10: frame = 0; segundos += 1 # Ajuste de arredondamento
 
-    return f"{minutos:02d}:{segundos:02d}.{frame}"
+def _build_session_option_map(perf_df: pd.DataFrame, athlete_id: str, contexto: str = "Jogo") -> tuple[list[int], dict[int, str]]:
+    df_athlete = perf_df[
+        perf_df["atleta_id"].eq(athlete_id) &
+        perf_df["contexto"].eq(contexto)
+    ].copy()
+    if df_athlete.empty:
+        return [], {}
 
-with st.sidebar:
-    st.title("⚽ Filtros de Sessão")
+    df_athlete = df_athlete.sort_values(["data", "session_sk"], ascending=[False, False])
+    options = []
+    labels = {}
+    for _, row in df_athlete.iterrows():
+        session_sk = int(row["session_sk"])
+        if session_sk in labels:
+            continue
+        data_txt = pd.to_datetime(row["data"]).strftime("%d/%m/%Y") if pd.notna(row.get("data")) else "-"
+        jogo_txt = _clean_text(row.get("jogo")) or f"Sessão {session_sk}"
+        labels[session_sk] = f"{data_txt} | {jogo_txt}"
+        options.append(session_sk)
+    return options, labels
 
-    selecao = st.selectbox("Seleção", options=SELECTION_OPTIONS, index=0 if SELECTION_OPTIONS else None)
-    contexto = st.selectbox("Contexto", options=["Treino", "Jogo"])
 
-    # Inicializamos o jogo como vazio por defeito
-    jogo = ""
+def _build_session_snapshot(
+    athletes_df: pd.DataFrame,
+    perf_df: pd.DataFrame,
+    athlete_id: str,
+    session_sk: int,
+) -> dict:
+    athlete_row = athletes_df[athletes_df["atleta_id"].eq(athlete_id)].head(1)
+    if athlete_row.empty:
+        return {}
 
-    if contexto == 'Jogo':
+    athlete_info = athlete_row.iloc[0].to_dict()
+    df_session = perf_df[
+        perf_df["atleta_id"].eq(athlete_id) &
+        perf_df["session_sk"].eq(session_sk)
+    ].copy()
+    if df_session.empty:
+        return {}
 
-        # Filtramos a lista de jogos disponíveis para esta seleção
-        jogos_disponiveis = df_perf[
-            (df_perf.selecao == selecao) &
-            (df_perf.contexto == "Jogo")
-        ]['jogo'].unique()
+    contexto = _clean_text(df_session["contexto"].iloc[0]) if "contexto" in df_session.columns else "Jogo"
+    jogo_txt = _clean_text(df_session["jogo"].iloc[0]) if "jogo" in df_session.columns else f"Sessão {session_sk}"
+    data = df_session["data"].iloc[0] if "data" in df_session.columns else pd.NaT
+    data_txt = pd.to_datetime(data).strftime("%d/%m/%Y") if pd.notna(data) else "-"
 
-        if len(jogos_disponiveis) > 0:
-            jogo = st.selectbox('Adversário', options=jogos_disponiveis)
+    return {
+        "kind": "session",
+        "athlete": athlete_info,
+        "label": f"{contexto} | {data_txt} | {jogo_txt}",
+        "sessions_df": df_session,
+        "metrics": _aggregate_profile(df_session),
+    }
+
+
+def _format_number(value, suffix: str = "") -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{float(value):.1f}{suffix}"
+
+
+def _format_profile_value(metric_key: str, value) -> str:
+    if metric_key.endswith("_pct"):
+        return _format_number(value, "%")
+    if metric_key in {"n_sprints_90", "n_acc_2_5_90", "n_dec_3_0_90"}:
+        return _format_number(value)
+    return _format_number(value)
+
+
+def _build_metric_table(snapshot: dict) -> pd.DataFrame:
+    metrics = snapshot.get("metrics", {}) if snapshot else {}
+    rows = []
+    for metric_key, metric_label in DISPLAY_METRICS:
+        rows.append(
+            {
+                "Métrica": metric_label,
+                "Valor": _format_profile_value(metric_key, metrics.get(metric_key, np.nan)),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _build_delta_table(left_snapshot: dict, right_snapshot: dict) -> pd.DataFrame:
+    rows = []
+    left_metrics = left_snapshot.get("metrics", {}) if left_snapshot else {}
+    right_metrics = right_snapshot.get("metrics", {}) if right_snapshot else {}
+
+    for metric_key, _metric_label in DISPLAY_METRICS:
+        left_value = left_metrics.get(metric_key, np.nan)
+        right_value = right_metrics.get(metric_key, np.nan)
+        delta_abs = (
+            float(left_value) - float(right_value)
+            if pd.notna(left_value) and pd.notna(right_value)
+            else np.nan
+        )
+        delta_pct = (
+            (delta_abs / float(right_value) * 100.0)
+            if pd.notna(delta_abs) and pd.notna(right_value) and float(right_value) != 0
+            else np.nan
+        )
+        rows.append(
+            {
+                "Delta": _format_profile_value(metric_key, delta_abs),
+                "Delta %": _format_number(delta_pct, "%"),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def _render_static_table(df: pd.DataFrame) -> None:
+    row_height = 35
+    header_height = 38
+    table_height = header_height + max(len(df), 1) * row_height + 2
+    st.dataframe(df.reset_index(drop=True), use_container_width=True, hide_index=True, height=table_height)
+
+
+def _style_delta_value(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    text = str(value).strip().replace("%", "")
+    if text in {"", "-"}:
+        return ""
+    try:
+        number = float(text)
+    except ValueError:
+        return ""
+    if number > 0:
+        return "color: #22c55e; font-weight: 600;"
+    if number < 0:
+        return "color: #ef4444; font-weight: 600;"
+    return "color: #e5e7eb;"
+
+
+def _render_delta_table(df: pd.DataFrame) -> None:
+    row_height = 35
+    header_height = 38
+    table_height = header_height + max(len(df), 1) * row_height + 2
+    styled = (
+        df.reset_index(drop=True)
+        .style
+        .applymap(_style_delta_value, subset=["Delta", "Delta %"])
+        .hide(axis="index")
+    )
+    st.dataframe(styled, use_container_width=True, height=table_height)
+
+
+def _render_header_block(snapshot: dict | None) -> None:
+    athlete = snapshot.get("athlete", {}) if snapshot else {}
+
+    top_left, top_right = st.columns([0.9, 1.6], gap="large")
+    with top_left:
+        foto_url = _clean_text(athlete.get("foto_url"))
+        if foto_url:
+            st.image(foto_url, width=PHOTO_WIDTH)
         else:
-            st.warning("Nenhum jogo registado para esta seleção.")
+            st.markdown(f"<div style='height: {PHOTO_HEIGHT}px;'></div>", unsafe_allow_html=True)
 
-    # Filtrar sessões disponíveis para o slider ou seleção
-    sessoes_disponiveis = df_perf.loc[
-        (df_perf.selecao == selecao)
-        & (df_perf.contexto == contexto)
-        & (df_perf.jogo == jogo)
-    ]
+    with top_right:
+        if snapshot:
+            st.markdown(f"**Atleta:** {_clean_text(athlete.get('nome')) or '-'}")
+            st.markdown(f"**Posição:** {_clean_text(athlete.get('posicao')) or '-'}")
+        else:
+            st.markdown(f"<div style='height: {PHOTO_HEIGHT}px;'></div>", unsafe_allow_html=True)
 
-    st.divider()
 
-    st.sidebar.header("⏱️ Navegação Temporal")
-
-    fase_selected = st.sidebar.radio("Fase", ["Warm-Up", "1P", "2P"], index=1)
-
-    # Filtrar tracking pela fase para pegar os timestamps
-    df_fase = tracking_df.loc[
-        (tracking_df.selecao == selecao)
-        & (tracking_df.contexto == contexto)
-        & (tracking_df.jogo == jogo)
-        & (tracking_df['fase'] == fase_selected)
-    ]
-
-    if not df_fase.empty:
-        timestamps = sorted(df_fase['time_evento_s'].unique())
-        # Slider para navegar no tempo
-        selected_time = st.sidebar.select_slider(
-            "Momento do Jogo (s)",
-            options=timestamps,
-         format_func=converter_para_relogio_fpf
-        )
+def _render_label_block(snapshot: dict) -> None:
+    label = snapshot.get("label", "") if snapshot else ""
+    if snapshot and snapshot.get("kind") == "session":
+        st.caption(label)
     else:
-        st.sidebar.warning(f"Sem dados de tracking para a fase {fase_selected}")
-        selected_time = None
-
-# --- PAINEL PRINCIPAL ---
+        st.markdown(f"<div style='height: {LABEL_BLOCK_HEIGHT}px;'></div>", unsafe_allow_html=True)
 
 
-# TAB 1: MÉTRICAS
+def _render_profile_panel(title: str, snapshot: dict) -> None:
+    st.markdown(f"### {title}")
+    if not snapshot:
+        st.info("Seleciona um item para comparar.")
+        return
 
-with tab_metrics:
+    _render_header_block(snapshot)
+    _render_label_block(snapshot)
+    st.markdown(f"<div style='height: {HEADER_GAP_HEIGHT}px;'></div>", unsafe_allow_html=True)
+    _render_static_table(_build_metric_table(snapshot))
 
-    st.subheader(f"Métricas: {selecao} | {contexto}")
-    if sessoes_disponiveis.empty:
-        st.warning("Nenhuma métrica encontrada para estes filtros.")
+
+def _render_delta_panel(left_snapshot: dict, right_snapshot: dict) -> None:
+    st.markdown("### Deltas")
+    st.markdown(f"<div style='height: {DELTA_TOP_HEIGHT + LABEL_BLOCK_HEIGHT}px;'></div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='height: {HEADER_GAP_HEIGHT}px;'></div>", unsafe_allow_html=True)
+    _render_delta_table(_build_delta_table(left_snapshot, right_snapshot))
+
+
+def _resolve_modes(comparison_mode: str) -> tuple[str, str]:
+    if comparison_mode == "Jogo vs Perfil":
+        return "Jogo", "Perfil"
+    if comparison_mode == "Jogo vs Jogo":
+        return "Jogo", "Jogo"
+    return "Perfil", "Perfil"
+
+
+st.title("Análises Individuais")
+st.caption("Comparação lado a lado entre atletas, perfis e jogos.")
+
+athletes_df = _load_athletes()
+perf_df = _load_perf_sessions()
+
+if athletes_df.empty:
+    st.warning("Sem atletas ativos na base de dados.")
+    st.stop()
+
+if perf_df.empty:
+    st.warning("Sem dados de performance disponíveis para construir perfis.")
+    st.stop()
+
+athlete_display_map = {
+    row["atleta_id"]: f"{_clean_text(row['nome'])} ({_clean_text(row['atleta_id'])})"
+    for _, row in athletes_df.iterrows()
+}
+athlete_options = list(athlete_display_map.keys())
+
+comparison_mode = st.selectbox("Modo de comparação", options=COMPARISON_MODES)
+left_mode, right_mode = _resolve_modes(comparison_mode)
+
+selector_left, selector_right = st.columns(2, gap="large")
+
+with selector_left:
+    athlete_left = st.selectbox(
+        "Atleta",
+        options=athlete_options,
+        format_func=lambda aid: athlete_display_map.get(aid, aid),
+        key="athlete_compare_left",
+    )
+    if left_mode == "Perfil":
+        profile_left = st.selectbox("Perfil", options=PROFILE_OPTIONS, key="profile_compare_left")
+        left_snapshot = _build_profile_snapshot(athletes_df, perf_df, athlete_left, profile_left)
     else:
-        st.dataframe(
-            format_metrics_display_dataframe(sessoes_disponiveis),
-            width='stretch',
-            hide_index=True,
-        )
-
-# TAB 2: VISUALIZAÇÃO DO CAMPO
-
-with tab_visual:
-
-    st.subheader('Métricas da Partida')
-
-    df_compactacao = calcular_compactacao(df_fase)
-    area_dict = calcular_area_media(df_fase, 0, 0)
-
-    if not df_compactacao.empty:
-
-        avg_comp_vert = df_compactacao['comp_vertical'].mean().round(2)
-        avg_comp_hor = df_compactacao['comp_horizontal'].mean().round(2)
-
-        col1, col2, col3, col4 = st.columns(4)
-
-        with col1:
-            kpi_card("Compactação Vertical", f"{avg_comp_vert:.1f}")
-
-        with col2:
-            kpi_card("Compactação Horizontal", f"{avg_comp_hor:.1f}")
-
-        with col3:
-            kpi_card("Área Ocupada", f"{area_dict['median']:.1f}")
-
-        st.divider()
-
-
-    if selected_time is not None:
-
-        # 1. Obter snapshot
-        snapshot = df_fase[
-            (df_fase['time_evento_s'] == selected_time)
-            & (df_fase['x_tr'].notna())
-            & (df_fase['y_tr'].notna())
-        ]
-
-        # Obter metricas para o frame
-        compactacao_frame = df_compactacao.loc[ df_compactacao['time_evento_s'] == selected_time]
-
-        campo = st.selectbox(label='Visualização Campo', options=['Convex Hull', 'Teste'],index=None, placeholder='Seleciona outro metodo de visualizar o campo')
-
-        col_map, col_info = st.columns([3, 1])
-
-        # CAMPO
-        with col_map:
-
-            # 2. Configurar Pitch
-            pitch = mpl.Pitch(
-                pitch_type='statsbomb', # Se escalou para 120x80
-                pitch_color='#22312b',
-                line_color='#c7d5cc'
+        left_game_options, left_game_map = _build_session_option_map(perf_df, athlete_left, contexto="Jogo")
+        if left_game_options:
+            left_game = st.selectbox(
+                "Jogo",
+                options=left_game_options,
+                format_func=lambda sid: left_game_map.get(sid, str(sid)),
+                key="session_compare_left",
             )
+            left_snapshot = _build_session_snapshot(athletes_df, perf_df, athlete_left, left_game)
+        else:
+            st.info("Sem jogos disponíveis para este atleta.")
+            left_snapshot = {}
 
-            fig, ax = pitch.draw(figsize=(10, 7))
-
-            # 3. Desenhar Jogadores
-            pitch.scatter(
-                snapshot.x_tr,
-                snapshot.y_tr,
-                s=400, c='#E30613', edgecolors='white', linewidth=1, alpha=0.9, ax=ax
-            )
-
-            # 4. Adicionar IDs dos Atletas (Labels)
-            for i, row in snapshot.iterrows():
-                pitch.annotate(
-                    row['atleta_id'],
-                    (row['x_tr'], row['y_tr']),
-                    ax=ax, color='white', fontsize=10, fontweight='bold',
-                    va='center', ha='center'
-                )
-
-            # 5. Calculo do Convex Hull (inicializamos antes para calculo da area por frame)
-            convex_hull = pitch.convexhull(
-                    snapshot.x_tr,
-                    snapshot.y_tr,
-            )
-
-            # Calculo da area
-            # Convex Hull Shape is (1, n, 2) — index accordingly
-            vertices = convex_hull[0]  # shape (n, 2)
-            x = vertices[:, 0]
-            y = vertices[:, 1]
-            area = 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
-
-            # Visualizar Convex Hull
-            if campo == 'Convex Hull':
-
-                polygon = pitch.polygon(
-                    convex_hull, ax=ax,
-                    edgecolor='E30613',
-                    color='#E30613', alpha=0.3
-                )
-
-            st.pyplot(fig)
-
-        # INFO FRAME
-        with col_info:
-
-            st.subheader("Analise de Frame")
-            st.metric("Tempo Selecionado", f"{converter_para_relogio_fpf(selected_time)}s")
-            st.metric("Compactação Vertical", compactacao_frame['comp_vertical'])
-            st.metric("Compactação Horizontal", compactacao_frame['comp_horizontal'])
-            st.metric("Area", round(area, 2))
+with selector_right:
+    default_right_index = 1 if len(athlete_options) > 1 else 0
+    athlete_right = st.selectbox(
+        "Atleta",
+        options=athlete_options,
+        index=default_right_index,
+        format_func=lambda aid: athlete_display_map.get(aid, aid),
+        key="athlete_compare_right",
+    )
+    if right_mode == "Perfil":
+        profile_right = st.selectbox("Perfil", options=PROFILE_OPTIONS, key="profile_compare_right")
+        right_snapshot = _build_profile_snapshot(athletes_df, perf_df, athlete_right, profile_right)
     else:
-        st.info("Selecione uma fase com dados para visualizar o campo.")
+        right_game_options, right_game_map = _build_session_option_map(perf_df, athlete_right, contexto="Jogo")
+        if right_game_options:
+            right_game = st.selectbox(
+                "Jogo",
+                options=right_game_options,
+                format_func=lambda sid: right_game_map.get(sid, str(sid)),
+                key="session_compare_right",
+            )
+            right_snapshot = _build_session_snapshot(athletes_df, perf_df, athlete_right, right_game)
+        else:
+            st.info("Sem jogos disponíveis para este atleta.")
+            right_snapshot = {}
 
+panel_left, panel_delta, panel_right = st.columns([1.2, 1.0, 1.2], gap="large")
+with panel_left:
+    _render_profile_panel(f"{left_mode} Esquerdo", left_snapshot)
+with panel_delta:
+    _render_delta_panel(left_snapshot, right_snapshot)
+with panel_right:
+    _render_profile_panel(f"{right_mode} Direito", right_snapshot)
 
-# --- FOOTER ---
-st.divider()
-st.caption(f"FPF UTM Engine v16 | Data Shape: {df_perf.shape[0]} sessions loaded.")
+st.markdown("## Sessões Utilizadas")
+sessions_left, sessions_right = st.columns(2, gap="large")
+
+with sessions_left:
+    st.caption(f"Sessões usadas no lado esquerdo ({left_mode.lower()})")
+    left_sessions = left_snapshot.get("sessions_df", pd.DataFrame()) if left_snapshot else pd.DataFrame()
+    if left_sessions.empty:
+        st.info("Sem sessões para este lado.")
+    else:
+        cols = [c for c in ["data", "contexto", "jogo", "duracao_min", "dist_m", "m_min", "vmax_mps"] if c in left_sessions.columns]
+        st.dataframe(left_sessions[cols].sort_values("data", ascending=False), use_container_width=True, hide_index=True)
+
+with sessions_right:
+    st.caption(f"Sessões usadas no lado direito ({right_mode.lower()})")
+    right_sessions = right_snapshot.get("sessions_df", pd.DataFrame()) if right_snapshot else pd.DataFrame()
+    if right_sessions.empty:
+        st.info("Sem sessões para este lado.")
+    else:
+        cols = [c for c in ["data", "contexto", "jogo", "duracao_min", "dist_m", "m_min", "vmax_mps"] if c in right_sessions.columns]
+        st.dataframe(right_sessions[cols].sort_values("data", ascending=False), use_container_width=True, hide_index=True)
