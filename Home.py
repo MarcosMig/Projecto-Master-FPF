@@ -23,6 +23,7 @@ navigation = st.navigation(
             st.Page("pages/Atletas.py", title="Atletas", url_path="atletas"),
             st.Page("pages/Seleções.py", title="Seleções", url_path="selecoes"),
             st.Page("pages/Análise_Performance.py", title="Comparar Perfis", url_path="comparar-perfis"),
+            st.Page("pages/Análise_Temporal.py", title="Análise Temporal", url_path="analise-temporal"),
         ],
     }
 )

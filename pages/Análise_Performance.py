@@ -40,6 +40,29 @@ DISPLAY_METRICS = [
     ("peak_1m_m_min_peak", "Pico 1m"),
 ]
 
+PROFILE_METRIC_GROUPS = {
+    "Volume": [
+        ("dist_m_90", "Distância / 90"),
+        ("active_time_min_90", "Tempo Ativo / 90"),
+        ("hsr_dist_m_90", "Distância HSR / 90"),
+        ("sprint_dist_m_90", "Distância Sprint / 90"),
+    ],
+    "Intensidade": [
+        ("m_min", "m/min"),
+        ("hsr_pct", "HSR %"),
+        ("active_pct", "Ativo %"),
+    ],
+    "Eventos": [
+        ("n_sprints_90", "Nº Sprints / 90"),
+        ("n_acc_2_5_90", "Acc / 90"),
+        ("n_dec_3_0_90", "Dec / 90"),
+    ],
+    "Picos de Fase": [
+        ("vmax_mps_peak", "Vmax Pico"),
+        ("peak_1m_m_min_peak", "Pico 1m"),
+    ],
+}
+
 GAME_DISPLAY_METRICS = [
     ("dist_m_total", "Distância"),
     ("m_min", "m/min"),
@@ -54,6 +77,29 @@ GAME_DISPLAY_METRICS = [
     ("vmax_mps_peak", "Vmax Pico"),
     ("peak_1m_m_min_peak", "Pico 1m"),
 ]
+
+GAME_METRIC_GROUPS = {
+    "Volume": [
+        ("dist_m_total", "Distância"),
+        ("active_time_min_total", "Tempo Ativo"),
+        ("hsr_dist_m_total", "Distância HSR"),
+        ("sprint_dist_m_total", "Distância Sprint"),
+    ],
+    "Intensidade": [
+        ("m_min", "m/min"),
+        ("hsr_pct", "HSR %"),
+        ("active_pct", "Ativo %"),
+    ],
+    "Eventos": [
+        ("n_sprints_total", "Nº Sprints"),
+        ("n_acc_2_5_total", "Acc"),
+        ("n_dec_3_0_total", "Dec"),
+    ],
+    "Picos de Fase": [
+        ("vmax_mps_peak", "Vmax Pico"),
+        ("peak_1m_m_min_peak", "Pico 1m"),
+    ],
+}
 
 SUM_METRICS = [
     "duracao_min",
@@ -299,40 +345,60 @@ def _get_snapshot_display_metrics(snapshot: dict | None) -> list[tuple[str, str]
     return DISPLAY_METRICS
 
 
+def _get_snapshot_metric_groups(snapshot: dict | None) -> dict[str, list[tuple[str, str]]]:
+    if snapshot and snapshot.get("kind") == "session":
+        return GAME_METRIC_GROUPS
+    return PROFILE_METRIC_GROUPS
+
+
 def _build_comparison_table(left_snapshot: dict, right_snapshot: dict) -> pd.DataFrame:
     rows = []
     left_metrics = left_snapshot.get("metrics", {}) if left_snapshot else {}
     right_metrics = right_snapshot.get("metrics", {}) if right_snapshot else {}
-    left_display_metrics = _get_snapshot_display_metrics(left_snapshot)
-    right_display_metrics = _get_snapshot_display_metrics(right_snapshot)
+    left_metric_groups = _get_snapshot_metric_groups(left_snapshot)
+    right_metric_groups = _get_snapshot_metric_groups(right_snapshot)
 
-    for (left_key, left_label), (right_key, right_label) in zip(left_display_metrics, right_display_metrics):
-        left_value = left_metrics.get(left_key, np.nan)
-        right_value = right_metrics.get(right_key, np.nan)
-        values_are_comparable = (
-            left_key == right_key
-            or (left_snapshot and right_snapshot and left_snapshot.get("kind") != right_snapshot.get("kind"))
-        )
-        delta_abs = (
-            float(left_value) - float(right_value)
-            if values_are_comparable and pd.notna(left_value) and pd.notna(right_value)
-            else np.nan
-        )
-        delta_pct = (
-            (delta_abs / float(right_value) * 100.0)
-            if values_are_comparable and pd.notna(delta_abs) and pd.notna(right_value) and float(right_value) != 0
-            else np.nan
-        )
+    for category, left_group_metrics in left_metric_groups.items():
+        right_group_metrics = right_metric_groups.get(category, [])
         rows.append(
             {
-                "Métrica": left_label,
-                "Valor": _format_profile_value(left_key, left_value),
-                "Delta": _format_profile_value(left_key, delta_abs) if values_are_comparable else "-",
-                "Delta %": _format_number(delta_pct, "%"),
-                "Valor ": _format_profile_value(right_key, right_value),
-                "Métrica ": right_label,
+                "Métrica": category,
+                "Valor": "",
+                "Delta": "",
+                "Delta %": "",
+                "Valor ": "",
+                "Métrica ": "",
+                "_is_category": True,
             }
         )
+        for (left_key, left_label), (right_key, right_label) in zip(left_group_metrics, right_group_metrics):
+            left_value = left_metrics.get(left_key, np.nan)
+            right_value = right_metrics.get(right_key, np.nan)
+            values_are_comparable = (
+                left_key == right_key
+                or (left_snapshot and right_snapshot and left_snapshot.get("kind") != right_snapshot.get("kind"))
+            )
+            delta_abs = (
+                float(left_value) - float(right_value)
+                if values_are_comparable and pd.notna(left_value) and pd.notna(right_value)
+                else np.nan
+            )
+            delta_pct = (
+                (delta_abs / float(right_value) * 100.0)
+                if values_are_comparable and pd.notna(delta_abs) and pd.notna(right_value) and float(right_value) != 0
+                else np.nan
+            )
+            rows.append(
+                {
+                    "Métrica": left_label,
+                    "Valor": _format_profile_value(left_key, left_value),
+                    "Delta": _format_profile_value(left_key, delta_abs) if values_are_comparable else "-",
+                    "Delta %": _format_number(delta_pct, "%"),
+                    "Valor ": _format_profile_value(right_key, right_value),
+                    "Métrica ": right_label,
+                    "_is_category": False,
+                }
+            )
 
     return pd.DataFrame(rows)
 
@@ -361,13 +427,21 @@ def _style_delta_value(value: object) -> str:
     return "color: #e5e7eb;"
 
 
+def _style_category_row(row: pd.Series) -> list[str]:
+    if bool(row.get("_is_category", False)):
+        return ["font-weight: 700; background-color: rgba(148, 163, 184, 0.12);"] * (len(row) - 1)
+    return [""] * (len(row) - 1)
+
+
 def _render_comparison_table(df: pd.DataFrame) -> None:
     row_height = 35
     header_height = 38
     table_height = header_height + max(len(df), 1) * row_height + 2
+    style_df = df.reset_index(drop=True)
     styled = (
-        df.reset_index(drop=True)
+        style_df.drop(columns=["_is_category"], errors="ignore")
         .style
+        .apply(lambda row: _style_category_row(style_df.loc[row.name]), axis=1)
         .applymap(_style_delta_value, subset=["Delta", "Delta %"])
         .hide(axis="index")
     )

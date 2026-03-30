@@ -12,6 +12,10 @@ from .constants import (
     SPRINT_MPS,
 )
 
+MAX_VALID_SPEED_MPS = 11.0
+MAX_VALID_STEP_M = 12.0
+MAX_VALID_GAP_S = 2.0
+
 
 def time_to_seconds(series: pd.Series) -> pd.Series:
     """Converte série temporal para segundos desde o início.
@@ -100,6 +104,86 @@ def count_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> int:
             bouts += 1
 
     return bouts
+
+
+def mark_valid_bouts(t: np.ndarray, mask: np.ndarray, min_dur_s: float) -> np.ndarray:
+    """Marca samples pertencentes a bouts válidos com duração mínima."""
+    if t is None or mask is None:
+        return np.array([], dtype=bool)
+    n = min(len(t), len(mask))
+    if n <= 0:
+        return np.array([], dtype=bool)
+
+    t = t[:n]
+    mask = mask[:n]
+    valid_bout_mask = np.zeros(n, dtype=bool)
+    in_bout = False
+    t_start = None
+    start_idx = None
+
+    for i in range(n):
+        if bool(mask[i]) and not in_bout:
+            in_bout = True
+            t_start = float(t[i])
+            start_idx = i
+
+        if (not bool(mask[i])) and in_bout:
+            end_idx = i - 1
+            dur = float(t[end_idx]) - float(t_start) if t_start is not None else 0.0
+            if dur >= float(min_dur_s) and start_idx is not None:
+                valid_bout_mask[start_idx : end_idx + 1] = True
+            in_bout = False
+            t_start = None
+            start_idx = None
+
+    if in_bout and t_start is not None and start_idx is not None:
+        dur = float(t[n - 1]) - float(t_start)
+        if dur >= float(min_dur_s):
+            valid_bout_mask[start_idx:n] = True
+
+    return valid_bout_mask
+
+
+def compute_step_plausibility_stats(
+    dt: np.ndarray,
+    dist_step: np.ndarray,
+    vmax_hard_mps: float = MAX_VALID_SPEED_MPS,
+    jump_hard_m: float = MAX_VALID_STEP_M,
+    gap_hard_s: float = MAX_VALID_GAP_S,
+) -> dict:
+    """Resume quantos steps falham critérios de plausibilidade."""
+    if dt is None or dist_step is None or len(dt) == 0 or len(dist_step) == 0:
+        return {
+            "n_steps_total": 0,
+            "n_steps_filtered_speed": 0,
+            "n_steps_filtered_jump": 0,
+            "n_steps_filtered_gap": 0,
+            "pct_steps_filtered": 0.0,
+            "plausible_mask": np.array([], dtype=bool),
+        }
+
+    v_raw = dist_step / dt
+    filtered_speed = np.isfinite(v_raw) & (v_raw > vmax_hard_mps)
+    filtered_jump = dist_step > jump_hard_m
+    filtered_gap = dt > gap_hard_s
+    plausible_mask = (
+        np.isfinite(v_raw)
+        & (~filtered_speed)
+        & (~filtered_jump)
+        & (~filtered_gap)
+    )
+    n_steps_total = int(len(dt))
+    n_steps_filtered = int((~plausible_mask).sum())
+    pct_steps_filtered = (n_steps_filtered / n_steps_total * 100.0) if n_steps_total > 0 else 0.0
+
+    return {
+        "n_steps_total": n_steps_total,
+        "n_steps_filtered_speed": int(filtered_speed.sum()),
+        "n_steps_filtered_jump": int(filtered_jump.sum()),
+        "n_steps_filtered_gap": int(filtered_gap.sum()),
+        "pct_steps_filtered": float(pct_steps_filtered),
+        "plausible_mask": plausible_mask,
+    }
 
 
 def audit_timebase(df: pd.DataFrame, col_time: str, expected_hz: float = 10.0) -> dict:
@@ -210,7 +294,20 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     if len(dt) == 0:
         return out
 
-    dist_step = np.hypot(dx, dy)
+    step_start_t = t[:-1][good]
+    step_end_t = t[1:][good]
+    dist_step_raw = np.hypot(dx, dy)
+    plausibility = compute_step_plausibility_stats(dt, dist_step_raw)
+    plausible = plausibility["plausible_mask"]
+
+    dist_step = dist_step_raw[plausible]
+    dt = dt[plausible]
+    step_start_t = step_start_t[plausible]
+    step_end_t = step_end_t[plausible]
+
+    if len(dt) == 0:
+        return out
+
     dist_total = float(np.nansum(dist_step))
     dur_s = float(np.nansum(dt))
     dur_min = dur_s / 60.0 if dur_s > 0 else 0.0
@@ -230,7 +327,9 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     acc = np.where(dt2 > 0, dv / dt2, np.nan)
 
     hsr_dist = float(np.nansum(dist_step[v >= HSR_MPS]))
-    sprint_dist = float(np.nansum(dist_step[v >= SPRINT_MPS]))
+    sprint_mask = v >= SPRINT_MPS
+    sprint_bout_mask = mark_valid_bouts(step_end_t, sprint_mask, SPRINT_BOUT_MIN_S)
+    sprint_dist = float(np.nansum(dist_step[sprint_bout_mask]))
     hsr_pct = (hsr_dist / dist_total * 100.0) if dist_total > 0 else np.nan
 
     n_acc = int(np.nansum(acc >= ACC_THR))
@@ -239,7 +338,7 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     dist_cum = np.concatenate([[0.0], np.cumsum(dist_step)])
     # t_cum alinhado com dist_cum (1+len(dist_step)); usamos o t original pós-filter
     # Nota: t[1:] tem comprimento igual a np.diff(t) (antes de filtrar); usamos a mesma máscara good
-    t_cum = np.concatenate([[t[0]], t[1:][good]])
+    t_cum = np.concatenate([[step_start_t[0]], step_end_t])
 
     peak_1m = np.nan
     if len(t_cum) == len(dist_cum) and len(t_cum) > 1:
@@ -254,9 +353,7 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
                     best = dj
         peak_1m = float(best)
 
-    t_mid = t[1:][good]
-    sprint_mask = v >= SPRINT_MPS
-    n_sprints = count_bouts(t_mid, sprint_mask, SPRINT_BOUT_MIN_S)
+    n_sprints = count_bouts(step_end_t, sprint_mask, SPRINT_BOUT_MIN_S)
 
     return {
         "duracao_min": dur_min,

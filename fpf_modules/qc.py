@@ -15,7 +15,7 @@ from typing import Dict, Any, List
 import numpy as np
 import pandas as pd
 
-from .metrics import time_to_seconds
+from .metrics import compute_step_plausibility_stats, time_to_seconds
 
 
 @dataclass
@@ -26,6 +26,8 @@ class QCThresholds:
     vmax_hard_mps: float = 11.0
     jump_hard_m: float = 12.0
     gap_hard_s: float = 2.0
+    pct_steps_filtered_warn: float = 2.0
+    pct_steps_filtered_fail: float = 5.0
 
 
 def qc_gps_df(
@@ -44,6 +46,10 @@ def qc_gps_df(
         "vmax_mps_qc": np.nan,
         "n_jumps_gt15m": 0,
         "n_gaps_gt2s": 0,
+        "n_steps_filtered_speed": 0,
+        "n_steps_filtered_jump": 0,
+        "n_steps_filtered_gap": 0,
+        "pct_steps_filtered": 0.0,
     }
 
     # fase não jogada
@@ -92,6 +98,17 @@ def qc_gps_df(
 
     v = step / dt
     out["vmax_mps_qc"] = float(np.nanmax(v))
+    plausibility = compute_step_plausibility_stats(
+        dt,
+        step,
+        vmax_hard_mps=thr.vmax_hard_mps,
+        jump_hard_m=thr.jump_hard_m,
+        gap_hard_s=thr.gap_hard_s,
+    )
+    out["n_steps_filtered_speed"] = int(plausibility["n_steps_filtered_speed"])
+    out["n_steps_filtered_jump"] = int(plausibility["n_steps_filtered_jump"])
+    out["n_steps_filtered_gap"] = int(plausibility["n_steps_filtered_gap"])
+    out["pct_steps_filtered"] = float(plausibility["pct_steps_filtered"])
 
     flags: List[str] = []
 
@@ -110,7 +127,17 @@ def qc_gps_df(
     if out["n_gaps_gt2s"] > 0:
         flags.append("gaps_gt2s")
 
-    if "low_points" in flags or "low_valid_pct" in flags:
+    if out["n_steps_filtered_speed"] > 0:
+        flags.append("speed_spikes_filtered")
+
+    if out["pct_steps_filtered"] >= thr.pct_steps_filtered_warn:
+        flags.append("many_filtered_steps")
+
+    if (
+        "low_points" in flags
+        or "low_valid_pct" in flags
+        or out["pct_steps_filtered"] >= thr.pct_steps_filtered_fail
+    ):
         grade = "FAIL"
     elif flags:
         grade = "WARN"
