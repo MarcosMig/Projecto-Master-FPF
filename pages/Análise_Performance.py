@@ -40,6 +40,21 @@ DISPLAY_METRICS = [
     ("peak_1m_m_min_peak", "Pico 1m"),
 ]
 
+GAME_DISPLAY_METRICS = [
+    ("dist_m_total", "Distância"),
+    ("m_min", "m/min"),
+    ("hsr_pct", "HSR %"),
+    ("active_pct", "Ativo %"),
+    ("active_time_min_total", "Tempo Ativo"),
+    ("hsr_dist_m_total", "Distância HSR"),
+    ("sprint_dist_m_total", "Distância Sprint"),
+    ("n_sprints_total", "Nº Sprints"),
+    ("n_acc_2_5_total", "Acc"),
+    ("n_dec_3_0_total", "Dec"),
+    ("vmax_mps_peak", "Vmax Pico"),
+    ("peak_1m_m_min_peak", "Pico 1m"),
+]
+
 SUM_METRICS = [
     "duracao_min",
     "dist_m",
@@ -278,32 +293,44 @@ def _build_metric_table(snapshot: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _get_snapshot_display_metrics(snapshot: dict | None) -> list[tuple[str, str]]:
+    if snapshot and snapshot.get("kind") == "session":
+        return GAME_DISPLAY_METRICS
+    return DISPLAY_METRICS
+
+
 def _build_comparison_table(left_snapshot: dict, right_snapshot: dict) -> pd.DataFrame:
     rows = []
     left_metrics = left_snapshot.get("metrics", {}) if left_snapshot else {}
     right_metrics = right_snapshot.get("metrics", {}) if right_snapshot else {}
+    left_display_metrics = _get_snapshot_display_metrics(left_snapshot)
+    right_display_metrics = _get_snapshot_display_metrics(right_snapshot)
 
-    for metric_key, metric_label in DISPLAY_METRICS:
-        left_value = left_metrics.get(metric_key, np.nan)
-        right_value = right_metrics.get(metric_key, np.nan)
+    for (left_key, left_label), (right_key, right_label) in zip(left_display_metrics, right_display_metrics):
+        left_value = left_metrics.get(left_key, np.nan)
+        right_value = right_metrics.get(right_key, np.nan)
+        values_are_comparable = (
+            left_key == right_key
+            or (left_snapshot and right_snapshot and left_snapshot.get("kind") != right_snapshot.get("kind"))
+        )
         delta_abs = (
             float(left_value) - float(right_value)
-            if pd.notna(left_value) and pd.notna(right_value)
+            if values_are_comparable and pd.notna(left_value) and pd.notna(right_value)
             else np.nan
         )
         delta_pct = (
             (delta_abs / float(right_value) * 100.0)
-            if pd.notna(delta_abs) and pd.notna(right_value) and float(right_value) != 0
+            if values_are_comparable and pd.notna(delta_abs) and pd.notna(right_value) and float(right_value) != 0
             else np.nan
         )
         rows.append(
             {
-                "Métrica": metric_label,
-                "Valor": _format_profile_value(metric_key, left_value),
-                "Delta": _format_profile_value(metric_key, delta_abs),
+                "Métrica": left_label,
+                "Valor": _format_profile_value(left_key, left_value),
+                "Delta": _format_profile_value(left_key, delta_abs) if values_are_comparable else "-",
                 "Delta %": _format_number(delta_pct, "%"),
-                "Valor ": _format_profile_value(metric_key, right_value),
-                "Métrica ": metric_label,
+                "Valor ": _format_profile_value(right_key, right_value),
+                "Métrica ": right_label,
             }
         )
 
@@ -406,6 +433,8 @@ def _render_comparison_section(left_snapshot: dict, right_snapshot: dict) -> Non
     _render_comparison_header(left_snapshot, right_snapshot)
     st.markdown(f"<div style='height: {HEADER_GAP_HEIGHT}px;'></div>", unsafe_allow_html=True)
     _render_comparison_table(_build_comparison_table(left_snapshot, right_snapshot))
+    if left_snapshot.get("kind") != right_snapshot.get("kind"):
+        st.caption("Nota: nesta comparação, os totais do jogo são comparados com o perfil de referência normalizado a 90 minutos.")
 
 
 def _resolve_modes(comparison_mode: str) -> tuple[str, str]:
