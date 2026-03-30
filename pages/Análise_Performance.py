@@ -1,3 +1,5 @@
+import html
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -5,7 +7,7 @@ import streamlit as st
 from fpf_modules.supabase_manager import initialize_schema, read_table
 
 
-st.set_page_config(page_title="Análises Individuais", layout="wide")
+st.set_page_config(page_title="Analise de Perfis", layout="wide")
 
 
 PROFILE_OPTIONS = [
@@ -51,10 +53,8 @@ SUM_METRICS = [
 
 PHOTO_WIDTH = 120
 PHOTO_HEIGHT = 120
-TOP_BLOCK_HEIGHT = 160
 LABEL_BLOCK_HEIGHT = 34
 HEADER_GAP_HEIGHT = 20
-DELTA_TOP_HEIGHT = 93
 
 
 def _clean_text(value) -> str:
@@ -278,12 +278,12 @@ def _build_metric_table(snapshot: dict) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _build_delta_table(left_snapshot: dict, right_snapshot: dict) -> pd.DataFrame:
+def _build_comparison_table(left_snapshot: dict, right_snapshot: dict) -> pd.DataFrame:
     rows = []
     left_metrics = left_snapshot.get("metrics", {}) if left_snapshot else {}
     right_metrics = right_snapshot.get("metrics", {}) if right_snapshot else {}
 
-    for metric_key, _metric_label in DISPLAY_METRICS:
+    for metric_key, metric_label in DISPLAY_METRICS:
         left_value = left_metrics.get(metric_key, np.nan)
         right_value = right_metrics.get(metric_key, np.nan)
         delta_abs = (
@@ -298,8 +298,12 @@ def _build_delta_table(left_snapshot: dict, right_snapshot: dict) -> pd.DataFram
         )
         rows.append(
             {
+                "Métrica": metric_label,
+                "Valor": _format_profile_value(metric_key, left_value),
                 "Delta": _format_profile_value(metric_key, delta_abs),
                 "Delta %": _format_number(delta_pct, "%"),
+                "Valor ": _format_profile_value(metric_key, right_value),
+                "Métrica ": metric_label,
             }
         )
 
@@ -330,7 +334,7 @@ def _style_delta_value(value: object) -> str:
     return "color: #e5e7eb;"
 
 
-def _render_delta_table(df: pd.DataFrame) -> None:
+def _render_comparison_table(df: pd.DataFrame) -> None:
     row_height = 35
     header_height = 38
     table_height = header_height + max(len(df), 1) * row_height + 2
@@ -362,31 +366,46 @@ def _render_header_block(snapshot: dict | None) -> None:
             st.markdown(f"<div style='height: {PHOTO_HEIGHT}px;'></div>", unsafe_allow_html=True)
 
 
-def _render_label_block(snapshot: dict) -> None:
+def _render_label_block(snapshot: dict | None) -> None:
     label = snapshot.get("label", "") if snapshot else ""
-    if snapshot and snapshot.get("kind") == "session":
-        st.caption(label)
-    else:
-        st.markdown(f"<div style='height: {LABEL_BLOCK_HEIGHT}px;'></div>", unsafe_allow_html=True)
+    label_text = label if snapshot and snapshot.get("kind") == "session" else ""
+    safe_label = html.escape(str(label_text))
+    st.markdown(
+        f"""
+        <div style="
+            height: {LABEL_BLOCK_HEIGHT}px;
+            display: flex;
+            align-items: flex-start;
+            color: rgb(107, 114, 128);
+            font-size: 0.875rem;
+            line-height: 1.2;
+            overflow: hidden;
+        ">
+            {safe_label}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
-def _render_profile_panel(title: str, snapshot: dict) -> None:
-    st.markdown(f"### {title}")
-    if not snapshot:
-        st.info("Seleciona um item para comparar.")
+def _render_comparison_header(left_snapshot: dict, right_snapshot: dict) -> None:
+    header_left, header_right = st.columns(2, gap="large")
+    with header_left:
+        _render_header_block(left_snapshot)
+        _render_label_block(left_snapshot)
+    with header_right:
+        _render_header_block(right_snapshot)
+        _render_label_block(right_snapshot)
+
+
+def _render_comparison_section(left_snapshot: dict, right_snapshot: dict) -> None:
+    if not left_snapshot or not right_snapshot:
+        st.info("Seleciona um item em ambos os lados para comparar.")
         return
 
-    _render_header_block(snapshot)
-    _render_label_block(snapshot)
+    _render_comparison_header(left_snapshot, right_snapshot)
     st.markdown(f"<div style='height: {HEADER_GAP_HEIGHT}px;'></div>", unsafe_allow_html=True)
-    _render_static_table(_build_metric_table(snapshot))
-
-
-def _render_delta_panel(left_snapshot: dict, right_snapshot: dict) -> None:
-    st.markdown("### Deltas")
-    st.markdown(f"<div style='height: {DELTA_TOP_HEIGHT + LABEL_BLOCK_HEIGHT}px;'></div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='height: {HEADER_GAP_HEIGHT}px;'></div>", unsafe_allow_html=True)
-    _render_delta_table(_build_delta_table(left_snapshot, right_snapshot))
+    _render_comparison_table(_build_comparison_table(left_snapshot, right_snapshot))
 
 
 def _resolve_modes(comparison_mode: str) -> tuple[str, str]:
@@ -397,7 +416,7 @@ def _resolve_modes(comparison_mode: str) -> tuple[str, str]:
     return "Perfil", "Perfil"
 
 
-st.title("Análises Individuais")
+st.title("Analise de Perfis")
 st.caption("Comparação lado a lado entre atletas, perfis e jogos.")
 
 athletes_df = _load_athletes()
@@ -472,13 +491,7 @@ with selector_right:
             st.info("Sem jogos disponíveis para este atleta.")
             right_snapshot = {}
 
-panel_left, panel_delta, panel_right = st.columns([1.2, 1.0, 1.2], gap="large")
-with panel_left:
-    _render_profile_panel(f"{left_mode} Esquerdo", left_snapshot)
-with panel_delta:
-    _render_delta_panel(left_snapshot, right_snapshot)
-with panel_right:
-    _render_profile_panel(f"{right_mode} Direito", right_snapshot)
+_render_comparison_section(left_snapshot, right_snapshot)
 
 st.markdown("## Sessões Utilizadas")
 sessions_left, sessions_right = st.columns(2, gap="large")
