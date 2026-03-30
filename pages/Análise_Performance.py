@@ -26,6 +26,7 @@ COMPARISON_MODES = [
 ]
 
 DISPLAY_METRICS = [
+    ("duracao_min_media", "Minutos Medios"),
     ("dist_m_90", "Distância / 90"),
     ("m_min", "m/min"),
     ("hsr_pct", "HSR %"),
@@ -42,8 +43,9 @@ DISPLAY_METRICS = [
 
 PROFILE_METRIC_GROUPS = {
     "Volume": [
-        ("dist_m_90", "Distância / 90"),
+        ("duracao_min_media", "Minutos Medios"),
         ("active_time_min_90", "Tempo Ativo / 90"),
+        ("dist_m_90", "Distância / 90"),
         ("hsr_dist_m_90", "Distância HSR / 90"),
         ("sprint_dist_m_90", "Distância Sprint / 90"),
     ],
@@ -64,6 +66,7 @@ PROFILE_METRIC_GROUPS = {
 }
 
 GAME_DISPLAY_METRICS = [
+    ("duracao_min_total", "Minutos"),
     ("dist_m_total", "Distância"),
     ("m_min", "m/min"),
     ("hsr_pct", "HSR %"),
@@ -80,8 +83,9 @@ GAME_DISPLAY_METRICS = [
 
 GAME_METRIC_GROUPS = {
     "Volume": [
-        ("dist_m_total", "Distância"),
+        ("duracao_min_total", "Minutos"),
         ("active_time_min_total", "Tempo Ativo"),
+        ("dist_m_total", "Distância"),
         ("hsr_dist_m_total", "Distância HSR"),
         ("sprint_dist_m_total", "Distância Sprint"),
     ],
@@ -214,6 +218,7 @@ def _aggregate_profile(df: pd.DataFrame) -> dict:
     agg["n_sessoes"] = int(df["session_sk"].nunique()) if "session_sk" in df.columns else int(len(df))
     agg["primeira_data"] = df["data"].min() if "data" in df.columns else pd.NaT
     agg["ultima_data"] = df["data"].max() if "data" in df.columns else pd.NaT
+    agg["duracao_min_media"] = (dur / agg["n_sessoes"]) if pd.notna(dur) and agg["n_sessoes"] > 0 else np.nan
     agg["m_min"] = (dist / dur) if pd.notna(dur) and dur > 0 else np.nan
     agg["hsr_pct"] = (hsr / dist * 100.0) if pd.notna(dist) and dist > 0 else np.nan
     agg["active_pct"] = (active_time / dur * 100.0) if pd.notna(dur) and dur > 0 else np.nan
@@ -321,8 +326,29 @@ def _format_number(value, suffix: str = "") -> str:
 def _format_profile_value(metric_key: str, value) -> str:
     if metric_key.endswith("_pct"):
         return _format_number(value, "%")
-    if metric_key in {"n_sprints_90", "n_acc_2_5_90", "n_dec_3_0_90"}:
-        return _format_number(value)
+    if metric_key in {
+        "duracao_min_total",
+        "duracao_min_media",
+        "dist_m_total",
+        "dist_m_90",
+        "active_time_min_total",
+        "active_time_min_90",
+        "hsr_dist_m_total",
+        "hsr_dist_m_90",
+        "sprint_dist_m_total",
+        "sprint_dist_m_90",
+        "peak_1m_m_min_peak",
+    }:
+        return "-" if value is None or pd.isna(value) else f"{round(float(value)):.0f}"
+    if metric_key in {
+        "n_sprints_total",
+        "n_acc_2_5_total",
+        "n_dec_3_0_total",
+        "n_sprints_90",
+        "n_acc_2_5_90",
+        "n_dec_3_0_90",
+    }:
+        return "-" if value is None or pd.isna(value) else f"{round(float(value)):.0f}"
     return _format_number(value)
 
 
@@ -605,8 +631,11 @@ with sessions_left:
     if left_sessions.empty:
         st.info("Sem sessões para este lado.")
     else:
-        cols = [c for c in ["data", "contexto", "jogo", "duracao_min", "dist_m", "m_min", "vmax_mps"] if c in left_sessions.columns]
-        st.dataframe(left_sessions[cols].sort_values("data", ascending=False), use_container_width=True, hide_index=True)
+        cols = [c for c in ["data", "contexto", "jogo", "duracao_min"] if c in left_sessions.columns]
+        left_display = left_sessions[cols].sort_values("data", ascending=False).copy()
+        if "duracao_min" in left_display.columns:
+            left_display["duracao_min"] = pd.to_numeric(left_display["duracao_min"], errors="coerce").round().astype("Int64")
+        st.dataframe(left_display, use_container_width=True, hide_index=True)
 
 with sessions_right:
     st.caption(f"Sessões usadas no lado direito ({right_mode.lower()})")
@@ -614,5 +643,8 @@ with sessions_right:
     if right_sessions.empty:
         st.info("Sem sessões para este lado.")
     else:
-        cols = [c for c in ["data", "contexto", "jogo", "duracao_min", "dist_m", "m_min", "vmax_mps"] if c in right_sessions.columns]
-        st.dataframe(right_sessions[cols].sort_values("data", ascending=False), use_container_width=True, hide_index=True)
+        cols = [c for c in ["data", "contexto", "jogo", "duracao_min"] if c in right_sessions.columns]
+        right_display = right_sessions[cols].sort_values("data", ascending=False).copy()
+        if "duracao_min" in right_display.columns:
+            right_display["duracao_min"] = pd.to_numeric(right_display["duracao_min"], errors="coerce").round().astype("Int64")
+        st.dataframe(right_display, use_container_width=True, hide_index=True)

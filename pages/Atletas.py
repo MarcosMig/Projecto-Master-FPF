@@ -113,6 +113,108 @@ def _load_athletes() -> pd.DataFrame:
     return df.sort_values(["ativo", "nome", "atleta_id"], ascending=[False, True, True], na_position="last")
 
 
+def _first_non_empty_value(series: pd.Series) -> str:
+    for value in series:
+        cleaned = _clean_text_value(value)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def _join_unique_values(series: pd.Series) -> str:
+    values = []
+    for value in series:
+        cleaned = _clean_text_value(value)
+        if cleaned and cleaned not in values:
+            values.append(cleaned)
+    return ", ".join(values)
+
+
+def _session_minutes_from_group(group: pd.DataFrame) -> float:
+    phase_series = group.get("fase", pd.Series(dtype="object")).map(_clean_text_value)
+    duration_series = pd.to_numeric(group.get("duracao_min", pd.Series(dtype="float64")), errors="coerce").fillna(0.0)
+
+    total_mask = phase_series.eq("Total")
+    if total_mask.any():
+        return float(duration_series[total_mask].max())
+
+    return float(duration_series[~total_mask].sum())
+
+
+@st.cache_data(show_spinner=False)
+def _load_athlete_history() -> pd.DataFrame:
+    initialize_schema()
+    perf_df = read_table("performance_metrics")
+    sessions_df = read_table("sessions")
+
+    if perf_df is None or perf_df.empty:
+        return pd.DataFrame(columns=["atleta_id", "Data", "Selecao", "Tipo", "Evento", "Minutos", "_sort_date"])
+
+    perf_df = perf_df.copy()
+    for col in ["atleta_id", "contexto", "jogo", "fase", "selecao"]:
+        if col not in perf_df.columns:
+            perf_df[col] = ""
+        perf_df[col] = perf_df[col].map(_clean_text_value)
+    if "duracao_min" not in perf_df.columns:
+        perf_df["duracao_min"] = 0.0
+
+    if "session_sk" not in perf_df.columns:
+        perf_df["session_sk"] = pd.NA
+    perf_df["session_sk"] = pd.to_numeric(perf_df["session_sk"], errors="coerce")
+    perf_df["data"] = pd.to_datetime(perf_df.get("data"), errors="coerce")
+    perf_df["duracao_min"] = pd.to_numeric(perf_df["duracao_min"], errors="coerce").fillna(0.0)
+
+    if sessions_df is None or sessions_df.empty:
+        sessions_df = pd.DataFrame(columns=["session_sk", "started_at"])
+    else:
+        sessions_df = sessions_df.copy()
+        if "session_sk" not in sessions_df.columns:
+            sessions_df["session_sk"] = pd.NA
+        sessions_df["session_sk"] = pd.to_numeric(sessions_df["session_sk"], errors="coerce")
+        sessions_df["started_at"] = pd.to_datetime(sessions_df.get("started_at"), errors="coerce")
+        sessions_df = sessions_df[["session_sk", "started_at"]].drop_duplicates(subset=["session_sk"], keep="last")
+
+    history_df = perf_df.merge(sessions_df, on="session_sk", how="left")
+    history_df = history_df[history_df["atleta_id"].ne("")].copy()
+
+    grouped = (
+        history_df.groupby(["atleta_id", "session_sk"], dropna=False)
+        .apply(
+            lambda group: pd.Series({
+                "data": group["data"].max(),
+                "started_at": group["started_at"].max(),
+                "selecao": _first_non_empty_value(group["selecao"]),
+                "contexto": _first_non_empty_value(group["contexto"]),
+                "jogo": _first_non_empty_value(group["jogo"]),
+                "minutos": _session_minutes_from_group(group),
+            })
+        )
+        .reset_index()
+    )
+
+    grouped["_sort_date"] = grouped["started_at"].fillna(grouped["data"])
+    grouped["Data"] = grouped["_sort_date"].dt.strftime("%d/%m/%Y")
+    grouped["Data"] = grouped["Data"].fillna(
+        pd.to_datetime(grouped["data"], errors="coerce").dt.strftime("%d/%m/%Y")
+    ).fillna("-")
+    grouped["Selecao"] = grouped["selecao"].replace("", "-")
+    grouped["Tipo"] = grouped["contexto"].replace("", "-")
+    grouped["Evento"] = grouped.apply(
+        lambda item: item["jogo"]
+        if item["contexto"] == "Jogo" and _clean_text_value(item["jogo"])
+        else (item["contexto"] if _clean_text_value(item["contexto"]) else "-"),
+        axis=1,
+    )
+    grouped["Minutos"] = grouped["minutos"].map(lambda value: f"{round(float(value)):.0f}")
+
+    grouped = grouped.sort_values(
+        by=["_sort_date", "Data", "Tipo", "Evento"],
+        ascending=[True, True, True, True],
+        na_position="last",
+    )
+    return grouped[["atleta_id", "Data", "Selecao", "Tipo", "Evento", "Minutos", "_sort_date"]]
+
+
 def _save_athletes(df: pd.DataFrame) -> None:
     initialize_schema()
     save_df = df.copy()
@@ -214,27 +316,18 @@ def _save_athlete_details(
     _save_athletes(updated_row)
 
 
-def _render_athlete_ficha(row: pd.Series) -> None:
+def _render_athlete_ficha(row: pd.Series, history_df: pd.DataFrame) -> None:
     athlete_name = _clean_text_value(row.get("nome")) or _clean_text_value(row.get("atleta_id")) or "Atleta"
     with st.expander(athlete_name, expanded=False):
+        edit_key = f"edit_mode_{_clean_text_value(row.get('atleta_id'))}"
         left_col, right_col = st.columns([1.0, 1.8], gap="large")
 
         with left_col:
             foto_url = _clean_text_value(row.get("foto_url"))
             if foto_url:
-                st.image(foto_url, use_container_width=True)
+                st.image(foto_url, width=220)
             else:
                 st.caption("Sem foto registada.")
-            foto_update = st.file_uploader(
-                "Atualizar foto",
-                type=["png", "jpg", "jpeg", "webp"],
-                key=f"update_photo_{_clean_text_value(row.get('atleta_id'))}",
-            )
-            if foto_update is not None:
-                if st.button("Guardar foto", key=f"save_photo_{_clean_text_value(row.get('atleta_id'))}"):
-                    _save_athlete_photo(row, foto_update)
-                    st.success("Foto atualizada com sucesso.")
-                    st.rerun()
 
         with right_col:
             nome, sobrenome = _split_full_name(row.get("nome"))
@@ -251,19 +344,17 @@ def _render_athlete_ficha(row: pd.Series) -> None:
 
             st.caption(f"ID interno: {_clean_text_value(row.get('atleta_id')) or '-'}")
 
-            action_col1, action_col2 = st.columns(2)
-            edit_key = f"edit_mode_{_clean_text_value(row.get('atleta_id'))}"
+        st.markdown("**Historico do atleta**")
+        athlete_history = history_df[
+            history_df["atleta_id"].eq(_clean_text_value(row.get("atleta_id")))
+        ][["Data", "Tipo", "Evento", "Fases"]].copy()
 
-            if action_col1.button("Editar atleta", key=f"edit_{_clean_text_value(row.get('atleta_id'))}"):
-                st.session_state[edit_key] = not st.session_state.get(edit_key, False)
-                st.rerun()
+        if athlete_history.empty:
+            st.caption("Sem jogos ou treinos registados para este atleta.")
+        else:
+            st.dataframe(athlete_history, hide_index=True, use_container_width=True)
 
-            if action_col2.button("Eliminar atleta", key=f"delete_{_clean_text_value(row.get('atleta_id'))}"):
-                _delete_athlete(_clean_text_value(row.get("atleta_id")), _clean_text_value(row.get("foto_url")))
-                st.success("Atleta eliminado com sucesso.")
-                st.rerun()
-
-            if st.session_state.get(edit_key, False):
+        if st.session_state.get(edit_key, False):
                 st.markdown("**Editar atleta**")
                 default_nome, default_sobrenome = _split_full_name(row.get("nome"))
                 with st.form(f"edit_athlete_form_{_clean_text_value(row.get('atleta_id'))}"):
@@ -307,10 +398,125 @@ def _render_athlete_ficha(row: pd.Series) -> None:
                     st.rerun()
 
 
+def _render_athlete_ficha(row: pd.Series, history_df: pd.DataFrame) -> None:
+    athlete_name = _clean_text_value(row.get("nome")) or _clean_text_value(row.get("atleta_id")) or "Atleta"
+    edit_key = f"edit_mode_{_clean_text_value(row.get('atleta_id'))}"
+    genero_label = _genero_code_to_label(row.get("genero")) or "-"
+
+    with st.expander(athlete_name, expanded=False):
+        left_col, right_col = st.columns([0.75, 2.25], gap="large", vertical_alignment="bottom")
+
+        with left_col:
+            foto_url = _clean_text_value(row.get("foto_url"))
+            if foto_url:
+                st.image(foto_url, width=170)
+            else:
+                st.caption("Sem foto registada.")
+
+        with right_col:
+            nome, sobrenome = _split_full_name(row.get("nome"))
+            ativo_label = "Sim" if bool(row.get("ativo")) else "Nao"
+            info_left, info_right = st.columns(2)
+            info_left.markdown(f"**Nome:** {nome or '-'}")
+            info_left.markdown(f"**Sobrenome:** {sobrenome or '-'}")
+            info_left.markdown(f"**Nascimento:** {_format_birth_date(row.get('data_nascimento'))}")
+            info_right.markdown(f"**Genero:** {genero_label}")
+            info_right.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
+            info_right.markdown(f"**Ativo:** {ativo_label}")
+            st.caption(f"ID interno: {_clean_text_value(row.get('atleta_id')) or '-'}")
+
+        st.markdown("**Historico do atleta**")
+        athlete_history = history_df[
+            history_df["atleta_id"].eq(_clean_text_value(row.get("atleta_id")))
+        ][["Data", "Selecao", "Tipo", "Evento", "Minutos"]].copy()
+
+        if athlete_history.empty:
+            st.caption("Sem jogos ou treinos registados para este atleta.")
+        else:
+            st.dataframe(athlete_history, hide_index=True, use_container_width=True)
+
+        if st.session_state.get(edit_key, False):
+            st.divider()
+            st.markdown("**Editar atleta**")
+            edit_photo_col, edit_form_col = st.columns([1.0, 1.8], gap="large")
+
+            with edit_photo_col:
+                st.markdown("**Foto do atleta**")
+                foto_update = st.file_uploader(
+                    "Atualizar foto",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    key=f"update_photo_{_clean_text_value(row.get('atleta_id'))}",
+                )
+                if foto_update is not None:
+                    st.image(foto_update, width=220)
+                elif _clean_text_value(row.get("foto_url")):
+                    st.caption("Mantem-se a foto atual.")
+
+                if st.button("Guardar foto", key=f"save_photo_{_clean_text_value(row.get('atleta_id'))}"):
+                    if foto_update is None:
+                        st.warning("Seleciona uma nova foto antes de guardar.")
+                    else:
+                        _save_athlete_photo(row, foto_update)
+                        st.success("Foto atualizada com sucesso.")
+                        st.rerun()
+
+            with edit_form_col:
+                default_nome, default_sobrenome = _split_full_name(row.get("nome"))
+                with st.form(f"edit_athlete_form_v2_{_clean_text_value(row.get('atleta_id'))}"):
+                    form_col1, form_col2 = st.columns(2)
+                    nome_edit = form_col1.text_input("Nome", value=default_nome)
+                    sobrenome_edit = form_col2.text_input("Sobrenome", value=default_sobrenome)
+
+                    form_col3, form_col4, form_col5 = st.columns(3)
+                    data_edit = form_col3.date_input(
+                        "Data de nascimento",
+                        value=row.get("data_nascimento") if pd.notna(row.get("data_nascimento")) else None,
+                        format="DD/MM/YYYY",
+                    )
+                    genero_edit = form_col4.selectbox(
+                        "Genero",
+                        GENDER_OPTIONS,
+                        index=GENDER_OPTIONS.index(genero_label) if genero_label in GENDER_OPTIONS else 0,
+                    )
+                    posicao_edit = form_col5.selectbox(
+                        "Posicao",
+                        ATHLETE_POSITIONS,
+                        index=ATHLETE_POSITIONS.index(_clean_text_value(row.get("posicao")))
+                        if _clean_text_value(row.get("posicao")) in ATHLETE_POSITIONS else 0,
+                    )
+                    ativo_edit = st.checkbox("Ativo", value=bool(row.get("ativo")))
+                    save_edit = st.form_submit_button("Guardar alteracoes", type="primary")
+
+                if save_edit:
+                    _save_athlete_details(
+                        row,
+                        nome_edit,
+                        sobrenome_edit,
+                        data_edit,
+                        genero_edit,
+                        posicao_edit,
+                        ativo_edit,
+                    )
+                    st.session_state[edit_key] = False
+                    st.success("Atleta atualizado com sucesso.")
+                    st.rerun()
+
+        st.divider()
+        action_col1, action_col2 = st.columns(2)
+        if action_col1.button("Editar atleta", key=f"edit_v2_{_clean_text_value(row.get('atleta_id'))}"):
+            st.session_state[edit_key] = not st.session_state.get(edit_key, False)
+            st.rerun()
+        if action_col2.button("Eliminar atleta", key=f"delete_v2_{_clean_text_value(row.get('atleta_id'))}"):
+            _delete_athlete(_clean_text_value(row.get("atleta_id")), _clean_text_value(row.get("foto_url")))
+            st.success("Atleta eliminado com sucesso.")
+            st.rerun()
+
+
 st.title("Atletas")
 st.caption("Consulta e cria fichas base de atleta para enriquecer a base analitica.")
 
 athletes_df = _load_athletes()
+athlete_history_df = _load_athlete_history()
 tab_view, tab_insert = st.tabs(["Visualizar", "Inserir"])
 
 with tab_view:
@@ -332,7 +538,7 @@ with tab_view:
         st.info("Sem atletas registados para este filtro.")
     else:
         for _, athlete_row in view_df.reset_index(drop=True).iterrows():
-            _render_athlete_ficha(athlete_row)
+            _render_athlete_ficha(athlete_row, athlete_history_df)
 
 with tab_insert:
     st.subheader("Novo atleta")
