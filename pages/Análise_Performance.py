@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+from fpf_modules.draft_manager import ensure_draft_session_state
 from fpf_modules.supabase_manager import initialize_schema, read_table
 
 
@@ -20,8 +21,6 @@ PROFILE_OPTIONS = [
 ]
 
 COMPARISON_MODES = [
-    "Perfil vs Perfil",
-    "Jogo vs Perfil",
     "Jogo vs Jogo",
 ]
 
@@ -129,36 +128,18 @@ def _clean_text(value) -> str:
     return "" if text in {"", "None", "nan", "NaT", "<NA>"} else text
 
 
-@st.cache_data(show_spinner=False, ttl=300)
-def _load_athletes() -> pd.DataFrame:
-    initialize_schema()
-    df = read_table("athletes")
-    if df is None or df.empty:
-        return pd.DataFrame(columns=["atleta_id", "nome", "foto_url", "posicao", "genero", "ativo"])
-
-    for col in ["atleta_id", "nome", "foto_url", "posicao", "genero"]:
-        if col not in df.columns:
-            df[col] = pd.NA
-        df[col] = df[col].map(_clean_text)
-
-    if "ativo" not in df.columns:
-        df["ativo"] = True
-    df["ativo"] = df["ativo"].fillna(True).astype(bool)
-
-    return (
-        df[df["atleta_id"].ne("") & df["ativo"]]
-        .drop_duplicates(subset=["atleta_id"], keep="last")
-        .sort_values(["nome", "atleta_id"], na_position="last")
-        .reset_index(drop=True)
-    )
-
-
-@st.cache_data(show_spinner=False, ttl=300)
-def _load_perf_sessions() -> pd.DataFrame:
-    initialize_schema()
-    df = read_table("vw_perf_total_session")
+def _load_draft_perf_sessions() -> pd.DataFrame:
+    ensure_draft_session_state()
+    df = st.session_state.get("df_perf")
     if df is None or df.empty:
         return pd.DataFrame()
+
+    df = df.copy()
+    if "fase" in df.columns:
+        fase_clean = df["fase"].map(_clean_text)
+        total_df = df[fase_clean.eq("Total")].copy()
+        if not total_df.empty:
+            df = total_df
 
     numeric_cols = [
         "duracao_min",
@@ -182,11 +163,37 @@ def _load_perf_sessions() -> pd.DataFrame:
 
     if "data" in df.columns:
         df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    if "session_sk" not in df.columns:
+        if "session_id_hex" in df.columns:
+            df["session_sk"] = df["session_id_hex"].map(_clean_text)
+        elif "session_fingerprint" in df.columns:
+            df["session_sk"] = df["session_fingerprint"].map(_clean_text)
+        else:
+            df["session_sk"] = "draft-session"
+    else:
+        df["session_sk"] = df["session_sk"].map(_clean_text)
+
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
     return df
+
+
+def _build_draft_athletes(perf_df: pd.DataFrame) -> pd.DataFrame:
+    if perf_df is None or perf_df.empty or "atleta_id" not in perf_df.columns:
+        return pd.DataFrame(columns=["atleta_id", "nome", "foto_url", "posicao", "genero", "ativo"])
+
+    athletes_df = pd.DataFrame({
+        "atleta_id": perf_df["atleta_id"].map(_clean_text),
+    })
+    athletes_df = athletes_df[athletes_df["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
+    athletes_df["nome"] = athletes_df["atleta_id"]
+    athletes_df["foto_url"] = ""
+    athletes_df["posicao"] = ""
+    athletes_df["genero"] = ""
+    athletes_df["ativo"] = True
+    return athletes_df.sort_values(["nome", "atleta_id"], na_position="last").reset_index(drop=True)
 
 
 def _parse_profile_option(profile_option: str) -> tuple[str, int | None]:
@@ -263,7 +270,7 @@ def _build_profile_snapshot(
     }
 
 
-def _build_session_option_map(perf_df: pd.DataFrame, athlete_id: str, contexto: str = "Jogo") -> tuple[list[int], dict[int, str]]:
+def _build_session_option_map(perf_df: pd.DataFrame, athlete_id: str, contexto: str = "Jogo") -> tuple[list[str], dict[str, str]]:
     df_athlete = perf_df[
         perf_df["atleta_id"].eq(athlete_id) &
         perf_df["contexto"].eq(contexto)
@@ -275,7 +282,9 @@ def _build_session_option_map(perf_df: pd.DataFrame, athlete_id: str, contexto: 
     options = []
     labels = {}
     for _, row in df_athlete.iterrows():
-        session_sk = int(row["session_sk"])
+        session_sk = _clean_text(row.get("session_sk"))
+        if not session_sk:
+            continue
         if session_sk in labels:
             continue
         data_txt = pd.to_datetime(row["data"]).strftime("%d/%m/%Y") if pd.notna(row.get("data")) else "-"
@@ -289,7 +298,7 @@ def _build_session_snapshot(
     athletes_df: pd.DataFrame,
     perf_df: pd.DataFrame,
     athlete_id: str,
-    session_sk: int,
+    session_sk: str,
 ) -> dict:
     athlete_row = athletes_df[athletes_df["atleta_id"].eq(athlete_id)].head(1)
     if athlete_row.empty:
@@ -546,79 +555,71 @@ def _resolve_modes(comparison_mode: str) -> tuple[str, str]:
 
 
 st.title("Analise de Perfis")
-st.caption("Comparação lado a lado entre atletas, perfis e jogos.")
+st.caption("Comparação Jogo vs Jogo entre os atleta_id carregados na sessão em draft.")
 
-athletes_df = _load_athletes()
-perf_df = _load_perf_sessions()
-
-if athletes_df.empty:
-    st.warning("Sem atletas ativos na base de dados.")
-    st.stop()
+perf_df = _load_draft_perf_sessions()
+athletes_df = _build_draft_athletes(perf_df)
 
 if perf_df.empty:
-    st.warning("Sem dados de performance disponíveis para construir perfis.")
+    st.warning("Sem dados em draft disponiveis. Processa uma sessao e usa 'Visualizar / Download' para ativar esta pagina.")
+    st.stop()
+
+if athletes_df.empty:
+    st.warning("Sem atleta_id carregados no draft atual.")
     st.stop()
 
 athlete_display_map = {
-    row["atleta_id"]: f"{_clean_text(row['nome'])} ({_clean_text(row['atleta_id'])})"
+    row["atleta_id"]: _clean_text(row["atleta_id"])
     for _, row in athletes_df.iterrows()
 }
 athlete_options = list(athlete_display_map.keys())
 
-comparison_mode = st.selectbox("Modo de comparação", options=COMPARISON_MODES)
+comparison_mode = st.selectbox("Modo de comparação", options=COMPARISON_MODES, index=0, disabled=True)
 left_mode, right_mode = _resolve_modes(comparison_mode)
 
 selector_left, selector_right = st.columns(2, gap="large")
 
 with selector_left:
     athlete_left = st.selectbox(
-        "Atleta",
+        "Atleta ID",
         options=athlete_options,
         format_func=lambda aid: athlete_display_map.get(aid, aid),
         key="athlete_compare_left",
     )
-    if left_mode == "Perfil":
-        profile_left = st.selectbox("Perfil", options=PROFILE_OPTIONS, key="profile_compare_left")
-        left_snapshot = _build_profile_snapshot(athletes_df, perf_df, athlete_left, profile_left)
+    left_game_options, left_game_map = _build_session_option_map(perf_df, athlete_left, contexto="Jogo")
+    if left_game_options:
+        left_game = st.selectbox(
+            "Jogo",
+            options=left_game_options,
+            format_func=lambda sid: left_game_map.get(sid, str(sid)),
+            key="session_compare_left",
+        )
+        left_snapshot = _build_session_snapshot(athletes_df, perf_df, athlete_left, left_game)
     else:
-        left_game_options, left_game_map = _build_session_option_map(perf_df, athlete_left, contexto="Jogo")
-        if left_game_options:
-            left_game = st.selectbox(
-                "Jogo",
-                options=left_game_options,
-                format_func=lambda sid: left_game_map.get(sid, str(sid)),
-                key="session_compare_left",
-            )
-            left_snapshot = _build_session_snapshot(athletes_df, perf_df, athlete_left, left_game)
-        else:
-            st.info("Sem jogos disponíveis para este atleta.")
-            left_snapshot = {}
+        st.info("Sem jogos disponiveis para este atleta_id em draft.")
+        left_snapshot = {}
 
 with selector_right:
     default_right_index = 1 if len(athlete_options) > 1 else 0
     athlete_right = st.selectbox(
-        "Atleta",
+        "Atleta ID",
         options=athlete_options,
         index=default_right_index,
         format_func=lambda aid: athlete_display_map.get(aid, aid),
         key="athlete_compare_right",
     )
-    if right_mode == "Perfil":
-        profile_right = st.selectbox("Perfil", options=PROFILE_OPTIONS, key="profile_compare_right")
-        right_snapshot = _build_profile_snapshot(athletes_df, perf_df, athlete_right, profile_right)
+    right_game_options, right_game_map = _build_session_option_map(perf_df, athlete_right, contexto="Jogo")
+    if right_game_options:
+        right_game = st.selectbox(
+            "Jogo",
+            options=right_game_options,
+            format_func=lambda sid: right_game_map.get(sid, str(sid)),
+            key="session_compare_right",
+        )
+        right_snapshot = _build_session_snapshot(athletes_df, perf_df, athlete_right, right_game)
     else:
-        right_game_options, right_game_map = _build_session_option_map(perf_df, athlete_right, contexto="Jogo")
-        if right_game_options:
-            right_game = st.selectbox(
-                "Jogo",
-                options=right_game_options,
-                format_func=lambda sid: right_game_map.get(sid, str(sid)),
-                key="session_compare_right",
-            )
-            right_snapshot = _build_session_snapshot(athletes_df, perf_df, athlete_right, right_game)
-        else:
-            st.info("Sem jogos disponíveis para este atleta.")
-            right_snapshot = {}
+        st.info("Sem jogos disponiveis para este atleta_id em draft.")
+        right_snapshot = {}
 
 _render_comparison_section(left_snapshot, right_snapshot)
 
