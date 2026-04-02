@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from fpf_modules.draft_manager import ensure_draft_session_state
 from fpf_modules.supabase_manager import initialize_schema, read_table
 
 
@@ -13,27 +12,29 @@ st.set_page_config(page_title="Analise de Perfis", layout="wide")
 
 PROFILE_OPTIONS = [
     "Jogo | Global",
-    "Jogo | Últimos 5",
-    "Jogo | Últimos 10",
+    "Jogo | Ultimos 5",
+    "Jogo | Ultimos 10",
     "Treino | Global",
-    "Treino | Últimos 5",
-    "Treino | Últimos 10",
+    "Treino | Ultimos 5",
+    "Treino | Ultimos 10",
 ]
 
 COMPARISON_MODES = [
+    "Perfil vs Perfil",
+    "Jogo vs Perfil",
     "Jogo vs Jogo",
 ]
 
 DISPLAY_METRICS = [
     ("duracao_min_media", "Minutos Medios"),
-    ("dist_m_90", "Distância / 90"),
+    ("dist_m_90", "Distancia / 90"),
     ("m_min", "m/min"),
     ("hsr_pct", "HSR %"),
     ("active_pct", "Ativo %"),
     ("active_time_min_90", "Tempo Ativo / 90"),
-    ("hsr_dist_m_90", "Distância HSR / 90"),
-    ("sprint_dist_m_90", "Distância Sprint / 90"),
-    ("n_sprints_90", "Nº Sprints / 90"),
+    ("hsr_dist_m_90", "Distancia HSR / 90"),
+    ("sprint_dist_m_90", "Distancia Sprint / 90"),
+    ("n_sprints_90", "N Sprints / 90"),
     ("n_acc_2_5_90", "Acc / 90"),
     ("n_dec_3_0_90", "Dec / 90"),
     ("vmax_mps_peak", "Vmax Pico"),
@@ -44,9 +45,9 @@ PROFILE_METRIC_GROUPS = {
     "Volume": [
         ("duracao_min_media", "Minutos Medios"),
         ("active_time_min_90", "Tempo Ativo / 90"),
-        ("dist_m_90", "Distância / 90"),
-        ("hsr_dist_m_90", "Distância HSR / 90"),
-        ("sprint_dist_m_90", "Distância Sprint / 90"),
+        ("dist_m_90", "Distancia / 90"),
+        ("hsr_dist_m_90", "Distancia HSR / 90"),
+        ("sprint_dist_m_90", "Distancia Sprint / 90"),
     ],
     "Intensidade": [
         ("m_min", "m/min"),
@@ -54,7 +55,7 @@ PROFILE_METRIC_GROUPS = {
         ("active_pct", "Ativo %"),
     ],
     "Eventos": [
-        ("n_sprints_90", "Nº Sprints / 90"),
+        ("n_sprints_90", "N Sprints / 90"),
         ("n_acc_2_5_90", "Acc / 90"),
         ("n_dec_3_0_90", "Dec / 90"),
     ],
@@ -66,14 +67,14 @@ PROFILE_METRIC_GROUPS = {
 
 GAME_DISPLAY_METRICS = [
     ("duracao_min_total", "Minutos"),
-    ("dist_m_total", "Distância"),
+    ("dist_m_total", "Distancia"),
     ("m_min", "m/min"),
     ("hsr_pct", "HSR %"),
     ("active_pct", "Ativo %"),
     ("active_time_min_total", "Tempo Ativo"),
-    ("hsr_dist_m_total", "Distância HSR"),
-    ("sprint_dist_m_total", "Distância Sprint"),
-    ("n_sprints_total", "Nº Sprints"),
+    ("hsr_dist_m_total", "Distancia HSR"),
+    ("sprint_dist_m_total", "Distancia Sprint"),
+    ("n_sprints_total", "N Sprints"),
     ("n_acc_2_5_total", "Acc"),
     ("n_dec_3_0_total", "Dec"),
     ("vmax_mps_peak", "Vmax Pico"),
@@ -84,9 +85,9 @@ GAME_METRIC_GROUPS = {
     "Volume": [
         ("duracao_min_total", "Minutos"),
         ("active_time_min_total", "Tempo Ativo"),
-        ("dist_m_total", "Distância"),
-        ("hsr_dist_m_total", "Distância HSR"),
-        ("sprint_dist_m_total", "Distância Sprint"),
+        ("dist_m_total", "Distancia"),
+        ("hsr_dist_m_total", "Distancia HSR"),
+        ("sprint_dist_m_total", "Distancia Sprint"),
     ],
     "Intensidade": [
         ("m_min", "m/min"),
@@ -94,7 +95,7 @@ GAME_METRIC_GROUPS = {
         ("active_pct", "Ativo %"),
     ],
     "Eventos": [
-        ("n_sprints_total", "Nº Sprints"),
+        ("n_sprints_total", "N Sprints"),
         ("n_acc_2_5_total", "Acc"),
         ("n_dec_3_0_total", "Dec"),
     ],
@@ -128,13 +129,36 @@ def _clean_text(value) -> str:
     return "" if text in {"", "None", "nan", "NaT", "<NA>"} else text
 
 
-def _load_draft_perf_sessions() -> pd.DataFrame:
-    ensure_draft_session_state()
-    df = st.session_state.get("df_perf")
+@st.cache_data(show_spinner=False, ttl=300)
+def _load_athletes() -> pd.DataFrame:
+    initialize_schema()
+    df = read_table("athletes")
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["atleta_id", "nome", "foto_url", "posicao", "genero", "ativo"])
+
+    for col in ["atleta_id", "nome", "foto_url", "posicao", "genero"]:
+        if col not in df.columns:
+            df[col] = pd.NA
+        df[col] = df[col].map(_clean_text)
+
+    if "ativo" not in df.columns:
+        df["ativo"] = True
+    df["ativo"] = df["ativo"].fillna(True).astype(bool)
+
+    return (
+        df[df["atleta_id"].ne("") & df["ativo"]]
+        .drop_duplicates(subset=["atleta_id"], keep="last")
+        .sort_values(["nome", "atleta_id"], na_position="last")
+        .reset_index(drop=True)
+    )
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def _load_perf_sessions() -> pd.DataFrame:
+    initialize_schema()
+    df = read_table("vw_perf_total_session")
     if df is None or df.empty:
         return pd.DataFrame()
-
-    df = df.copy()
 
     numeric_cols = [
         "duracao_min",
@@ -151,21 +175,14 @@ def _load_draft_perf_sessions() -> pd.DataFrame:
         "active_time_min",
         "active_pct",
     ]
-    for col in ["atleta_id", "contexto", "jogo", "selecao", "genero", "fase"]:
+    for col in ["atleta_id", "contexto", "jogo", "selecao", "genero"]:
         if col not in df.columns:
             df[col] = pd.NA
         df[col] = df[col].map(_clean_text)
 
     if "data" in df.columns:
         df["data"] = pd.to_datetime(df["data"], errors="coerce")
-    if "session_sk" not in df.columns:
-        if "session_id_hex" in df.columns:
-            df["session_sk"] = df["session_id_hex"].map(_clean_text)
-        elif "session_fingerprint" in df.columns:
-            df["session_sk"] = df["session_fingerprint"].map(_clean_text)
-        else:
-            df["session_sk"] = "draft-session"
-    else:
+    if "session_sk" in df.columns:
         df["session_sk"] = df["session_sk"].map(_clean_text)
 
     for col in numeric_cols:
@@ -175,82 +192,11 @@ def _load_draft_perf_sessions() -> pd.DataFrame:
     return df
 
 
-def _build_draft_athletes(perf_df: pd.DataFrame) -> pd.DataFrame:
-    if perf_df is None or perf_df.empty or "atleta_id" not in perf_df.columns:
-        return pd.DataFrame(columns=["atleta_id", "nome", "foto_url", "posicao", "genero", "ativo"])
-
-    athletes_df = pd.DataFrame({
-        "atleta_id": perf_df["atleta_id"].map(_clean_text),
-    })
-    athletes_df = athletes_df[athletes_df["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
-    athletes_df["nome"] = athletes_df["atleta_id"]
-    athletes_df["foto_url"] = ""
-    athletes_df["posicao"] = ""
-    athletes_df["genero"] = ""
-    athletes_df["ativo"] = True
-    return athletes_df.sort_values(["nome", "atleta_id"], na_position="last").reset_index(drop=True)
-
-
-def _build_session_event_label(row: pd.Series) -> str:
-    data_txt = pd.to_datetime(row.get("data")).strftime("%d/%m/%Y") if pd.notna(row.get("data")) else "-"
-    contexto = _clean_text(row.get("contexto"))
-    jogo = _clean_text(row.get("jogo"))
-    if contexto == "Jogo" and jogo:
-        event_txt = f"Jogo | {jogo}"
-    elif contexto:
-        event_txt = contexto
-    else:
-        event_txt = "Sessao"
-    return f"{data_txt} | {event_txt}"
-
-
-def _build_draft_session_option_map(perf_df: pd.DataFrame) -> tuple[list[str], dict[str, str]]:
-    if perf_df is None or perf_df.empty:
-        return [], {}
-
-    session_rows = (
-        perf_df.sort_values(["data", "session_sk"], ascending=[False, False])
-        .drop_duplicates(subset=["session_sk"], keep="first")
-    )
-    options = []
-    labels = {}
-    for _, row in session_rows.iterrows():
-        session_sk = _clean_text(row.get("session_sk"))
-        if not session_sk:
-            continue
-        labels[session_sk] = _build_session_event_label(row)
-        options.append(session_sk)
-    return options, labels
-
-
-def _build_athlete_options_for_session(perf_df: pd.DataFrame, session_sk: str) -> list[str]:
-    if perf_df is None or perf_df.empty:
-        return []
-    session_df = perf_df[perf_df["session_sk"].eq(session_sk)].copy()
-    if session_df.empty:
-        return []
-    return sorted(session_df["atleta_id"].dropna().astype(str).map(_clean_text).loc[lambda s: s.ne("")].unique().tolist())
-
-
-def _build_phase_options(perf_df: pd.DataFrame, session_sk: str, athlete_id: str) -> list[str]:
-    if perf_df is None or perf_df.empty:
-        return []
-    df_selected = perf_df[
-        perf_df["session_sk"].eq(session_sk) &
-        perf_df["atleta_id"].eq(athlete_id)
-    ].copy()
-    if df_selected.empty:
-        return []
-    preferred_order = ["Warm-Up", "1P", "2P", "Total"]
-    available = df_selected["fase"].dropna().astype(str).map(_clean_text)
-    return [phase for phase in preferred_order if phase in available.tolist()]
-
-
 def _parse_profile_option(profile_option: str) -> tuple[str, int | None]:
     contexto_txt, janela_txt = [part.strip() for part in profile_option.split("|", 1)]
-    if "Últimos 5" in janela_txt:
+    if "Ultimos 5" in janela_txt:
         return contexto_txt, 5
-    if "Últimos 10" in janela_txt:
+    if "Ultimos 10" in janela_txt:
         return contexto_txt, 10
     return contexto_txt, None
 
@@ -333,12 +279,10 @@ def _build_session_option_map(perf_df: pd.DataFrame, athlete_id: str, contexto: 
     labels = {}
     for _, row in df_athlete.iterrows():
         session_sk = _clean_text(row.get("session_sk"))
-        if not session_sk:
-            continue
-        if session_sk in labels:
+        if not session_sk or session_sk in labels:
             continue
         data_txt = pd.to_datetime(row["data"]).strftime("%d/%m/%Y") if pd.notna(row.get("data")) else "-"
-        jogo_txt = _clean_text(row.get("jogo")) or f"Sessão {session_sk}"
+        jogo_txt = _clean_text(row.get("jogo")) or f"Sessao {session_sk}"
         labels[session_sk] = f"{data_txt} | {jogo_txt}"
         options.append(session_sk)
     return options, labels
@@ -363,7 +307,7 @@ def _build_session_snapshot(
         return {}
 
     contexto = _clean_text(df_session["contexto"].iloc[0]) if "contexto" in df_session.columns else "Jogo"
-    jogo_txt = _clean_text(df_session["jogo"].iloc[0]) if "jogo" in df_session.columns else f"Sessão {session_sk}"
+    jogo_txt = _clean_text(df_session["jogo"].iloc[0]) if "jogo" in df_session.columns else f"Sessao {session_sk}"
     data = df_session["data"].iloc[0] if "data" in df_session.columns else pd.NaT
     data_txt = pd.to_datetime(data).strftime("%d/%m/%Y") if pd.notna(data) else "-"
 
@@ -411,25 +355,6 @@ def _format_profile_value(metric_key: str, value) -> str:
     return _format_number(value)
 
 
-def _build_metric_table(snapshot: dict) -> pd.DataFrame:
-    metrics = snapshot.get("metrics", {}) if snapshot else {}
-    rows = []
-    for metric_key, metric_label in DISPLAY_METRICS:
-        rows.append(
-            {
-                "Métrica": metric_label,
-                "Valor": _format_profile_value(metric_key, metrics.get(metric_key, np.nan)),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def _get_snapshot_display_metrics(snapshot: dict | None) -> list[tuple[str, str]]:
-    if snapshot and snapshot.get("kind") == "session":
-        return GAME_DISPLAY_METRICS
-    return DISPLAY_METRICS
-
-
 def _get_snapshot_metric_groups(snapshot: dict | None) -> dict[str, list[tuple[str, str]]]:
     if snapshot and snapshot.get("kind") == "session":
         return GAME_METRIC_GROUPS
@@ -447,12 +372,12 @@ def _build_comparison_table(left_snapshot: dict, right_snapshot: dict) -> pd.Dat
         right_group_metrics = right_metric_groups.get(category, [])
         rows.append(
             {
-                "Métrica": category,
+                "Metrica": category,
                 "Valor": "",
                 "Delta": "",
                 "Delta %": "",
                 "Valor ": "",
-                "Métrica ": "",
+                "Metrica ": "",
                 "_is_category": True,
             }
         )
@@ -475,24 +400,17 @@ def _build_comparison_table(left_snapshot: dict, right_snapshot: dict) -> pd.Dat
             )
             rows.append(
                 {
-                    "Métrica": left_label,
+                    "Metrica": left_label,
                     "Valor": _format_profile_value(left_key, left_value),
                     "Delta": _format_profile_value(left_key, delta_abs) if values_are_comparable else "-",
                     "Delta %": _format_number(delta_pct, "%"),
                     "Valor ": _format_profile_value(right_key, right_value),
-                    "Métrica ": right_label,
+                    "Metrica ": right_label,
                     "_is_category": False,
                 }
             )
 
     return pd.DataFrame(rows)
-
-
-def _render_static_table(df: pd.DataFrame) -> None:
-    row_height = 35
-    header_height = 38
-    table_height = header_height + max(len(df), 1) * row_height + 2
-    st.dataframe(df.reset_index(drop=True), use_container_width=True, hide_index=True, height=table_height)
 
 
 def _style_delta_value(value: object) -> str:
@@ -547,13 +465,15 @@ def _render_header_block(snapshot: dict | None) -> None:
     with top_right:
         if snapshot:
             st.markdown(f"**Atleta:** {_clean_text(athlete.get('nome')) or '-'}")
-            st.markdown(f"**Posição:** {_clean_text(athlete.get('posicao')) or '-'}")
+            st.markdown(f"**Posicao:** {_clean_text(athlete.get('posicao')) or '-'}")
         else:
             st.markdown(f"<div style='height: {PHOTO_HEIGHT}px;'></div>", unsafe_allow_html=True)
 
 
 def _render_label_block(snapshot: dict | None) -> None:
-    safe_label = ""
+    label = snapshot.get("label", "") if snapshot else ""
+    label_text = label if snapshot and snapshot.get("kind") == "session" else ""
+    safe_label = html.escape(str(label_text))
     st.markdown(
         f"""
         <div style="
@@ -576,8 +496,10 @@ def _render_comparison_header(left_snapshot: dict, right_snapshot: dict) -> None
     header_left, header_right = st.columns(2, gap="large")
     with header_left:
         _render_header_block(left_snapshot)
+        _render_label_block(left_snapshot)
     with header_right:
         _render_header_block(right_snapshot)
+        _render_label_block(right_snapshot)
 
 
 def _render_comparison_section(left_snapshot: dict, right_snapshot: dict) -> None:
@@ -589,7 +511,7 @@ def _render_comparison_section(left_snapshot: dict, right_snapshot: dict) -> Non
     st.markdown(f"<div style='height: {HEADER_GAP_HEIGHT}px;'></div>", unsafe_allow_html=True)
     _render_comparison_table(_build_comparison_table(left_snapshot, right_snapshot))
     if left_snapshot.get("kind") != right_snapshot.get("kind"):
-        st.caption("Nota: nesta comparação, os totais do jogo são comparados com o perfil de referência normalizado a 90 minutos.")
+        st.caption("Nota: nesta comparacao, os totais do jogo sao comparados com o perfil de referencia normalizado a 90 minutos.")
 
 
 def _resolve_modes(comparison_mode: str) -> tuple[str, str]:
@@ -600,114 +522,91 @@ def _resolve_modes(comparison_mode: str) -> tuple[str, str]:
     return "Perfil", "Perfil"
 
 
-def _build_session_phase_snapshot(
-    athletes_df: pd.DataFrame,
-    perf_df: pd.DataFrame,
-    session_sk: str,
-    athlete_id: str,
-    fase: str,
-) -> dict:
-    athlete_row = athletes_df[athletes_df["atleta_id"].eq(athlete_id)].head(1)
-    if athlete_row.empty:
-        return {}
-
-    athlete_info = athlete_row.iloc[0].to_dict()
-    df_session = perf_df[
-        perf_df["session_sk"].eq(session_sk) &
-        perf_df["atleta_id"].eq(athlete_id) &
-        perf_df["fase"].eq(fase)
-    ].copy()
-    if df_session.empty:
-        return {}
-
-    return {
-        "kind": "session",
-        "athlete": athlete_info,
-        "label": _build_session_event_label(df_session.iloc[0]),
-        "phase_label": fase,
-        "sessions_df": df_session,
-        "metrics": _aggregate_profile(df_session),
-    }
-
-
 st.title("Analise de Perfis")
-st.caption("Comparação Jogo vs Jogo entre os atleta_id carregados na sessão em draft.")
+st.caption("Comparacao lado a lado entre atletas, perfis e jogos.")
 
-perf_df = _load_draft_perf_sessions()
-athletes_df = _build_draft_athletes(perf_df)
-
-if perf_df.empty:
-    st.warning("Sem dados em draft disponiveis. Processa uma sessao e usa 'Visualizar / Download' para ativar esta pagina.")
-    st.stop()
+athletes_df = _load_athletes()
+perf_df = _load_perf_sessions()
 
 if athletes_df.empty:
-    st.warning("Sem atleta_id carregados no draft atual.")
+    st.warning("Sem atletas ativos na base de dados.")
+    st.stop()
+
+if perf_df.empty:
+    st.warning("Sem dados de performance disponiveis para construir perfis.")
     st.stop()
 
 athlete_display_map = {
-    row["atleta_id"]: _clean_text(row["atleta_id"])
+    row["atleta_id"]: f"{_clean_text(row['nome'])} ({_clean_text(row['atleta_id'])})"
     for _, row in athletes_df.iterrows()
 }
 athlete_options = list(athlete_display_map.keys())
 
-left_mode, right_mode = "Jogo", "Jogo"
-session_options, session_label_map = _build_draft_session_option_map(perf_df)
-if not session_options:
-    st.warning("Sem sessões em draft disponíveis para comparação.")
-    st.stop()
-
-current_session = session_options[0]
-st.markdown("**Sessão**")
-st.markdown(session_label_map.get(current_session, current_session))
+comparison_mode = st.selectbox("Modo de comparacao", options=COMPARISON_MODES)
+left_mode, right_mode = _resolve_modes(comparison_mode)
 
 selector_left, selector_right = st.columns(2, gap="large")
 
 with selector_left:
-    left_session = current_session
-    left_athlete_options = _build_athlete_options_for_session(perf_df, left_session)
     athlete_left = st.selectbox(
-        "Atleta ID",
-        options=left_athlete_options,
+        "Atleta",
+        options=athlete_options,
         format_func=lambda aid: athlete_display_map.get(aid, aid),
         key="athlete_compare_left",
-    ) if left_athlete_options else None
-    left_phase_options = _build_phase_options(perf_df, left_session, athlete_left) if athlete_left else []
-    if left_phase_options:
-        left_phase = st.selectbox("Fase", options=left_phase_options, key="phase_compare_left")
-        left_snapshot = _build_session_phase_snapshot(athletes_df, perf_df, left_session, athlete_left, left_phase)
+    )
+    if left_mode == "Perfil":
+        profile_left = st.selectbox("Perfil", options=PROFILE_OPTIONS, key="profile_compare_left")
+        left_snapshot = _build_profile_snapshot(athletes_df, perf_df, athlete_left, profile_left)
     else:
-        st.info("Sem fases disponiveis para esta combinação.")
-        left_snapshot = {}
+        left_game_options, left_game_map = _build_session_option_map(perf_df, athlete_left, contexto="Jogo")
+        if left_game_options:
+            left_game = st.selectbox(
+                "Jogo",
+                options=left_game_options,
+                format_func=lambda sid: left_game_map.get(sid, str(sid)),
+                key="session_compare_left",
+            )
+            left_snapshot = _build_session_snapshot(athletes_df, perf_df, athlete_left, left_game)
+        else:
+            st.info("Sem jogos disponiveis para este atleta.")
+            left_snapshot = {}
 
 with selector_right:
-    right_session = current_session
-    right_athlete_options = _build_athlete_options_for_session(perf_df, right_session)
-    default_right_index = 1 if len(right_athlete_options) > 1 else 0
+    default_right_index = 1 if len(athlete_options) > 1 else 0
     athlete_right = st.selectbox(
-        "Atleta ID",
-        options=right_athlete_options,
+        "Atleta",
+        options=athlete_options,
         index=default_right_index,
         format_func=lambda aid: athlete_display_map.get(aid, aid),
         key="athlete_compare_right",
-    ) if right_athlete_options else None
-    right_phase_options = _build_phase_options(perf_df, right_session, athlete_right) if athlete_right else []
-    if right_phase_options:
-        right_phase = st.selectbox("Fase", options=right_phase_options, key="phase_compare_right")
-        right_snapshot = _build_session_phase_snapshot(athletes_df, perf_df, right_session, athlete_right, right_phase)
+    )
+    if right_mode == "Perfil":
+        profile_right = st.selectbox("Perfil", options=PROFILE_OPTIONS, key="profile_compare_right")
+        right_snapshot = _build_profile_snapshot(athletes_df, perf_df, athlete_right, profile_right)
     else:
-        st.info("Sem fases disponiveis para esta combinação.")
-        right_snapshot = {}
+        right_game_options, right_game_map = _build_session_option_map(perf_df, athlete_right, contexto="Jogo")
+        if right_game_options:
+            right_game = st.selectbox(
+                "Jogo",
+                options=right_game_options,
+                format_func=lambda sid: right_game_map.get(sid, str(sid)),
+                key="session_compare_right",
+            )
+            right_snapshot = _build_session_snapshot(athletes_df, perf_df, athlete_right, right_game)
+        else:
+            st.info("Sem jogos disponiveis para este atleta.")
+            right_snapshot = {}
 
 _render_comparison_section(left_snapshot, right_snapshot)
 
-st.markdown("## Sessões Utilizadas")
+st.markdown("## Sessoes Utilizadas")
 sessions_left, sessions_right = st.columns(2, gap="large")
 
 with sessions_left:
-    st.caption(f"Sessões usadas no lado esquerdo ({left_mode.lower()})")
+    st.caption(f"Sessoes usadas no lado esquerdo ({left_mode.lower()})")
     left_sessions = left_snapshot.get("sessions_df", pd.DataFrame()) if left_snapshot else pd.DataFrame()
     if left_sessions.empty:
-        st.info("Sem sessões para este lado.")
+        st.info("Sem sessoes para este lado.")
     else:
         cols = [c for c in ["data", "contexto", "jogo", "duracao_min"] if c in left_sessions.columns]
         left_display = left_sessions[cols].sort_values("data", ascending=False).copy()
@@ -716,10 +615,10 @@ with sessions_left:
         st.dataframe(left_display, use_container_width=True, hide_index=True)
 
 with sessions_right:
-    st.caption(f"Sessões usadas no lado direito ({right_mode.lower()})")
+    st.caption(f"Sessoes usadas no lado direito ({right_mode.lower()})")
     right_sessions = right_snapshot.get("sessions_df", pd.DataFrame()) if right_snapshot else pd.DataFrame()
     if right_sessions.empty:
-        st.info("Sem sessões para este lado.")
+        st.info("Sem sessoes para este lado.")
     else:
         cols = [c for c in ["data", "contexto", "jogo", "duracao_min"] if c in right_sessions.columns]
         right_display = right_sessions[cols].sort_values("data", ascending=False).copy()

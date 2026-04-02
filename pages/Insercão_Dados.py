@@ -81,6 +81,7 @@ from fpf_modules.supabase_manager import (
     resolve_session_sk,
     write_session_data,
 )
+from fpf_modules.auth_manager import authenticate_user, get_secrets_auth
 
 from fpf_modules.normalize import (
     normalize_tracking_data
@@ -729,6 +730,8 @@ if "auth" not in st.session_state:
     st.session_state.auth = False
 if "login_user" not in st.session_state:
     st.session_state.login_user = ""
+if "login_role" not in st.session_state:
+    st.session_state.login_role = ""
 
 if not st.session_state.auth:
     st.markdown("""
@@ -810,25 +813,6 @@ def _apply_login_style():
     st.markdown(css, unsafe_allow_html=True)
 
 
-def _get_auth_from_secrets():
-    """
-    Espera em st.secrets:
-    [auth]
-    username = "..."
-    password = "..."
-    """
-    try:
-        auth = st.secrets["auth"]
-        u = auth.get("username")
-        p = auth.get("password")
-        # DEBUG: remove isto depois
-        print(f"[DEBUG] Auth from secrets: username={repr(u)}, password={'*' * len(p) if p else None}")
-        return u, p
-    except Exception as e:
-        print(f"[DEBUG] Secrets error: {e}")
-        return None, None
-
-
 if not st.session_state.auth:
     _apply_login_style()
 
@@ -840,18 +824,20 @@ if not st.session_state.auth:
         u = st.text_input("Utilizador", key="user_val")
         p = st.text_input("Password", type="password", key="pass_val")
 
-        secrets_user, secrets_pass = _get_auth_from_secrets()
+        secrets_user, secrets_pass = get_secrets_auth()
         if not secrets_user:
-            st.warning(
-                "⚠️ Credenciais não configuradas em st.secrets. Defina [auth] no secrets.toml / Streamlit Cloud.")
+            st.caption("Sem credenciais base em st.secrets. Podes entrar com um utilizador criado em Administracao.")
 
         if st.button("Entrar"):
-            if secrets_user and u == secrets_user and p == secrets_pass:
-                st.session_state.login_user = u
+            auth_result = authenticate_user(u, p)
+            user = auth_result.get("user", {})
+            if auth_result.get("success"):
+                st.session_state.login_user = user.get("username", u)
+                st.session_state.login_role = user.get("role", "")
                 st.session_state.auth = True
                 st.rerun()
             else:
-                st.error("Credenciais inválidas")
+                st.error("Credenciais invalidas")
 
         st.markdown("</div>", unsafe_allow_html=True)
 
