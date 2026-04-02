@@ -19,6 +19,7 @@ from .supabase_manager import (
 
 
 HR_CANDIDATE_COLS = ["HR_bpm", "HR", "HeartRate", "Heart Rate", "Heart_Rate", "BPM", "Pulse"]
+EXPECTED_HZ = 10.0
 
 
 def _detect_hr_col(df: pd.DataFrame):
@@ -80,6 +81,88 @@ def _build_event_clock(fases_dict_s: dict) -> dict:
         }
 
     return event_clock
+
+
+def _fill_temporal_sample_gaps(
+    df_sync: pd.DataFrame,
+    max_gap_samples: int = 1,
+) -> tuple[pd.DataFrame, int]:
+    """Preenche gaps curtos de amostragem no SYNC por fase.
+
+    A interpolacao e feita apenas no interior de cada fase e apenas em colunas
+    numericas associadas ao tracking. O objetivo e corrigir drops pontuais de
+    amostras (ex.: perda de 1 sample a 10 Hz) sem inventar trechos longos.
+    """
+    if df_sync is None or df_sync.empty or COL_FASE not in df_sync.columns:
+        return df_sync, 0
+
+    out = df_sync.copy()
+    numeric_cols = [
+        col
+        for col in [COL_LAT, COL_LON, "X_UTM", "Y_UTM", "HR_bpm"]
+        if col in out.columns
+    ]
+    if not numeric_cols:
+        return out, 0
+
+    total_filled_rows = 0
+    for fase, idx in out.groupby(COL_FASE, dropna=False).groups.items():
+        if pd.isna(fase):
+            continue
+        phase_idx = list(idx)
+        phase_df = out.loc[phase_idx, numeric_cols].apply(pd.to_numeric, errors="coerce")
+        before_missing = phase_df[["X_UTM", "Y_UTM"]] if {"X_UTM", "Y_UTM"}.issubset(phase_df.columns) else phase_df
+        before_missing_mask = before_missing.isna().any(axis=1)
+
+        filled_df = phase_df.interpolate(
+            method="linear",
+            limit=max_gap_samples,
+            limit_direction="both",
+            limit_area="inside",
+        )
+
+        after_missing = filled_df[["X_UTM", "Y_UTM"]] if {"X_UTM", "Y_UTM"}.issubset(filled_df.columns) else filled_df
+        corrected_mask = before_missing_mask & (~after_missing.isna().any(axis=1))
+        total_filled_rows += int(corrected_mask.sum())
+        out.loc[phase_idx, numeric_cols] = filled_df
+
+    return out, total_filled_rows
+
+
+def _build_fixed_phase_grid(
+    fases_dict_s: dict,
+    expected_hz: float = EXPECTED_HZ,
+) -> pd.DataFrame:
+    step_s = 1.0 / float(expected_hz)
+    frames = []
+    ordem_fases = ["Warm-Up", "1P", "2P", "Extra"]
+
+    for fase in ordem_fases:
+        if fase not in fases_dict_s:
+            continue
+        start_s, end_s = fases_dict_s[fase]
+        if not np.isfinite(start_s) or not np.isfinite(end_s) or end_s < start_s:
+            continue
+
+        start_grid = round(float(start_s) / step_s) * step_s
+        end_grid = round(float(end_s) / step_s) * step_s
+        n_steps = int(round((end_grid - start_grid) / step_s)) + 1
+        grid = np.round(start_grid + np.arange(max(n_steps, 1)) * step_s, 6)
+        frames.append(
+            pd.DataFrame(
+                {
+                    "__time_s": grid,
+                    COL_FASE: fase,
+                }
+            )
+        )
+
+    if not frames:
+        return pd.DataFrame(columns=["__time_s", COL_FASE, COL_TIME])
+
+    out = pd.concat(frames, ignore_index=True)
+    out[COL_TIME] = out["__time_s"]
+    return out
 
 
 def processar_atletas_para_temp(
@@ -186,17 +269,48 @@ def sincronizar(temp_files, out_dir: Path):
         for fase, (t_s, t_e) in fases_dict.items()
     }
     event_clock = _build_event_clock(fases_dict_s)
+    master_grid_df = _build_fixed_phase_grid(fases_dict_s, expected_hz=EXPECTED_HZ)
 
     out_files = []
     for f in temp_files:
         df_atl = pd.read_csv(f, sep=";")
-        df_sync = pd.merge(master_df[[COL_TIME, "__time_s"]], df_atl, on=COL_TIME, how="left")
         aid = str(df_atl["Atleta_ID"].iloc[0]) if "Atleta_ID" in df_atl.columns else f.stem.replace("T_", "")
-        df_sync["Atleta_ID"] = aid
+        df_atl["__time_s"] = df_atl[COL_TIME].map(time_map)
 
-        for fase, (t_s, t_e) in fases_dict.items():
-            mask = (df_sync[COL_TIME] >= t_s) & (df_sync[COL_TIME] <= t_e)
-            df_sync.loc[mask, COL_FASE] = fase
+        phase_frames = []
+        grid_numeric_cols = [
+            col for col in [COL_LAT, COL_LON, "X_UTM", "Y_UTM", "HR_bpm"]
+            if col in df_atl.columns
+        ]
+        for fase, grid_idx in master_grid_df.groupby(COL_FASE, sort=False).groups.items():
+            grid_phase = master_grid_df.loc[list(grid_idx), ["__time_s", COL_FASE, COL_TIME]].copy()
+            raw_phase = df_atl[df_atl[COL_FASE] == fase].copy()
+            if not raw_phase.empty:
+                raw_phase["__time_s"] = pd.to_numeric(raw_phase["__time_s"], errors="coerce")
+                raw_phase = raw_phase.dropna(subset=["__time_s"])
+                raw_phase["__time_grid"] = np.round(raw_phase["__time_s"] * EXPECTED_HZ) / EXPECTED_HZ
+
+                if grid_numeric_cols:
+                    agg_map = {col: "mean" for col in grid_numeric_cols}
+                    raw_phase_grouped = raw_phase.groupby("__time_grid", as_index=False).agg(agg_map)
+                    phase_df = grid_phase.merge(
+                        raw_phase_grouped,
+                        left_on="__time_s",
+                        right_on="__time_grid",
+                        how="left",
+                    ).drop(columns=["__time_grid"], errors="ignore")
+                else:
+                    phase_df = grid_phase.copy()
+            else:
+                phase_df = grid_phase.copy()
+            phase_frames.append(phase_df)
+
+        if phase_frames:
+            df_sync = pd.concat(phase_frames, ignore_index=True)
+        else:
+            df_sync = master_grid_df.copy()
+
+        df_sync["Atleta_ID"] = aid
 
         df_sync["Time_Evento_s"] = np.nan
         df_sync["Periodo_Jogo"] = pd.NA
@@ -226,6 +340,8 @@ def sincronizar(temp_files, out_dir: Path):
         df_sync["Minuto_Jogo"] = np.floor(df_sync["Time_Evento_s"] / 60.0)
         df_sync.loc[df_sync["Time_Evento_s"].isna(), "Minuto_Jogo"] = np.nan
         df_sync["Minuto_Jogo"] = df_sync["Minuto_Jogo"].astype("Int64")
+        df_sync, sample_gaps_corrigidos = _fill_temporal_sample_gaps(df_sync, max_gap_samples=1)
+        df_sync["_sample_gaps_corrigidos"] = sample_gaps_corrigidos
         df_sync = df_sync.drop(columns=["__time_s"])
 
         out_path = out_dir / f"Player_{aid}_SYNC.csv"
@@ -234,7 +350,7 @@ def sincronizar(temp_files, out_dir: Path):
 
     ordem_fases = {"Warm-Up": 0, "1P": 1, "2P": 2}
     fases_ordenadas = sorted(fases_dict.items(), key=lambda x: ordem_fases.get(x[0], 99))
-    return out_files, fases_ordenadas, fases_dict, len(master_df), event_clock
+    return out_files, fases_ordenadas, fases_dict, len(master_grid_df), event_clock
 
 
 # ------------------------------------------------

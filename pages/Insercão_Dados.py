@@ -1830,6 +1830,7 @@ if btn:
             metrics_rows = []
             audit_time_rows = []
             total_micro_gaps = 0
+            total_sample_gaps = 0
 
             fases_target = ["Warm-Up", "1P", "2P"]
 
@@ -1846,6 +1847,12 @@ if btn:
                     try:
                         total_micro_gaps += int(
                             df_sync["_micro_gaps_corrigidos"].dropna().iloc[0])
+                    except Exception:
+                        pass
+                if "_sample_gaps_corrigidos" in df_sync.columns and df_sync["_sample_gaps_corrigidos"].notna().any():
+                    try:
+                        total_sample_gaps += int(
+                            df_sync["_sample_gaps_corrigidos"].dropna().iloc[0])
                     except Exception:
                         pass
 
@@ -2154,6 +2161,7 @@ if btn:
             report_lines.append("-" * 70)
             report_lines.append("Qualidade do Sinal GPS")
             report_lines.append(f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
+            report_lines.append(f"  Gaps temporais corrigidos no SYNC (≤1 amostra): {total_sample_gaps}")
 
             # Auditoria de timestamp (resumo)
             try:
