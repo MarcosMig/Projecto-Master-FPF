@@ -1026,6 +1026,20 @@ st.markdown(
       div.stDownloadButton > button {
         white-space: nowrap;
       }
+
+      div.element-container:has(.phase-marker.phase-complete) + div.element-container details {
+        background: rgba(34, 197, 94, 0.10) !important;
+        border: 1px solid rgba(34, 197, 94, 0.28) !important;
+        border-radius: 0.75rem !important;
+      }
+
+      div.element-container:has(.phase-marker.phase-complete) + div.element-container summary {
+        color: #166534 !important;
+      }
+
+      div.element-container:has(.phase-marker.phase-complete) + div.element-container summary:hover {
+        background: rgba(34, 197, 94, 0.06) !important;
+      }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1068,8 +1082,19 @@ if "show_final_report_section" not in st.session_state:
     st.session_state.show_final_report_section = False
 if "phase3_complete" not in st.session_state:
     st.session_state.phase3_complete = False
+if "publish_success" not in st.session_state:
+    st.session_state.publish_success = False
 
 # --- LOGIN (CENTRADO + st.secrets) ---
+
+
+def _render_phase_marker(is_complete: bool):
+    marker_class = "phase-marker phase-complete" if is_complete else "phase-marker"
+    st.markdown(f"<div class='{marker_class}' style='display:none;'></div>", unsafe_allow_html=True)
+
+
+def _phase_title(label: str, is_complete: bool) -> str:
+    return f"{label}\u200b" if is_complete else label
 
 
 def _apply_login_style():
@@ -1166,41 +1191,49 @@ st.markdown(
 
 top_left_col, top_right_col = st.columns(2, gap="large")
 
-session_ready = bool(st.session_state.get("session_step_complete", False))
-with st.expander("1. Dados da Sessão", expanded=not session_ready):
+current_data_sessao = st.session_state.get("data_sessao_input")
+current_selecao = st.session_state.get("selecao_input", "")
+current_contexto = st.session_state.get("contexto_input", "Treino")
+current_adversario = st.session_state.get("adversario_input", "")
+session_ready = bool(current_data_sessao) and bool(current_selecao) and (
+    (current_contexto != "Jogo") or bool(str(current_adversario).strip())
+)
+_render_phase_marker(session_ready)
+with st.expander(_phase_title("1. Dados da Sessão", session_ready), expanded=not session_ready):
     # Estádio agora é inferido automaticamente pela localização do campo (sem input manual)
     estadio = None
     session_col_1, session_col_2, session_col_3, session_col_4 = st.columns([1.1, 1.4, 1.0, 1.2], gap="medium")
 
     with session_col_1:
-        data_sessao = st.date_input("Data do Evento")
+        data_sessao = st.date_input("Data do Evento", key="data_sessao_input")
 
     with session_col_2:
-        selecao = st.selectbox("Seleção", options=SELECTION_OPTIONS, index=0 if SELECTION_OPTIONS else None)
+        selecao = st.selectbox("Seleção", options=SELECTION_OPTIONS, index=0 if SELECTION_OPTIONS else None, key="selecao_input")
 
     # Género é inferido da seleção (M/F), não é input manual
     genero = selecao.split()[-1] if selecao.split() and selecao.split()[-1] in ["M", "F"] else ""
 
     with session_col_3:
-        contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0)
+        contexto = st.selectbox("Contexto", options=["Treino", "Jogo"], index=0, key="contexto_input")
 
     adversario = ""
     with session_col_4:
         if contexto == "Jogo":
-            adversario = st.text_input("Adversário")
+            adversario = st.text_input("Adversário", key="adversario_input")
         else:
-            st.text_input("Adversário", value="", disabled=True)
+            adversario = st.text_input("Adversário", value="", disabled=True, key="adversario_input")
 
 session_ready = bool(data_sessao) and bool(selecao) and ((contexto != "Jogo") or bool(adversario.strip()))
 st.session_state.session_step_complete = session_ready
 
-athletes_loaded = bool(st.session_state.get("athletes_step_complete", False))
-with st.expander("2. Dados dos Atletas", expanded=not athletes_loaded):
+athletes_loaded = bool(st.session_state.get("f_atleta_upload"))
+_render_phase_marker(athletes_loaded)
+with st.expander(_phase_title("2. Dados dos Atletas", athletes_loaded), expanded=not athletes_loaded):
     st.caption(
         "CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
     )
     f_atleta = st.file_uploader(
-        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
+        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"], key="f_atleta_upload"
     )
     athlete_registry_df = None
     athlete_registry_error = None
@@ -1284,7 +1317,11 @@ def _suggest_field_name(lat: float, lon: float, city: str | None, country: str |
         data = {}
 
     addr = data.get("address", {}) if isinstance(data, dict) else {}
+    if not isinstance(addr, dict):
+        addr = {}
     namedetails = data.get("namedetails", {}) if isinstance(data, dict) else {}
+    if not isinstance(namedetails, dict):
+        namedetails = {}
     osm_type = str(data.get("type") or "").strip().lower()
 
     priority_candidates = [
@@ -1655,6 +1692,11 @@ def _build_collective_performance_metrics_draft(df_metrics: pd.DataFrame, sessio
     collective_df["session_fingerprint"] = session_payload["session_fingerprint"]
     collective_df["session_id_hex"] = session_payload["session_id_hex"]
     collective_df["phase_id"] = collective_df["fase"].map(PHASE_MAP)
+    collective_df["data"] = session_payload.get("data")
+    collective_df["selecao"] = session_payload.get("selecao")
+    collective_df["genero"] = session_payload.get("genero")
+    collective_df["contexto"] = session_payload.get("contexto")
+    collective_df["jogo"] = session_payload.get("jogo")
 
     for source_col, target_col in collective_specs:
         if source_col in collective_df.columns:
@@ -2063,6 +2105,7 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
 
                 st.success("✅ Dados gravados com sucesso no Supabase.")
                 st.markdown(stats_msg)
+                st.session_state.publish_success = True
                 st.switch_page("pages/Análise_Performance.py")
             except Exception as e:
                 progress_bar.progress(1.0, text="Transferência interrompida.")
@@ -2193,7 +2236,11 @@ def _file_to_bytes(pathlike) -> bytes:
 # -------------------------------
 # Main flow
 # -------------------------------
-with st.expander("3. Validação de Dados", expanded=not st.session_state.get("phase3_complete", False)):
+_render_phase_marker(bool(st.session_state.get("phase3_complete", False)))
+with st.expander(
+    _phase_title("3. Validação de Dados", bool(st.session_state.get("phase3_complete", False))),
+    expanded=not st.session_state.get("phase3_complete", False),
+):
     if not f_atleta:
         st.warning("?? Ainda não carregaste ficheiros de atletas. Algumas funcionalidades podem não estar disponíveis.")
     
@@ -2541,8 +2588,13 @@ for f in f_atleta:
     audit_data[aid].append(infer_fase(f.name))
 
 athlete_status, atletas_validos, submission_valid = _evaluate_athlete_submission(audit_data, contexto)
+phase5_complete = bool(submission_valid) and not st.session_state.get("athlete_registry_expanded", True)
 
-with st.expander("5. Auditoria de Atletas", expanded=(not submission_valid) or st.session_state.get("athlete_registry_expanded", True)):
+_render_phase_marker(phase5_complete)
+with st.expander(
+    _phase_title("5. Auditoria de Atletas", phase5_complete),
+    expanded=(not submission_valid) or st.session_state.get("athlete_registry_expanded", True),
+):
     rows = []
     for aid in sorted(
         audit_data.keys(),
@@ -2714,7 +2766,8 @@ if show_field_save_block:
                 st.session_state.field_save_flash_msg = "Campo guardado com sucesso na referencia de campos."
             st.rerun()
 
-with st.expander("6. Relatório de Jogo | Treino", expanded=bool(st.session_state.process_done)):
+_render_phase_marker(bool(st.session_state.process_done))
+with st.expander(_phase_title("6. Relatório de Jogo | Treino", bool(st.session_state.process_done)), expanded=bool(st.session_state.process_done)):
     btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", key="btn_process_report")
     phase6_content = st.container()
 
@@ -3359,7 +3412,11 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
 
         st.empty()
 
-        with st.expander("7. Base de Dados | Relatório Técnico", expanded=True):
+        _render_phase_marker(bool(st.session_state.get("publish_success", False)))
+        with st.expander(
+            _phase_title("7. Base de Dados | Relatório Técnico", bool(st.session_state.get("publish_success", False))),
+            expanded=True,
+        ):
             final_action_cols = st.columns(3, gap="medium")
             with final_action_cols[0]:
                 publish_action = st.button("Publicar na Base de Dados", key="btn_final_publish", use_container_width=True)
