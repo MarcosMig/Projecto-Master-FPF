@@ -15,6 +15,207 @@ from .constants import (
 MAX_VALID_SPEED_MPS = 11.0
 MAX_VALID_STEP_M = 12.0
 MAX_VALID_GAP_S = 2.0
+ACTIVE_V_THR = 0.5
+
+SPEED_ZONE_LIMITS_MPS = {
+    "zone1_walk_mps": (0.0, 2.0),
+    "zone2_jog_mps": (2.0, 4.0),
+    "zone3_run_mps": (4.0, HSR_MPS),
+    "zone4_hsr_mps": (HSR_MPS, SPRINT_MPS),
+    "zone5_sprint_mps": (SPRINT_MPS, np.inf),
+}
+PEAK_DEMAND_WINDOWS_S = {
+    "1m": 60.0,
+    "3m": 180.0,
+    "5m": 300.0,
+}
+RHIE_WINDOW_S = 20.0
+RHIE_MIN_EVENTS = 3
+
+
+def _safe_rate_per_unit(numerator: float, denominator: float, scale: float = 1.0):
+    if denominator is None or np.isnan(denominator) or denominator <= 0:
+        return np.nan
+    return float(numerator) / float(denominator) * float(scale)
+
+
+def estimate_hr_max_from_birthdate(
+    birthdate,
+    reference_date=None,
+    formula: str = "tanaka",
+):
+    """Estimate HRmax from age when an athlete-specific measured value is unavailable."""
+    birth_ts = pd.to_datetime(birthdate, errors="coerce")
+    ref_ts = pd.to_datetime(reference_date, errors="coerce")
+    if pd.isna(birth_ts):
+        return np.nan
+    if pd.isna(ref_ts):
+        ref_ts = pd.Timestamp.utcnow().normalize()
+
+    # Align timezone awareness before subtraction to avoid tz-naive vs tz-aware errors.
+    if isinstance(birth_ts, pd.Timestamp) and birth_ts.tzinfo is not None:
+        birth_ts = birth_ts.tz_localize(None)
+    if isinstance(ref_ts, pd.Timestamp) and ref_ts.tzinfo is not None:
+        ref_ts = ref_ts.tz_localize(None)
+
+    age_years = (ref_ts - birth_ts).days / 365.25
+    if age_years <= 0:
+        return np.nan
+
+    if str(formula).lower() == "fox":
+        hr_max = 220.0 - age_years
+    else:
+        # Tanaka et al. is a common default and usually better than 220-age.
+        hr_max = 208.0 - 0.7 * age_years
+    return float(hr_max) if hr_max > 0 else np.nan
+
+
+def derive_load_metrics(metrics: dict) -> dict:
+    """Build load-oriented metrics from the current GPS + HR metric set.
+
+    The load scores are proxy indices intended for relative comparison inside the
+    platform. They are not physiological gold standards.
+    """
+    dist_m = float(metrics.get("dist_m", 0.0) or 0.0)
+    duracao_min = float(metrics.get("duracao_min", 0.0) or 0.0)
+    m_min = float(metrics.get("m_min", np.nan))
+    hsr_dist_m = float(metrics.get("hsr_dist_m", 0.0) or 0.0)
+    hsr_pct = float(metrics.get("hsr_pct", np.nan))
+    sprint_dist_m = float(metrics.get("sprint_dist_m", 0.0) or 0.0)
+    n_sprints = float(metrics.get("n_sprints", 0.0) or 0.0)
+    n_acc = float(metrics.get("n_acc_2_5", 0.0) or 0.0)
+    n_dec = float(metrics.get("n_dec_3_0", 0.0) or 0.0)
+    active_time_min = float(metrics.get("active_time_min", 0.0) or 0.0)
+    active_pct = float(metrics.get("active_pct", np.nan))
+    vmax_mps = float(metrics.get("vmax_mps", np.nan))
+    peak_1m_m_min = float(metrics.get("peak_1m_m_min", np.nan))
+    hr_avg_bpm = float(metrics.get("hr_avg_bpm", np.nan))
+    beats_total = float(metrics.get("beats_total", np.nan))
+
+    external_load_score = (
+        dist_m
+        + 2.0 * hsr_dist_m
+        + 3.0 * sprint_dist_m
+        + (n_sprints * 20.0)
+        + (n_acc * 5.0)
+        + (n_dec * 5.0)
+        + (active_time_min * 100.0)
+        + ((0.0 if np.isnan(m_min) else m_min) * duracao_min)
+        + (0.0 if np.isnan(peak_1m_m_min) else peak_1m_m_min)
+        + ((0.0 if np.isnan(vmax_mps) else vmax_mps) * 60.0)
+        + ((0.0 if np.isnan(hsr_pct) else hsr_pct) * 10.0)
+        + ((0.0 if np.isnan(active_pct) else active_pct) * 5.0)
+    )
+
+    total_load_score = (
+        external_load_score * (hr_avg_bpm / 100.0)
+        if not np.isnan(hr_avg_bpm)
+        else np.nan
+    )
+
+    return {
+        "dist_per_beat_m": _safe_rate_per_unit(dist_m, beats_total, scale=1.0),
+        "hsr_per_beat_m": _safe_rate_per_unit(hsr_dist_m, beats_total, scale=1.0),
+        "sprint_per_beat_m": _safe_rate_per_unit(sprint_dist_m, beats_total, scale=1.0),
+        "sprints_per_1000_beats": _safe_rate_per_unit(n_sprints, beats_total, scale=1000.0),
+        "acc_per_1000_beats": _safe_rate_per_unit(n_acc, beats_total, scale=1000.0),
+        "dec_per_1000_beats": _safe_rate_per_unit(n_dec, beats_total, scale=1000.0),
+        "external_load_score": float(external_load_score),
+        "total_load_score": float(total_load_score) if not np.isnan(total_load_score) else np.nan,
+    }
+
+
+def _window_sum_peak(
+    step_start_t: np.ndarray,
+    step_end_t: np.ndarray,
+    values: np.ndarray,
+    window_s: float,
+) -> float:
+    """Max sum of values inside a rolling window over step intervals."""
+    if (
+        step_start_t is None
+        or step_end_t is None
+        or values is None
+        or len(step_start_t) == 0
+        or len(step_end_t) == 0
+        or len(values) == 0
+    ):
+        return np.nan
+
+    n = min(len(step_start_t), len(step_end_t), len(values))
+    start = step_start_t[:n].astype(float)
+    end = step_end_t[:n].astype(float)
+    vals = values[:n].astype(float)
+
+    csum = np.concatenate([[0.0], np.cumsum(np.nan_to_num(vals, nan=0.0))])
+    best = 0.0
+    j = 0
+    for i in range(n):
+        while j < n and end[j] - start[i] <= float(window_s):
+            j += 1
+        window_total = csum[j] - csum[i]
+        if window_total > best:
+            best = window_total
+    return float(best)
+
+
+def _speed_zone_metrics(v: np.ndarray, dt: np.ndarray, dist_step: np.ndarray) -> dict:
+    out = {}
+    if v is None or dt is None or dist_step is None or len(v) == 0:
+        for zone_name in SPEED_ZONE_LIMITS_MPS:
+            prefix = zone_name.replace("_mps", "")
+            out[f"{prefix}_time_min"] = 0.0
+            out[f"{prefix}_dist_m"] = 0.0
+        return out
+
+    for zone_name, (lower, upper) in SPEED_ZONE_LIMITS_MPS.items():
+        prefix = zone_name.replace("_mps", "")
+        mask = (v >= float(lower)) & (v < float(upper))
+        out[f"{prefix}_time_min"] = float(np.nansum(dt[mask]) / 60.0)
+        out[f"{prefix}_dist_m"] = float(np.nansum(dist_step[mask]))
+    return out
+
+
+def _count_clustered_events(event_times_s: np.ndarray, window_s: float, min_events: int) -> tuple[int, int]:
+    """Count clusters with at least min_events where adjacent events are within window_s."""
+    if event_times_s is None or len(event_times_s) == 0:
+        return 0, 0
+
+    times = np.sort(np.asarray(event_times_s, dtype=float))
+    bouts = 0
+    actions = 0
+    start_idx = 0
+
+    while start_idx < len(times):
+        end_idx = start_idx + 1
+        while end_idx < len(times) and (times[end_idx] - times[end_idx - 1]) <= float(window_s):
+            end_idx += 1
+        cluster_size = end_idx - start_idx
+        if cluster_size >= int(min_events):
+            bouts += 1
+            actions += cluster_size
+        start_idx = end_idx
+
+    return bouts, actions
+
+
+def _banister_trimp(
+    duracao_min: float,
+    hr_avg_bpm: float,
+    hr_max_bpm: float,
+    hr_rest_bpm: float = 60.0,
+    gender_code: str = "",
+) -> float:
+    """Approximate Banister TRIMP from average HR over the effort duration."""
+    if any(np.isnan(v) for v in [duracao_min, hr_avg_bpm, hr_max_bpm]):
+        return np.nan
+    if hr_max_bpm <= hr_rest_bpm or duracao_min <= 0:
+        return np.nan
+
+    hrr = (float(hr_avg_bpm) - float(hr_rest_bpm)) / (float(hr_max_bpm) - float(hr_rest_bpm))
+    hrr = float(np.clip(hrr, 0.0, 1.0))
+    k = 1.67 if str(gender_code or "").strip().upper().startswith("F") else 1.92
+    return float(duracao_min * hrr * 0.64 * np.exp(k * hrr))
 
 
 def time_to_seconds(series: pd.Series) -> pd.Series:
@@ -262,7 +463,44 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
         "n_points": 0,
         "active_time_min": 0.0,
         "active_pct": np.nan,
+        "hr_avg_bpm": np.nan,
+        "hr_peak_bpm": np.nan,
+        "hr_time_min": 0.0,
+        "hr_time_valid_pct": np.nan,
+        "beats_total": np.nan,
+        "dist_per_beat_m": np.nan,
+        "hsr_per_beat_m": np.nan,
+        "sprint_per_beat_m": np.nan,
+        "sprints_per_1000_beats": np.nan,
+        "acc_per_1000_beats": np.nan,
+        "dec_per_1000_beats": np.nan,
+        "external_load_score": np.nan,
+        "total_load_score": np.nan,
+        "player_load": np.nan,
+        "rhie_bouts": 0,
+        "rhie_actions": 0,
+        "peak_dist_1m_m": np.nan,
+        "peak_dist_3m_m": np.nan,
+        "peak_dist_5m_m": np.nan,
+        "peak_hsr_1m_m": np.nan,
+        "peak_hsr_3m_m": np.nan,
+        "peak_hsr_5m_m": np.nan,
+        "peak_sprint_1m_m": np.nan,
+        "peak_sprint_3m_m": np.nan,
+        "peak_sprint_5m_m": np.nan,
+        "peak_acc_actions_1m": np.nan,
+        "peak_acc_actions_3m": np.nan,
+        "peak_acc_actions_5m": np.nan,
+        "peak_hi_actions_1m": np.nan,
+        "peak_hi_actions_3m": np.nan,
+        "peak_hi_actions_5m": np.nan,
+        "trimp_banister": np.nan,
+        "trimp_per_min": np.nan,
     }
+    for zone_name in SPEED_ZONE_LIMITS_MPS:
+        prefix = zone_name.replace("_mps", "")
+        default[f"{prefix}_time_min"] = 0.0
+        default[f"{prefix}_dist_m"] = 0.0
 
     if df.empty:
         return default.copy()
@@ -316,8 +554,6 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     v = dist_step / dt
     vmax = float(np.nanmax(v)) if len(v) else np.nan
 
-    # Active time (tempo em movimento)
-    ACTIVE_V_THR = 0.5  # m/s
     active_time_s = float(np.nansum(dt[v >= ACTIVE_V_THR])) if len(v) else 0.0
     active_time_min = active_time_s / 60.0 if active_time_s > 0 else 0.0
     active_pct = (active_time_s / dur_s * 100.0) if dur_s > 0 else np.nan
@@ -325,6 +561,7 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
     dv = np.diff(v)
     dt2 = dt[1:]
     acc = np.where(dt2 > 0, dv / dt2, np.nan)
+    acc_step = np.where(dt > 0, v / dt, np.nan)
 
     hsr_dist = float(np.nansum(dist_step[v >= HSR_MPS]))
     sprint_mask = v >= SPRINT_MPS
@@ -334,6 +571,15 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
 
     n_acc = int(np.nansum(acc >= ACC_THR))
     n_dec = int(np.nansum(acc <= DEC_THR))
+    player_load = float(np.nansum(np.abs(acc_step) * dt)) if len(acc_step) else np.nan
+
+    zone_metrics = _speed_zone_metrics(v, dt, dist_step)
+
+    hi_action_mask = sprint_mask.copy()
+    if len(acc):
+        hi_action_mask[1:] = hi_action_mask[1:] | (acc >= ACC_THR) | (acc <= DEC_THR)
+    hi_event_times = step_end_t[hi_action_mask] if len(step_end_t) else np.array([], dtype=float)
+    rhie_bouts, rhie_actions = _count_clustered_events(hi_event_times, RHIE_WINDOW_S, RHIE_MIN_EVENTS)
 
     dist_cum = np.concatenate([[0.0], np.cumsum(dist_step)])
     # t_cum alinhado com dist_cum (1+len(dist_step)); usamos o t original pós-filter
@@ -355,7 +601,49 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
 
     n_sprints = count_bouts(step_end_t, sprint_mask, SPRINT_BOUT_MIN_S)
 
-    return {
+    peak_metrics = {}
+    hi_actions_values = hi_action_mask.astype(float)
+    acc_values = np.zeros_like(step_end_t, dtype=float)
+    if len(acc):
+        acc_values[1:] = (acc >= ACC_THR).astype(float)
+    for window_name, window_s in PEAK_DEMAND_WINDOWS_S.items():
+        peak_metrics[f"peak_dist_{window_name}_m"] = _window_sum_peak(step_start_t, step_end_t, dist_step, window_s)
+        peak_metrics[f"peak_hsr_{window_name}_m"] = _window_sum_peak(
+            step_start_t, step_end_t, np.where(v >= HSR_MPS, dist_step, 0.0), window_s
+        )
+        peak_metrics[f"peak_sprint_{window_name}_m"] = _window_sum_peak(
+            step_start_t, step_end_t, np.where(sprint_bout_mask, dist_step, 0.0), window_s
+        )
+        peak_metrics[f"peak_acc_actions_{window_name}"] = _window_sum_peak(
+            step_start_t, step_end_t, acc_values, window_s
+        )
+        peak_metrics[f"peak_hi_actions_{window_name}"] = _window_sum_peak(
+            step_start_t, step_end_t, hi_actions_values, window_s
+        )
+
+    hr_max_bpm = np.nan
+    hr_rest_bpm = 60.0
+    gender_code = ""
+    for col in ["HRmax_bpm", "hr_max_bpm", "athlete_hrmax_bpm"]:
+        if col in df.columns:
+            hr_max_series = pd.to_numeric(df[col], errors="coerce").dropna()
+            if not hr_max_series.empty:
+                hr_max_bpm = float(hr_max_series.iloc[0])
+                break
+    for col in ["HRrest_bpm", "hr_rest_bpm", "athlete_hrrest_bpm"]:
+        if col in df.columns:
+            hr_rest_series = pd.to_numeric(df[col], errors="coerce").dropna()
+            if not hr_rest_series.empty:
+                hr_rest_bpm = float(hr_rest_series.iloc[0])
+                break
+    for col in ["genero", "Genero", "gender"]:
+        if col in df.columns:
+            gender_series = df[col].dropna()
+            if not gender_series.empty:
+                gender_code = str(gender_series.iloc[0])
+                break
+
+    metrics_out = {
         "duracao_min": dur_min,
         "dist_m": dist_total,
         "m_min": m_min,
@@ -372,7 +660,56 @@ def compute_metrics_for_df(df: pd.DataFrame) -> dict:
         "n_gaps_gt2s": n_gaps,
         "active_time_min": active_time_min,
         "active_pct": active_pct,
+        "player_load": player_load,
+        "rhie_bouts": int(rhie_bouts),
+        "rhie_actions": int(rhie_actions),
     }
+    metrics_out.update(zone_metrics)
+    metrics_out.update(peak_metrics)
+
+    if "HR_bpm" in df.columns:
+        hr = pd.to_numeric(df["HR_bpm"], errors="coerce")
+        valid_hr = t_sec.notna() & hr.notna()
+        dfh = pd.DataFrame({"t": t_sec[valid_hr], "hr": hr[valid_hr]}).sort_values("t")
+
+        metrics_out["hr_time_valid_pct"] = float(valid_hr.mean() * 100.0) if len(valid_hr) else np.nan
+        if len(dfh) >= 2:
+            t_hr = dfh["t"].to_numpy(dtype=float)
+            hr_vals = dfh["hr"].to_numpy(dtype=float)
+            dt_hr = np.diff(t_hr)
+            good_hr = dt_hr > 0
+            if np.any(good_hr):
+                dt_hr = dt_hr[good_hr]
+                hr_step = hr_vals[:-1][good_hr]
+                hr_time_min = float(np.nansum(dt_hr) / 60.0)
+                beats_total = float(np.nansum(hr_step * dt_hr / 60.0))
+                hr_avg_bpm = (beats_total / hr_time_min) if hr_time_min > 0 else np.nan
+                metrics_out["hr_avg_bpm"] = float(hr_avg_bpm) if not np.isnan(hr_avg_bpm) else np.nan
+                metrics_out["hr_peak_bpm"] = float(np.nanmax(hr_vals)) if len(hr_vals) else np.nan
+                metrics_out["hr_time_min"] = hr_time_min
+                metrics_out["beats_total"] = beats_total
+        elif len(dfh) == 1:
+            metrics_out["hr_peak_bpm"] = float(dfh["hr"].iloc[0])
+            metrics_out["hr_avg_bpm"] = float(dfh["hr"].iloc[0])
+            metrics_out["hr_time_min"] = 0.0
+            metrics_out["beats_total"] = np.nan
+
+    trimp_banister = _banister_trimp(
+        metrics_out.get("duracao_min", np.nan),
+        metrics_out.get("hr_avg_bpm", np.nan),
+        hr_max_bpm,
+        hr_rest_bpm=hr_rest_bpm,
+        gender_code=gender_code,
+    )
+    metrics_out["trimp_banister"] = trimp_banister
+    metrics_out["trimp_per_min"] = (
+        float(trimp_banister) / float(metrics_out["duracao_min"])
+        if pd.notna(trimp_banister) and float(metrics_out.get("duracao_min", 0.0) or 0.0) > 0
+        else np.nan
+    )
+
+    metrics_out.update(derive_load_metrics(metrics_out))
+    return metrics_out
 
 
 # ── Tracking Data ─────────────────────────────────────────────────────

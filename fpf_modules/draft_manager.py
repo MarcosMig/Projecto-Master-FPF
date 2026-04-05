@@ -14,6 +14,7 @@ DRAFT_STATE_DEFAULTS = {
     "manual_metricas_txt": None,
     "process_done": False,
     "df_perf": None,
+    "df_collective_perf": None,
     "df_qc": None,
     "df_samples": None,
     "df_athlete_session": None,
@@ -24,6 +25,7 @@ DRAFT_STATE_DEFAULTS = {
 
 DRAFT_FILE_SPECS = {
     "performance_metrics": ("performance_metrics.parquet", ["session_fingerprint", "atleta_id", "phase_id"]),
+    "collective_performance_metrics": ("collective_performance_metrics.parquet", ["session_fingerprint", "phase_id"]),
     "quality_metrics": ("quality_metrics.parquet", ["session_fingerprint", "atleta_id", "phase_id"]),
     "samples": ("samples.parquet", ["session_fingerprint", "atleta_id", "phase_id", "time"]),
     "athlete_session": ("athlete_session.parquet", ["session_fingerprint", "atleta_id"]),
@@ -44,6 +46,7 @@ def store_draft_results(
     report_txt: str,
     manual_metricas_txt: str | None,
     df_perf,
+    df_collective_perf,
     df_qc,
     df_samples,
     df_athlete_session,
@@ -56,6 +59,7 @@ def store_draft_results(
     st.session_state.report_txt = report_txt
     st.session_state.manual_metricas_txt = manual_metricas_txt
     st.session_state.df_perf = df_perf
+    st.session_state.df_collective_perf = df_collective_perf
     st.session_state.df_qc = df_qc
     st.session_state.df_samples = df_samples
     st.session_state.df_athlete_session = df_athlete_session
@@ -68,6 +72,7 @@ def store_draft_results(
 def save_draft_outputs(
     *,
     df_perf,
+    df_collective_perf,
     df_qc,
     df_samples,
     df_athlete_session,
@@ -78,6 +83,7 @@ def save_draft_outputs(
     saved_paths = {}
     for name, df in {
         "performance_metrics": df_perf,
+        "collective_performance_metrics": df_collective_perf,
         "quality_metrics": df_qc,
         "samples": df_samples,
         "athlete_session": df_athlete_session,

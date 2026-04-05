@@ -7,6 +7,7 @@ Maintains the same interface as the previous duckdb_utils/data_manager modules.
 
 import os
 import mimetypes
+import hashlib
 import pandas as pd
 import requests
 import streamlit as st
@@ -15,7 +16,7 @@ from datetime import date, datetime
 import math
 import time
 from urllib.parse import urlparse
-from .constants import CAMPOS_DIR, CLEANDATA_DIR
+from .constants import CLEANDATA_DIR
 
 try:
     import numpy as np
@@ -90,6 +91,8 @@ def initialize_schema() -> None:
         escalao TEXT,
         selecao TEXT,
         genero TEXT,
+        hr_max_bpm DOUBLE PRECISION,
+        hr_rest_bpm DOUBLE PRECISION,
         ativo BOOLEAN DEFAULT true,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -104,6 +107,54 @@ def initialize_schema() -> None:
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS escalao TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS selecao TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS foto_url TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS hr_max_bpm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS hr_rest_bpm DOUBLE PRECISION;
+
+    -- Fields dimension
+    CREATE TABLE IF NOT EXISTS fields (
+        field_sk SERIAL PRIMARY KEY,
+        field_fingerprint TEXT UNIQUE NOT NULL,
+        estadio TEXT,
+        campo_local TEXT,
+        cidade TEXT,
+        pais TEXT,
+        clat DOUBLE PRECISION,
+        clon DOUBLE PRECISION,
+        dist_x DOUBLE PRECISION,
+        dist_y DOUBLE PRECISION,
+        rotation DOUBLE PRECISION,
+        epsg INTEGER,
+        bl_lat DOUBLE PRECISION,
+        bl_lon DOUBLE PRECISION,
+        br_lat DOUBLE PRECISION,
+        br_lon DOUBLE PRECISION,
+        tl_lat DOUBLE PRECISION,
+        tl_lon DOUBLE PRECISION,
+        tr_lat DOUBLE PRECISION,
+        tr_lon DOUBLE PRECISION,
+        obs TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS estadio TEXT;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS campo_local TEXT;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS cidade TEXT;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS pais TEXT;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS clat DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS clon DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS dist_x DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS dist_y DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS rotation DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS epsg INTEGER;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS bl_lat DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS bl_lon DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS br_lat DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS br_lon DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS tl_lat DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS tl_lon DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS tr_lat DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS tr_lon DOUBLE PRECISION;
+    ALTER TABLE fields ADD COLUMN IF NOT EXISTS obs TEXT;
 
     -- Sessions dimension
     CREATE TABLE IF NOT EXISTS sessions (
@@ -158,7 +209,82 @@ def initialize_schema() -> None:
         n_dec_3_0 INTEGER,
         active_time_min DOUBLE PRECISION,
         active_pct DOUBLE PRECISION,
+        hr_avg_bpm DOUBLE PRECISION,
+        hr_peak_bpm DOUBLE PRECISION,
+        hr_time_min DOUBLE PRECISION,
+        hr_time_valid_pct DOUBLE PRECISION,
+        beats_total DOUBLE PRECISION,
+        dist_per_beat_m DOUBLE PRECISION,
+        hsr_per_beat_m DOUBLE PRECISION,
+        sprint_per_beat_m DOUBLE PRECISION,
+        sprints_per_1000_beats DOUBLE PRECISION,
+        acc_per_1000_beats DOUBLE PRECISION,
+        dec_per_1000_beats DOUBLE PRECISION,
+        external_load_score DOUBLE PRECISION,
+        total_load_score DOUBLE PRECISION,
+        player_load DOUBLE PRECISION,
+        rhie_bouts INTEGER,
+        rhie_actions INTEGER,
+        zone1_walk_time_min DOUBLE PRECISION,
+        zone1_walk_dist_m DOUBLE PRECISION,
+        zone2_jog_time_min DOUBLE PRECISION,
+        zone2_jog_dist_m DOUBLE PRECISION,
+        zone3_run_time_min DOUBLE PRECISION,
+        zone3_run_dist_m DOUBLE PRECISION,
+        zone4_hsr_time_min DOUBLE PRECISION,
+        zone4_hsr_dist_m DOUBLE PRECISION,
+        zone5_sprint_time_min DOUBLE PRECISION,
+        zone5_sprint_dist_m DOUBLE PRECISION,
+        peak_dist_1m_m DOUBLE PRECISION,
+        peak_dist_3m_m DOUBLE PRECISION,
+        peak_dist_5m_m DOUBLE PRECISION,
+        peak_hsr_1m_m DOUBLE PRECISION,
+        peak_hsr_3m_m DOUBLE PRECISION,
+        peak_hsr_5m_m DOUBLE PRECISION,
+        peak_sprint_1m_m DOUBLE PRECISION,
+        peak_sprint_3m_m DOUBLE PRECISION,
+        peak_sprint_5m_m DOUBLE PRECISION,
+        peak_acc_actions_1m DOUBLE PRECISION,
+        peak_acc_actions_3m DOUBLE PRECISION,
+        peak_acc_actions_5m DOUBLE PRECISION,
+        peak_hi_actions_1m DOUBLE PRECISION,
+        peak_hi_actions_3m DOUBLE PRECISION,
+        peak_hi_actions_5m DOUBLE PRECISION,
+        trimp_banister DOUBLE PRECISION,
+        trimp_per_min DOUBLE PRECISION,
         PRIMARY KEY (session_sk, athlete_sk, phase_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS collective_performance_metrics (
+        session_sk INTEGER REFERENCES sessions(session_sk),
+        phase_id INTEGER,
+        fase TEXT,
+        data DATE,
+        selecao TEXT,
+        genero TEXT,
+        contexto TEXT,
+        jogo TEXT,
+        duracao_min_total DOUBLE PRECISION,
+        dist_m_total DOUBLE PRECISION,
+        hsr_dist_m_total DOUBLE PRECISION,
+        sprint_dist_m_total DOUBLE PRECISION,
+        active_time_min_total DOUBLE PRECISION,
+        m_min_avg DOUBLE PRECISION,
+        hsr_pct_avg DOUBLE PRECISION,
+        active_pct_avg DOUBLE PRECISION,
+        n_sprints_total INTEGER,
+        n_acc_2_5_total INTEGER,
+        n_dec_3_0_total INTEGER,
+        vmax_mps_max DOUBLE PRECISION,
+        peak_1m_m_min_max DOUBLE PRECISION,
+        hr_avg_bpm_avg DOUBLE PRECISION,
+        external_load_score_total DOUBLE PRECISION,
+        total_load_score_total DOUBLE PRECISION,
+        player_load_total DOUBLE PRECISION,
+        rhie_bouts_total INTEGER,
+        rhie_actions_total INTEGER,
+        trimp_banister_total DOUBLE PRECISION,
+        PRIMARY KEY (session_sk, phase_id)
     );
 
     -- Quality metrics
@@ -313,14 +439,14 @@ def insert_or_update_table(
         pk_present = [col for col in pk_columns if col in df_to_upload.columns]
         if pk_present:
             df_to_upload = df_to_upload.drop_duplicates(subset=pk_present, keep="last")
-    
+
     records = _dataframe_to_supabase_records(df_to_upload)
 
     if batch_size is None or batch_size <= 0:
         batches = [records]
     else:
         batches = [records[i:i + batch_size] for i in range(0, len(records), batch_size)]
-    
+
     try:
         total_batches = len(batches)
         for batch_index, batch in enumerate(batches, start=1):
@@ -360,16 +486,13 @@ def insert_or_update_table(
                             retry_wait_seconds=wait_seconds,
                         )
                     time.sleep(wait_seconds)
-    
     except Exception as e:
         stats['success'] = False
         stats['error'] = str(e)
         st.error(f"Error writing to {table_name}: {str(e)}")
         return stats
-    
+
     return stats
-
-
 def delete_table_rows(table_name: str, filters: Dict) -> Dict:
     """Delete rows from a Supabase table using equality filters."""
     client = get_supabase_client()
@@ -431,6 +554,9 @@ def _is_transient_supabase_error(error: Exception) -> bool:
 def _json_safe_value(value):
     """Convert pandas/numpy/date values to JSON-serializable Python primitives."""
     if value is None or value is pd.NA:
+        return None
+
+    if isinstance(value, str) and value.strip() in {"NaT", "nan", "None", "<NA>", ""}:
         return None
 
     if pd.isna(value):
@@ -542,17 +668,18 @@ def read_table(table_name: str, filters: Dict = None) -> pd.DataFrame:
 # ==================== High-level API (matches old data_manager interface) ====================
 
 def write_session_data(
-    df_perf, df_qc, df_samples, df_athlete_session,
+    df_perf, df_collective_perf, df_qc, df_samples, df_athlete_session,
     db_file=None,  # ignored in Supabase mode, kept for compatibility
     progress_callback: Optional[Callable] = None,
 ):
-    """Persist performance, quality, samples, and athlete_session DataFrames to Supabase.
+    """Persist performance, collective performance, quality, samples, and athlete_session DataFrames to Supabase.
     
     This is the main integration point for the analytic pipeline.
     Uses upsert logic to avoid duplicates.
     
     Args:
         df_perf: performance metrics DataFrame
+        df_collective_perf: collective performance metrics DataFrame
         df_qc: quality metrics DataFrame
         df_samples: samples (tracking) DataFrame
         df_athlete_session: athlete session participation DataFrame
@@ -562,7 +689,7 @@ def write_session_data(
         dict with integration stats
     """
     total_steps = 2 + sum(
-        1 for df in [df_perf, df_qc, df_samples, df_athlete_session]
+        1 for df in [df_perf, df_collective_perf, df_qc, df_samples, df_athlete_session]
         if df is not None and not df.empty
     )
 
@@ -572,6 +699,7 @@ def write_session_data(
     
     stats = {
         'performance_metrics': None,
+        'collective_performance_metrics': None,
         'quality_metrics': None,
         'samples': None,
         'athlete_session': None,
@@ -579,7 +707,7 @@ def write_session_data(
 
     session_sks = set()
     athlete_sks = set()
-    for df in [df_perf, df_qc, df_samples, df_athlete_session]:
+    for df in [df_perf, df_collective_perf, df_qc, df_samples, df_athlete_session]:
         if df is None or df.empty:
             continue
         if "session_sk" in df.columns:
@@ -604,6 +732,18 @@ def write_session_data(
         )
         if not stats['performance_metrics'].get("success", False):
             raise RuntimeError(f"Falha ao gravar performance_metrics: {stats['performance_metrics'].get('error')}")
+
+    if df_collective_perf is not None and not df_collective_perf.empty:
+        current_step += 1
+        _emit_progress(progress_callback, current_step, total_steps, f"A gravar collective_performance_metrics ({len(df_collective_perf)} linhas)...", "collective_performance_metrics")
+        stats['collective_performance_metrics'] = insert_or_update_table(
+            "collective_performance_metrics", df_collective_perf,
+            pk_columns=["session_sk", "phase_id"],
+        )
+        if not stats['collective_performance_metrics'].get("success", False):
+            raise RuntimeError(
+                f"Falha ao gravar collective_performance_metrics: {stats['collective_performance_metrics'].get('error')}"
+            )
     
     if df_qc is not None and not df_qc.empty:
         current_step += 1
@@ -672,32 +812,144 @@ def write_metrics(metrics_df, db_file=None):
 
 # ==================== Parquet utilities (maintained for field/athlete/session dimensions) ====================
 
-def save_field_to_parquet(df_new, filename=f"{CAMPOS_DIR}/fields_database.parquet"):
+FIELD_REFERENCE_COLUMNS = [
+    "field_fingerprint",
+    "estadio",
+    "campo_local",
+    "cidade",
+    "pais",
+    "clat",
+    "clon",
+    "dist_x",
+    "dist_y",
+    "rotation",
+    "epsg",
+    "BL_lat",
+    "BL_lon",
+    "BR_lat",
+    "BR_lon",
+    "TL_lat",
+    "TL_lon",
+    "TR_lat",
+    "TR_lon",
+    "obs",
+]
+
+
+def _field_fingerprint_from_row(row: pd.Series) -> str:
+    parts = [
+        f"{float(row.get('BL_lat', 0.0)):.6f}",
+        f"{float(row.get('BL_lon', 0.0)):.6f}",
+        f"{float(row.get('BR_lat', 0.0)):.6f}",
+        f"{float(row.get('BR_lon', 0.0)):.6f}",
+        f"{float(row.get('TL_lat', 0.0)):.6f}",
+        f"{float(row.get('TL_lon', 0.0)):.6f}",
+        f"{float(row.get('TR_lat', 0.0)):.6f}",
+        f"{float(row.get('TR_lon', 0.0)):.6f}",
+    ]
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _prepare_field_reference_df(df_new: pd.DataFrame) -> pd.DataFrame:
+    if df_new is None or df_new.empty:
+        return pd.DataFrame(columns=FIELD_REFERENCE_COLUMNS)
+
+    df = df_new.copy()
+    rename_map = {
+        "bl_lat": "BL_lat",
+        "bl_lon": "BL_lon",
+        "br_lat": "BR_lat",
+        "br_lon": "BR_lon",
+        "tl_lat": "TL_lat",
+        "tl_lon": "TL_lon",
+        "tr_lat": "TR_lat",
+        "tr_lon": "TR_lon",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
+    for col in FIELD_REFERENCE_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    for col in ["estadio", "campo_local", "cidade", "pais", "obs"]:
+        df[col] = df[col].astype("string").fillna("").str.strip()
+
+    for col in [
+        "clat", "clon", "dist_x", "dist_y", "rotation",
+        "BL_lat", "BL_lon", "BR_lat", "BR_lon", "TL_lat", "TL_lon", "TR_lat", "TR_lon",
+    ]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    if "epsg" in df.columns:
+        df["epsg"] = pd.to_numeric(df["epsg"], errors="coerce").astype("Int64")
+
+    if "field_fingerprint" not in df.columns or df["field_fingerprint"].isna().any():
+        df["field_fingerprint"] = df.apply(_field_fingerprint_from_row, axis=1)
+
+    return df[FIELD_REFERENCE_COLUMNS].drop_duplicates(subset=["field_fingerprint"], keep="last")
+
+
+def save_field_reference(df_new):
     """
-    Appends new field data to the parquet database.
-    Deduplicates by field corner coordinates to avoid repeated entries.
+    Persist field data to Supabase.
+
+    Persist field data to Supabase.
     """
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-
-    if os.path.exists(filename):
-        df_old = pd.read_parquet(filename)
-        df_final = pd.concat([df_old, df_new]).drop_duplicates(
-            subset=['BL_lat', 'BR_lat', 'TL_lat', 'TR_lat'], keep='last'
-        )
-    else:
-        df_final = df_new
-
-    df_final.to_parquet(filename, index=False)
-
-
-def read_field_from_parquet(filename=f"{CAMPOS_DIR}/fields_database.parquet"):
-    """Read field data from parquet database."""
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-
-    if os.path.exists(filename):
-        return pd.read_parquet(filename)
-    else:
+    df_prepared = _prepare_field_reference_df(df_new)
+    if df_prepared.empty:
         return pd.DataFrame()
+
+    initialize_schema()
+    df_db = df_prepared.rename(
+        columns={
+            "BL_lat": "bl_lat",
+            "BL_lon": "bl_lon",
+            "BR_lat": "br_lat",
+            "BR_lon": "br_lon",
+            "TL_lat": "tl_lat",
+            "TL_lon": "tl_lon",
+            "TR_lat": "tr_lat",
+            "TR_lon": "tr_lon",
+        }
+    )
+    stats = insert_or_update_table("fields", df_db, pk_columns=["field_fingerprint"])
+    if not stats.get("success", False):
+        raise RuntimeError(stats.get("error") or "Falha ao guardar campo no Supabase.")
+    return df_prepared
+
+
+def read_field_reference():
+    """
+    Read field data from Supabase.
+    """
+    initialize_schema()
+    df_db = read_table("fields")
+    if df_db is None or df_db.empty:
+        return pd.DataFrame(columns=FIELD_REFERENCE_COLUMNS)
+    return _prepare_field_reference_df(df_db)
+
+
+def migrate_field_parquet_to_supabase(parquet_path: str) -> Dict:
+    """One-time migration helper for legacy local field references."""
+    stats = {"migrated": 0, "success": True, "error": None}
+    try:
+        if not parquet_path or not os.path.exists(parquet_path):
+            stats["error"] = "Parquet file not found."
+            stats["success"] = False
+            return stats
+
+        df_legacy = pd.read_parquet(parquet_path)
+        df_prepared = _prepare_field_reference_df(df_legacy)
+        if df_prepared.empty:
+            return stats
+
+        save_field_reference(df_prepared)
+        stats["migrated"] = int(len(df_prepared))
+        return stats
+    except Exception as exc:
+        stats["success"] = False
+        stats["error"] = str(exc)
+        return stats
 
 
 def append_dedup_parquet(df_new, filename, subset_keys):
