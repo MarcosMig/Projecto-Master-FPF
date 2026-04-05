@@ -57,6 +57,8 @@ def hash_session(
     h.update(str(estadio).encode("utf-8"))
 
     def _feed_files(files):
+        if not files:
+            return
         for uf in sorted(files, key=lambda x: x.name):
             h.update(uf.name.encode("utf-8"))
             try:

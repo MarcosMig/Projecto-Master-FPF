@@ -16,8 +16,9 @@ navigation = st.navigation(
             st.Page("pages/Insercão_Dados.py", title="Inserção de Dados"),
         ],
         "Base de Dados": [
-            st.Page("pages/Atletas.py", title="Atletas", url_path="atletas"),
             st.Page("pages/Seleções.py", title="Seleções", url_path="selecoes"),
+            st.Page("pages/Atletas.py", title="Atletas", url_path="atletas"),
+            st.Page("pages/Campos.py", title="Campos", url_path="campos"),
         ],
         "Análise": [
             st.Page("pages/Análise_Performance.py", title="Comparar Perfis", url_path="comparar-perfis"),

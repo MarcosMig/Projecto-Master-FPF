@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """
 FPF UTM Engine v16 (parquet downloads)
 Autor: Marcos (base) + ajustes de estabilidade/indentação
@@ -8,6 +8,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import folium
+import plotly.graph_objects as go
 from pyproj import Geod, Transformer
 from pathlib import Path
 import tempfile
@@ -43,7 +44,8 @@ from fpf_modules.metrics import (
     time_to_seconds,
     count_bouts,
     audit_timebase,
-    compute_metrics_for_df
+    compute_metrics_for_df,
+    derive_load_metrics,
 )
 
 from fpf_modules.qc import qc_gps_df
@@ -75,8 +77,10 @@ from fpf_modules.pipeline import (
 )
 
 from fpf_modules.supabase_manager import (
+    initialize_schema,
+    insert_or_update_table,
     read_table,
-    save_field_to_parquet,
+    save_field_reference,
     resolve_athlete_sk,
     resolve_session_sk,
     write_session_data,
@@ -115,6 +119,214 @@ ATHLETE_POSITIONS = ["", "GR", "DD", "DE", "DC", "MD", "ME", "MC", "MDC", "MAC",
 ATHLETE_FEET = ["", "Direito", "Esquerdo", "Ambidestro"]
 ATHLETE_ESCALOES = ["", "A", "Sub-23", "Sub-21", "Sub-20", "Sub-19", "Sub-18", "Sub-17", "Sub-16", "Sub-15"]
 SELECTION_OPTIONS = load_selection_reference()
+GENDER_OPTIONS = ["Masculino", "Feminino"]
+
+
+def _clean_text_value(value):
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    return "" if text in {"", "None", "nan", "NaT", "<NA>"} else text
+
+
+def _normalize_athlete_identifier(value) -> str:
+    text = _clean_text_value(value)
+    if not text:
+        return ""
+    return re.sub(r"^0+(?=\d+$)", "", text)
+
+
+def _genero_label_to_code(value: str) -> str:
+    mapping = {
+        "Masculino": "M",
+        "Feminino": "F",
+        "M": "M",
+        "F": "F",
+    }
+    return mapping.get(_clean_text_value(value), "")
+
+
+def _generate_internal_atleta_id(df: pd.DataFrame) -> str:
+    if df is None or df.empty or "atleta_id" not in df.columns:
+        return "ATH-00001"
+
+    existing_ids = df["atleta_id"].astype(str).str.strip()
+    numeric_suffixes = (
+        existing_ids.str.extract(r"ATH-(\d+)", expand=False)
+        .dropna()
+        .astype(int)
+    )
+    next_number = 1 if numeric_suffixes.empty else int(numeric_suffixes.max()) + 1
+    return f"ATH-{next_number:05d}"
+
+
+def _create_inline_athlete(
+    nome: str,
+    sobrenome: str,
+    data_nascimento,
+    genero_label: str,
+    posicao: str,
+    selecao_value: str,
+):
+    initialize_schema()
+    athletes_df = read_table("athletes")
+    if athletes_df is None or athletes_df.empty:
+        athletes_df = pd.DataFrame(columns=["atleta_id"])
+
+    nome = _clean_text_value(nome)
+    sobrenome = _clean_text_value(sobrenome)
+    genero = _genero_label_to_code(genero_label)
+    atleta_id = _generate_internal_atleta_id(athletes_df)
+
+    if not nome:
+        raise RuntimeError("O campo Nome e obrigatorio.")
+    if not sobrenome:
+        raise RuntimeError("O campo Sobrenome e obrigatorio.")
+    if not genero:
+        raise RuntimeError("O campo Genero e obrigatorio.")
+
+    available_columns = set(athletes_df.columns.astype(str).tolist()) if not athletes_df.empty else set()
+    payload = {
+        "atleta_id": atleta_id,
+        "nome": f"{nome} {sobrenome}".strip(),
+        "data_nascimento": data_nascimento,
+        "posicao": _clean_text_value(posicao),
+        "genero": genero,
+        "ativo": True,
+    }
+    optional_payload = {
+        "foto_url": "",
+        "selecao": _clean_text_value(selecao_value),
+        "hr_max_bpm": None,
+        "hr_rest_bpm": None,
+    }
+    for column, value in optional_payload.items():
+        if not available_columns or column in available_columns:
+            payload[column] = value
+
+    new_row = pd.DataFrame([payload])
+    stats = insert_or_update_table("athletes", new_row, pk_columns=["atleta_id"])
+    if not stats.get("success", False):
+        raise RuntimeError(stats.get("error") or "Falha ao criar atleta na base de dados.")
+    return atleta_id
+
+
+def _haversine_m(lat1, lon1, lat2, lon2) -> float:
+    values = [lat1, lon1, lat2, lon2]
+    if any(pd.isna(v) for v in values):
+        return np.nan
+    r = 6371000.0
+    phi1 = np.radians(float(lat1))
+    phi2 = np.radians(float(lat2))
+    dphi = np.radians(float(lat2) - float(lat1))
+    dlambda = np.radians(float(lon2) - float(lon1))
+    a = np.sin(dphi / 2.0) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlambda / 2.0) ** 2
+    return float(2 * r * np.arctan2(np.sqrt(a), np.sqrt(1 - a)))
+
+
+def _find_existing_field_match(current_field_df: pd.DataFrame, fields_df: pd.DataFrame, athletes_center=None):
+    if current_field_df is None or current_field_df.empty or fields_df is None or fields_df.empty:
+        return None
+
+    current = current_field_df.iloc[0]
+    athlete_lat = None
+    athlete_lon = None
+    if athletes_center is not None:
+        try:
+            athlete_lat, athlete_lon = athletes_center
+        except Exception:
+            athlete_lat, athlete_lon = None, None
+    candidates = []
+    for _, row in fields_df.iterrows():
+        center_m = _haversine_m(current.get("clat"), current.get("clon"), row.get("clat"), row.get("clon"))
+        athletes_m = _haversine_m(athlete_lat, athlete_lon, row.get("clat"), row.get("clon"))
+        corner_distances = []
+        for prefix in ["BL", "BR", "TL", "TR"]:
+            dist_corner = _haversine_m(
+                current.get(f"{prefix}_lat"),
+                current.get(f"{prefix}_lon"),
+                row.get(f"{prefix}_lat"),
+                row.get(f"{prefix}_lon"),
+            )
+            if pd.notna(dist_corner):
+                corner_distances.append(dist_corner)
+
+        mean_corner_m = float(np.mean(corner_distances)) if corner_distances else np.nan
+        max_corner_m = float(np.max(corner_distances)) if corner_distances else np.nan
+
+        same_fp = False
+        if "field_fingerprint" in current.index and "field_fingerprint" in row.index:
+            same_fp = str(current.get("field_fingerprint") or "") == str(row.get("field_fingerprint") or "")
+
+        match_strength = None
+        if same_fp:
+            match_strength = "forte"
+        elif pd.notna(athletes_m) and athletes_m <= 120.0:
+            if pd.notna(center_m) and center_m <= 100.0:
+                match_strength = "forte"
+            else:
+                match_strength = "provavel"
+        elif pd.notna(center_m) and center_m <= 80.0:
+            match_strength = "provavel"
+        elif pd.notna(center_m) and center_m <= 140.0 and pd.notna(mean_corner_m) and mean_corner_m <= 45.0:
+            match_strength = "provavel"
+
+        if match_strength:
+            score = (
+                (0.0 if same_fp else 1000.0)
+                + (0.0 if pd.isna(athletes_m) else float(athletes_m) * 3.0)
+                + (0.0 if pd.isna(center_m) else float(center_m) * 2.0)
+                + (0.0 if pd.isna(mean_corner_m) else float(mean_corner_m) * 0.5)
+            )
+            candidates.append(
+                {
+                    "row": row,
+                    "same_fingerprint": same_fp,
+                    "match_strength": match_strength,
+                    "athletes_m": athletes_m,
+                    "center_m": center_m,
+                    "mean_corner_m": mean_corner_m,
+                    "max_corner_m": max_corner_m,
+                    "score": score,
+                }
+            )
+
+    if not candidates:
+        return None
+    candidates = sorted(candidates, key=lambda item: item["score"])
+    return candidates[0]
+
+
+def _find_field_match_from_athletes(fields_df: pd.DataFrame, athlete_lat, athlete_lon):
+    if fields_df is None or fields_df.empty or athlete_lat is None or athlete_lon is None:
+        return None
+
+    candidates = []
+    for _, row in fields_df.iterrows():
+        athletes_m = _haversine_m(athlete_lat, athlete_lon, row.get("clat"), row.get("clon"))
+        if pd.isna(athletes_m):
+            continue
+
+        if athletes_m <= 80.0:
+            strength = "forte"
+        elif athletes_m <= 150.0:
+            strength = "provavel"
+        else:
+            continue
+
+        candidates.append(
+            {
+                "row": row,
+                "athletes_m": float(athletes_m),
+                "match_strength": strength,
+                "score": float(athletes_m),
+            }
+        )
+
+    if not candidates:
+        return None
+    candidates = sorted(candidates, key=lambda item: item["score"])
+    return candidates[0]
 
 
 def _find_potential_duplicate_sessions(
@@ -406,6 +618,47 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
 
     st.session_state[state_key] = resolved_df.copy()
     st.session_state[state_selection_key] = selected_selection
+
+    add_mode_key = "athlete_registry_add_mode"
+    add_col1, add_col2 = st.columns([0.9, 1.6], gap="medium")
+    if add_col1.button("Adicionar atleta", key="btn_add_inline_athlete"):
+        st.session_state[add_mode_key] = not st.session_state.get(add_mode_key, False)
+        st.rerun()
+
+    if st.session_state.get(add_mode_key, False):
+        with add_col2:
+            st.markdown("**Novo atleta na base de dados**")
+            with st.form("inline_new_athlete_form", clear_on_submit=True):
+                form_col1, form_col2 = st.columns(2)
+                nome = form_col1.text_input("Nome")
+                sobrenome = form_col2.text_input("Sobrenome")
+                form_col3, form_col4, form_col5 = st.columns(3)
+                data_nascimento = form_col3.date_input("Data de nascimento", value=None, format="DD/MM/YYYY")
+                genero_label = form_col4.selectbox(
+                    "Genero",
+                    GENDER_OPTIONS,
+                    index=GENDER_OPTIONS.index(selected_selection) if selected_selection in GENDER_OPTIONS else 0,
+                )
+                posicao = form_col5.selectbox("Posicao", ATHLETE_POSITIONS)
+                save_new = st.form_submit_button("Guardar atleta", type="primary")
+
+            if save_new:
+                try:
+                    _create_inline_athlete(
+                        nome=nome,
+                        sobrenome=sobrenome,
+                        data_nascimento=data_nascimento,
+                        genero_label=genero_label,
+                        posicao=posicao,
+                        selecao_value=selected_selection,
+                    )
+                except RuntimeError as exc:
+                    st.error(str(exc))
+                else:
+                    st.session_state[add_mode_key] = False
+                    st.success("Novo atleta criado com sucesso.")
+                    st.rerun()
+
     return _normalize_athlete_registry_df(resolved_df, genero_default, selected_selection)
 
 
@@ -557,6 +810,22 @@ def _build_draft_exports(df_metrics: pd.DataFrame, out_files, session_payload: d
         "hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints",
         "n_acc_2_5", "n_dec_3_0",
         "active_time_min", "active_pct",
+        "hr_avg_bpm", "hr_peak_bpm", "hr_time_min", "hr_time_valid_pct", "beats_total",
+        "dist_per_beat_m", "hsr_per_beat_m", "sprint_per_beat_m",
+        "sprints_per_1000_beats", "acc_per_1000_beats", "dec_per_1000_beats",
+        "external_load_score", "total_load_score",
+        "player_load", "rhie_bouts", "rhie_actions",
+        "zone1_walk_time_min", "zone1_walk_dist_m",
+        "zone2_jog_time_min", "zone2_jog_dist_m",
+        "zone3_run_time_min", "zone3_run_dist_m",
+        "zone4_hsr_time_min", "zone4_hsr_dist_m",
+        "zone5_sprint_time_min", "zone5_sprint_dist_m",
+        "peak_dist_1m_m", "peak_dist_3m_m", "peak_dist_5m_m",
+        "peak_hsr_1m_m", "peak_hsr_3m_m", "peak_hsr_5m_m",
+        "peak_sprint_1m_m", "peak_sprint_3m_m", "peak_sprint_5m_m",
+        "peak_acc_actions_1m", "peak_acc_actions_3m", "peak_acc_actions_5m",
+        "peak_hi_actions_1m", "peak_hi_actions_3m", "peak_hi_actions_5m",
+        "trimp_banister", "trimp_per_min",
     ]
     qc_cols = [
         "n_points", "pct_time_valid", "n_gaps_gt2s",
@@ -617,7 +886,7 @@ def _validate_publish_registry(athlete_registry_df: pd.DataFrame, athlete_ids_ex
     ]
     missing_expected = sorted(set(athlete_ids_expected) - set(registry_df["atleta_id_ficheiro"].tolist()))
     if missing_expected:
-        return None, f"Faltam associaÃ§Ãµes para os atletas: {', '.join(missing_expected)}."
+        return None, f"Faltam associações para os atletas: {', '.join(missing_expected)}."
 
     return registry_df, None
 
@@ -672,7 +941,7 @@ def _prepare_publish_payloads(
         if mapped["atleta_id"].isna().any():
             missing_ids = sorted(source_ids[mapped["atleta_id"].isna()].unique().tolist())
             raise ValueError(
-                f"NÃ£o foi possÃ­vel mapear todos os atletas para publicaÃ§Ã£o: {', '.join(missing_ids)}."
+                f"Não foi possível mapear todos os atletas para publicação: {', '.join(missing_ids)}."
             )
         mapped["session_sk"] = session_sk
         mapped["athlete_sk"] = mapped["atleta_id"].astype(str).map(athlete_map)
@@ -688,7 +957,22 @@ def _prepare_publish_payloads(
             "session_sk", "athlete_sk", "atleta_id", "phase_id", "fase", "data", "selecao", "genero",
             "contexto", "jogo", "duracao_min", "dist_m", "m_min", "vmax_mps", "peak_1m_m_min",
             "hsr_dist_m", "hsr_pct", "sprint_dist_m", "n_sprints", "n_acc_2_5", "n_dec_3_0",
-            "active_time_min", "active_pct",
+            "active_time_min", "active_pct", "hr_avg_bpm", "hr_peak_bpm", "hr_time_min",
+            "hr_time_valid_pct", "beats_total", "dist_per_beat_m", "hsr_per_beat_m",
+            "sprint_per_beat_m", "sprints_per_1000_beats", "acc_per_1000_beats",
+            "dec_per_1000_beats", "external_load_score", "total_load_score",
+            "player_load", "rhie_bouts", "rhie_actions",
+            "zone1_walk_time_min", "zone1_walk_dist_m",
+            "zone2_jog_time_min", "zone2_jog_dist_m",
+            "zone3_run_time_min", "zone3_run_dist_m",
+            "zone4_hsr_time_min", "zone4_hsr_dist_m",
+            "zone5_sprint_time_min", "zone5_sprint_dist_m",
+            "peak_dist_1m_m", "peak_dist_3m_m", "peak_dist_5m_m",
+            "peak_hsr_1m_m", "peak_hsr_3m_m", "peak_hsr_5m_m",
+            "peak_sprint_1m_m", "peak_sprint_3m_m", "peak_sprint_5m_m",
+            "peak_acc_actions_1m", "peak_acc_actions_3m", "peak_acc_actions_5m",
+            "peak_hi_actions_1m", "peak_hi_actions_3m", "peak_hi_actions_5m",
+            "trimp_banister", "trimp_per_min",
         ]
     ].copy()
     df_qc_publish = df_qc_publish[
@@ -754,6 +1038,12 @@ if "pick_last_click_sig" not in st.session_state:
     st.session_state.pick_last_click_sig = None
 if "last_metodo_campo" not in st.session_state:
     st.session_state.last_metodo_campo = None
+if "field_save_completed_sig" not in st.session_state:
+    st.session_state.field_save_completed_sig = None
+if "field_save_flash_msg" not in st.session_state:
+    st.session_state.field_save_flash_msg = None
+if "athlete_registry_expanded" not in st.session_state:
+    st.session_state.athlete_registry_expanded = True
 
 # --- LOGIN (CENTRADO + st.secrets) ---
 
@@ -877,54 +1167,24 @@ with session_col_4:
         st.text_input("Adversário", value="", disabled=True)
 
 st.divider()
-top_left_col, top_right_col = st.columns(2, gap="large")
+st.header("2. Dados dos Atletas")
+st.caption(
+    "CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
+)
+f_atleta = st.file_uploader(
+    "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
+)
+athlete_registry_df = None
+athlete_registry_error = None
+if f_atleta:
+    st.caption("A associação com a base de dados é feita no bloco Auditoria de Atletas.")
+else:
+    st.caption("Carrega os ficheiros de atletas para poderes fazer a associação com a base de dados.")
 
-with top_left_col:
-    st.header("2. Dados dos Atletas")
-    st.caption(
-        "CSVs com Player-<id> e indicação de fase (Warm/Primeira/Segunda/1P/2P) no nome do ficheiro."
-    )
-    f_atleta = st.file_uploader(
-        "Dados de ATLETAS (CSVs)", accept_multiple_files=True, type=["csv"]
-    )
-    st.caption("A associação à base de dados só é pedida no fim, se escolheres publicar.")
-
-with top_right_col:
-    st.header("3. Calibração do Campo")
-    st.caption(
-        "Define os 4 cantos via upload (BL/BR/TL/TR) ou usando o modo 'Pick no mapa'.")
-
-    metodo_campo = st.radio(
-
-        "Como queres definir os 4 cantos?",
-
-        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)",
-                 "Escolher um campo guardado anteriormente"],
-
-        index=0,
-
-        help="Alternativa ao upload: usa um mapa satélite e clica nos 4 cantos do campo.",
-
-    )
-
-    st.caption(
-        "Se escolheres 'Pick no mapa', não precisas de carregar os 4 CSVs do campo.")
-
-    f_campo = st.file_uploader(
-        "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
-    )
 st.divider()
-st.title("Validação de Dados")
+st.header("3. Validação de Dados")
 
-if (
-    metodo_campo == "Pick no mapa (clicar 4 cantos)"
-    and st.session_state.last_metodo_campo != metodo_campo
-):
-    st.session_state.pick_corners = []
-    st.session_state.pts_gps_picked = None
-    st.session_state.pick_last_click_sig = None
-
-st.session_state.last_metodo_campo = metodo_campo
+metodo_campo = "Escolher um campo guardado anteriormente"
 
 # Defaults (menu de opções removido)
 epsg_used = 32629
@@ -964,6 +1224,75 @@ def _reverse_geocode_city_country(lat: float, lon: float):
 
 
 @st.cache_data(show_spinner=False, ttl=86400)
+def _suggest_field_name(lat: float, lon: float, city: str | None, country: str | None):
+    """Sugere um nome base para o campo privilegiando referencias desportivas."""
+    generic_tokens = {
+        "road", "residential", "footway", "path", "cycleway", "pedestrian",
+        "service", "track", "street", "avenue", "highway", "route",
+    }
+
+    def _clean_candidate(value):
+        text = str(value or "").strip()
+        return text if len(text) >= 4 else ""
+
+    try:
+        lat = round(float(lat), 6)
+        lon = round(float(lon), 6)
+        url = "https://nominatim.openstreetmap.org/reverse"
+        params = {
+            "format": "jsonv2",
+            "lat": lat,
+            "lon": lon,
+            "zoom": 18,
+            "addressdetails": 1,
+            "namedetails": 1,
+        }
+        headers = {
+            "User-Agent": "FPF-Performance-Hub/1.0 (contact: performance@fpf.pt)",
+            "Accept-Language": "pt-PT,pt,en",
+        }
+        r = requests.get(url, params=params, headers=headers, timeout=5)
+        data = r.json() if r.status_code == 200 and r.content else {}
+    except Exception:
+        data = {}
+
+    addr = data.get("address", {}) if isinstance(data, dict) else {}
+    namedetails = data.get("namedetails", {}) if isinstance(data, dict) else {}
+    osm_type = str(data.get("type") or "").strip().lower()
+
+    priority_candidates = [
+        addr.get("stadium"),
+        addr.get("sports_centre"),
+        addr.get("sports_center"),
+        addr.get("leisure"),
+        addr.get("club"),
+        addr.get("amenity"),
+        namedetails.get("name"),
+        data.get("name"),
+    ]
+
+    for candidate in priority_candidates:
+        candidate = _clean_candidate(candidate)
+        if candidate and candidate.lower() not in generic_tokens:
+            return candidate
+
+    if osm_type in {"stadium", "sports_centre", "pitch", "sports_hall"}:
+        candidate = _clean_candidate(data.get("display_name", "").split(",")[0])
+        if candidate:
+            return candidate
+
+    city = str(city or "").strip()
+    country = str(country or "").strip()
+    if city and country:
+        return f"Campo {city} ({country})"
+    if city:
+        return f"Campo {city}"
+    if country:
+        return f"Campo ({country})"
+    return ""
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
 def _fmt_match_clock(seconds):
     if seconds is None or pd.isna(seconds):
         return "—"
@@ -999,6 +1328,14 @@ def _build_metric_groups():
                 "vmax_mps",
                 "peak_1m_m_min",
             ],
+            "Carga": [
+                "hr_avg_bpm",
+                "hr_peak_bpm",
+                "beats_total",
+                "dist_per_beat_m",
+                "external_load_score",
+                "total_load_score",
+            ],
         },
         "Disponibilidade / Integridade": {
             "Completude do sinal": ["n_points", "pct_time_valid", "n_gaps_gt2s"],
@@ -1023,26 +1360,24 @@ def _build_performance_metric_groups():
             "hsr_pct",
             "active_pct",
         ],
+        "Eventos": [
+            "n_sprints",
+            "n_acc_2_5",
+            "n_dec_3_0",
+        ],
         "Picos de Fase": [
             "vmax_mps",
             "peak_1m_m_min",
         ],
-        f"HSR ≥ {HSR_MPS:.1f} m/s": [
-            "hsr_dist_m",
-            "hsr_pct",
-        ],
-        f"Sprint ≥ {SPRINT_MPS:.1f} m/s": [
-            "sprint_dist_m",
-            "n_sprints",
-        ],
-        f"Acc ≥ {ACC_THR:.1f} m/s²": [
-            "n_acc_2_5",
-        ],
-        f"Dec ≤ {DEC_THR:.1f} m/s²": [
-            "n_dec_3_0",
+        "Carga": [
+            "hr_avg_bpm",
+            "external_load_score",
+            "total_load_score",
+            "player_load",
+            "rhie_bouts",
+            "trimp_banister",
         ],
     }
-
 
 def _build_technical_metric_groups():
     return {
@@ -1080,6 +1415,12 @@ def _build_totals_by_athlete(df_metrics: pd.DataFrame) -> pd.DataFrame:
         "n_sprints",
         "n_acc_2_5",
         "n_dec_3_0",
+        "beats_total",
+        "external_load_score",
+        "total_load_score",
+        "player_load",
+        "rhie_bouts",
+        "trimp_banister",
     ]
 
     for col in [duration_col] + per90_source_cols:
@@ -1097,6 +1438,12 @@ def _build_totals_by_athlete(df_metrics: pd.DataFrame) -> pd.DataFrame:
         "n_sprints": "n_sprints_90",
         "n_acc_2_5": "n_acc_2_5_90",
         "n_dec_3_0": "n_dec_3_0_90",
+        "beats_total": "beats_total_90",
+        "external_load_score": "external_load_score_90",
+        "total_load_score": "total_load_score_90",
+        "player_load": "player_load_90",
+        "rhie_bouts": "rhie_bouts_90",
+        "trimp_banister": "trimp_banister_90",
     }
 
     for source_col, target_col in rename_map.items():
@@ -1128,17 +1475,257 @@ def _build_totals_by_athlete(df_metrics: pd.DataFrame) -> pd.DataFrame:
         "active_time_min",
         "active_time_min_90",
         "active_pct",
+        "hr_avg_bpm",
+        "hr_peak_bpm",
+        "hr_time_min",
+        "hr_time_valid_pct",
+        "beats_total",
+        "beats_total_90",
+        "dist_per_beat_m",
+        "external_load_score",
+        "external_load_score_90",
+        "total_load_score",
+        "total_load_score_90",
+        "player_load",
+        "player_load_90",
+        "rhie_bouts",
+        "rhie_bouts_90",
+        "trimp_banister",
+        "trimp_banister_90",
         "vmax_mps",
         "peak_1m_m_min",
+        "n_points",
+        "pct_time_valid",
+        "n_gaps_gt2s",
+        "qc_grade",
+        "qc_flags",
+        "vmax_mps_qc",
+        "n_jumps_gt15m",
+        "n_gaps_gt2s_qc",
     ]
     available_cols = [col for col in preferred_cols if col in totals_df.columns]
     totals_df = totals_df[available_cols].copy()
     return round_metrics_dataframe(totals_df)
 
 
+METRIC_LABELS = {
+    "duracao_min": "Duração (min)",
+    "dist_m": "Distância Total (m)",
+    "hsr_dist_m": "Distância HSR (m)",
+    "sprint_dist_m": "Distância Sprint (m)",
+    "active_time_min": "Tempo Ativo (min)",
+    "m_min": "Intensidade (m/min)",
+    "hsr_pct": "HSR (%)",
+    "active_pct": "Tempo Ativo (%)",
+    "n_sprints": "N.º Sprints",
+    "n_acc_2_5": "N.º Acelerações",
+    "n_dec_3_0": "N.º Desacelerações",
+    "vmax_mps": "Velocidade Máxima (m/s)",
+    "peak_1m_m_min": "Pico 1 min (m/min)",
+    "hr_avg_bpm": "FC Média (bpm)",
+    "hr_peak_bpm": "FC Máxima (bpm)",
+    "beats_total": "Batimentos Totais",
+    "dist_per_beat_m": "Distância por Batimento",
+    "external_load_score": "Carga Externa",
+    "total_load_score": "Carga Total",
+    "player_load": "Player Load",
+    "rhie_bouts": "RHIE",
+    "trimp_banister": "TRIMP",
+    "n_points": "N.º Pontos",
+    "pct_time_valid": "Tempo Válido (%)",
+    "n_gaps_gt2s": "Falhas > 2s",
+    "qc_grade": "QC Grade",
+    "qc_flags": "QC Flags",
+    "vmax_mps_qc": "Vmax QC (m/s)",
+    "n_jumps_gt15m": "Saltos > 15m",
+    "n_gaps_gt2s_qc": "Falhas QC > 2s",
+}
+
+
+def _metric_user_label(metric_col: str) -> str:
+    return METRIC_LABELS.get(metric_col, metric_col)
+
+
+def _format_metric_value_for_ui(metric_col: str, value) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    percent_metrics = {"hsr_pct", "active_pct", "pct_time_valid", "hr_time_valid_pct"}
+    decimal_metrics = {"m_min", "vmax_mps", "vmax_mps_qc", "dist_per_beat_m", "peak_1m_m_min", "player_load", "trimp_banister"}
+    integer_metrics = {
+        "duracao_min", "dist_m", "hsr_dist_m", "sprint_dist_m", "active_time_min",
+        "n_sprints", "n_acc_2_5", "n_dec_3_0", "hr_avg_bpm", "hr_peak_bpm",
+        "beats_total", "external_load_score", "total_load_score", "rhie_bouts", "n_points",
+        "n_gaps_gt2s", "n_jumps_gt15m", "n_gaps_gt2s_qc",
+    }
+    if metric_col in percent_metrics:
+        return f"{float(value):.1f}%"
+    if metric_col in decimal_metrics:
+        return f"{float(value):.1f}"
+    if metric_col in integer_metrics:
+        return f"{int(round(float(value)))}"
+    return f"{float(value):.1f}" if isinstance(value, (int, float, np.number)) else str(value)
+
+
+def _build_group_matrix_by_athlete(
+    totals_df: pd.DataFrame,
+    metric_cols: list[str],
+    athlete_col: str = "atleta_id",
+) -> pd.DataFrame:
+    if totals_df is None or totals_df.empty or athlete_col not in totals_df.columns:
+        return pd.DataFrame()
+
+    cols_present = [col for col in metric_cols if col in totals_df.columns]
+    if not cols_present:
+        return pd.DataFrame()
+
+    matrix_df = totals_df[[athlete_col] + cols_present].copy()
+    matrix_df = matrix_df.sort_values(by=[athlete_col]).reset_index(drop=True)
+    return matrix_df
+
+
+def _transpose_group_metrics(
+    source_df: pd.DataFrame,
+    metric_cols: list[str],
+    athlete_col: str = "atleta_id",
+) -> pd.DataFrame:
+    if source_df is None or source_df.empty or athlete_col not in source_df.columns:
+        return pd.DataFrame()
+
+    cols_present = [col for col in metric_cols if col in source_df.columns]
+    if not cols_present:
+        return pd.DataFrame()
+
+    work_df = source_df[[athlete_col] + cols_present].copy()
+    work_df[athlete_col] = work_df[athlete_col].astype(str).str.strip()
+    work_df = work_df[work_df[athlete_col].ne("")]
+    if work_df.empty:
+        return pd.DataFrame()
+
+    work_df = work_df.drop_duplicates(subset=[athlete_col], keep="last")
+    athlete_ids = work_df[athlete_col].tolist()
+
+    rows = []
+    for metric_col in cols_present:
+        row = {"Metrica": metric_col}
+        for athlete_id in athlete_ids:
+            metric_series = work_df.loc[work_df[athlete_col].eq(athlete_id), metric_col]
+            row[athlete_id] = metric_series.iloc[0] if not metric_series.empty else "-"
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def _format_metric_chart_text(metric_col: str, series: pd.Series) -> list[str]:
+    labels = []
+    for value in series:
+        labels.append(_format_metric_value_for_ui(metric_col, value))
+    return labels
+
+
+def _build_athlete_name_map() -> dict[str, str]:
+    athlete_name_map: dict[str, str] = {}
+    registry_target_map: dict[str, str] = {}
+
+    registry_df = st.session_state.get("athlete_registry_editor_df")
+    if isinstance(registry_df, pd.DataFrame) and not registry_df.empty:
+        reg = registry_df.copy()
+        if "atleta_id_ficheiro" in reg.columns:
+            reg["atleta_id_ficheiro"] = reg["atleta_id_ficheiro"].map(_normalize_athlete_identifier)
+        if "atleta_id" in reg.columns:
+            reg["atleta_id"] = reg["atleta_id"].map(_normalize_athlete_identifier)
+        if "nome" in reg.columns:
+            reg["nome"] = reg["nome"].astype(str).str.strip()
+        for _, row in reg.iterrows():
+            athlete_file_id = str(row.get("atleta_id_ficheiro") or "").strip()
+            athlete_db_id = str(row.get("atleta_id") or "").strip()
+            athlete_name = str(row.get("nome") or "").strip()
+            if athlete_file_id and athlete_db_id:
+                registry_target_map[athlete_file_id] = athlete_db_id
+            if athlete_file_id and athlete_name and athlete_name.lower() not in {"nan", "none", "<na>"}:
+                athlete_name_map[athlete_file_id] = athlete_name
+
+    try:
+        athletes_df = read_table("athletes")
+    except Exception:
+        athletes_df = pd.DataFrame()
+    if athletes_df is not None and not athletes_df.empty and {"atleta_id", "nome"}.issubset(athletes_df.columns):
+        aux = athletes_df[["atleta_id", "nome"]].copy()
+        aux["atleta_id"] = aux["atleta_id"].map(_normalize_athlete_identifier)
+        aux["nome"] = aux["nome"].astype(str).str.strip()
+        aux = aux[aux["atleta_id"].ne("")]
+        db_name_map = {}
+        for _, row in aux.iterrows():
+            athlete_id = str(row.get("atleta_id") or "").strip()
+            athlete_name = str(row.get("nome") or "").strip()
+            if athlete_id and athlete_name and athlete_name.lower() not in {"nan", "none", "<na>"}:
+                db_name_map[athlete_id] = athlete_name
+                athlete_name_map.setdefault(athlete_id, athlete_name)
+
+        for athlete_file_id, athlete_db_id in registry_target_map.items():
+            athlete_name = db_name_map.get(athlete_db_id, "")
+            if athlete_file_id and athlete_name:
+                athlete_name_map[athlete_file_id] = athlete_name
+
+    return athlete_name_map
+
+
+def _render_metric_bar_chart(
+    source_df: pd.DataFrame,
+    metric_col: str,
+    athlete_col: str = "atleta_id",
+    chart_key: str | None = None,
+    athlete_name_map: dict[str, str] | None = None,
+) -> bool:
+    if source_df is None or source_df.empty or metric_col not in source_df.columns or athlete_col not in source_df.columns:
+        return False
+
+    chart_df = source_df[[athlete_col, metric_col]].copy()
+    chart_df[athlete_col] = chart_df[athlete_col].map(_normalize_athlete_identifier)
+    chart_df[metric_col] = pd.to_numeric(chart_df[metric_col], errors="coerce")
+    chart_df = chart_df[chart_df[athlete_col].ne("")].copy()
+    zero_fill_metrics = {"player_load"}
+    if metric_col in zero_fill_metrics:
+        chart_df[metric_col] = chart_df[metric_col].fillna(0.0)
+    else:
+        chart_df = chart_df[chart_df[metric_col].notna()].copy()
+    if chart_df.empty:
+        return False
+
+    athlete_name_map = athlete_name_map or {}
+    chart_df["athlete_label"] = chart_df[athlete_col].map(
+        lambda athlete_id: athlete_name_map.get(_normalize_athlete_identifier(athlete_id), _normalize_athlete_identifier(athlete_id))
+    )
+    chart_df = chart_df.sort_values(by=metric_col, ascending=False).reset_index(drop=True)
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                x=chart_df["athlete_label"],
+                y=chart_df[metric_col],
+                text=_format_metric_chart_text(metric_col, chart_df[metric_col]),
+                textposition="outside",
+                marker=dict(color="#7fb24d", line=dict(color="#2f3b1f", width=1.0)),
+                cliponaxis=False,
+            )
+        ]
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=10, b=20),
+        height=360,
+        xaxis_title="",
+        yaxis_title=_metric_user_label(metric_col),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=False,
+    )
+    fig.update_xaxes(type="category", tickangle=-90, showgrid=False, automargin=True)
+    fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.18)", zeroline=False)
+    st.plotly_chart(fig, use_container_width=True, key=chart_key or f"metric_chart_{metric_col}")
+    return True
+
+
 def _order_technical_report_sections(report_sections):
     ordered_titles = [
-        "Dados da Sessão",
+        "Dados da Sessóo",
         "Validação geográfica",
         "Auditoria de atletas (submissão)",
         "Sincronização",
@@ -1177,14 +1764,14 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
 
         athlete_registry_df = None
         athlete_registry_error = None
-
         if f_atleta:
-            with st.expander("Ficha de Atletas para Publicação", expanded=True):
-                athlete_registry_df, athlete_registry_error = _build_athlete_registry_editor(
-                    f_atleta,
-                    genero,
-                    selecao,
-                )
+            athlete_registry_df, athlete_registry_error = _normalize_athlete_registry_df(
+                st.session_state.get("athlete_registry_editor_df"),
+                genero,
+                selecao,
+            )
+            if athlete_registry_df is not None:
+                st.caption("Associação de atletas reutilizada a partir do passo 2.")
         else:
             athlete_registry_error = "Carrega os ficheiros de atletas para conseguires publicar esta sessão."
 
@@ -1259,7 +1846,7 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                 progress_bar.progress(1.0, text="Transferência concluída.")
                 progress_text.caption("Passo finalizado: todos os envios terminaram.")
 
-                stats_msg = "📊 **Resumo da Integração:**\n\n"
+                stats_msg = "?? **Resumo da Integração:**\n\n"
                 for table, table_stats in stats.items():
                     if table_stats is not None:
                         inserted = table_stats.get('inserted', 0)
@@ -1281,18 +1868,31 @@ METRIC_INFO = {
     "duracao_min": {"unidade": "min", "definicao": "Duração útil da fase em minutos, calculada a partir dos intervalos temporais válidos.", "calculo": "Soma dos dt válidos convertida para minutos.", "interpretacao": "Representa o tempo efetivo de exposição analisado na fase."},
     "dist_m": {"unidade": "m", "definicao": "Distância total percorrida pelo atleta na fase.", "calculo": "Soma dos deslocamentos ponto a ponto em X_UTM/Y_UTM.", "interpretacao": "Mede o volume locomotor total da fase."},
     "m_min": {"unidade": "m/min", "definicao": "Distância relativa por minuto.", "calculo": "dist_m dividido por duracao_min.", "interpretacao": "Representa a intensidade média locomotora da fase."},
-    "vmax_mps": {"unidade": "m/s", "definicao": "Velocidade máxima instantânea estimada na fase.", "calculo": "Máximo de distância por intervalo de tempo entre amostras válidas.", "interpretacao": "Representa o pico de velocidade do atleta na fase."},
+    "vmax_mps": {"unidade": "m/s", "definicao": "Velocidade m�xima instantânea estimada na fase.", "calculo": "M�ximo de dist�ncia por intervalo de tempo entre amostras v�lidas.", "interpretacao": "Representa o pico de velocidade do atleta na fase."},
     "peak_1m_m_min": {"unidade": "m", "definicao": "Maior distância percorrida em qualquer janela contínua de 60 segundos dentro da fase.", "calculo": "Maior distância acumulada em qualquer janela móvel de 60 s.", "interpretacao": "Representa o pico locomotor da fase; não é volume acumulado nem média."},
     "hsr_dist_m": {"unidade": "m", "definicao": "Distância percorrida acima do limiar de high-speed running.", "calculo": f"Soma da distância quando v >= {HSR_MPS:.1f} m/s.", "interpretacao": "Quantifica a exposição a corrida de alta velocidade."},
-    "hsr_pct": {"unidade": "%", "definicao": "Percentagem da distância total realizada em HSR.", "calculo": "hsr_dist_m dividido por dist_m, multiplicado por 100.", "interpretacao": "Representa o peso relativo da alta velocidade no volume total."},
+    "hsr_pct": {"unidade": "%", "definicao": "Percentagem da dist�ncia total realizada em HSR.", "calculo": "hsr_dist_m dividido por dist_m, multiplicado por 100.", "interpretacao": "Representa o peso relativo da alta velocidade no volume total."},
     "sprint_dist_m": {"unidade": "m", "definicao": "Distância percorrida acima do limiar de sprint.", "calculo": f"Soma da distância quando v >= {SPRINT_MPS:.1f} m/s.", "interpretacao": "Quantifica a exposição a corrida de sprint."},
     "n_sprints": {"unidade": "contagem", "definicao": "Número de episódios de sprint.", "calculo": f"Conta bouts consecutivos com v >= {SPRINT_MPS:.1f} m/s e duração mínima de {SPRINT_BOUT_MIN_S:.1f} s.", "interpretacao": "Conta sprints válidos e evita picos isolados como sprint real."},
-    "n_acc_2_5": {"unidade": "contagem", "definicao": "Número de instantes com aceleração acima do threshold operacional.", "calculo": f"Conta amostras com aceleração >= {ACC_THR:.1f} m/s².", "interpretacao": "Reflete a exigência de ações de aceleração."},
-    "n_dec_3_0": {"unidade": "contagem", "definicao": "Número de instantes com desaceleração abaixo do threshold operacional.", "calculo": f"Conta amostras com desaceleração <= {DEC_THR:.1f} m/s².", "interpretacao": "Reflete a exigência de ações de desaceleração e controlo neuromuscular."},
+    "n_acc_2_5": {"unidade": "contagem", "definicao": "Número de instantes com aceleração acima do threshold operacional.", "calculo": f"Conta amostras com aceleração >= {ACC_THR:.1f} m/só.", "interpretacao": "Reflete a exigência de ações de aceleração."},
+    "n_dec_3_0": {"unidade": "contagem", "definicao": "Número de instantes com desaceleração abaixo do threshold operacional.", "calculo": f"Conta amostras com desaceleração <= {DEC_THR:.1f} m/só.", "interpretacao": "Reflete a exigência de ações de desaceleração e controlo neuromuscular."},
     "active_time_min": {"unidade": "min", "definicao": "Tempo ativo em movimento durante a fase.", "calculo": "Soma do tempo em que a velocidade estimada é >= 0.5 m/s.", "interpretacao": "Distingue exposição total de tempo efetivamente ativo."},
     "active_pct": {"unidade": "%", "definicao": "Percentagem do tempo da fase em atividade motora.", "calculo": "active_time_min dividido pela duração da fase, multiplicado por 100.", "interpretacao": "Permite comparar fases com diferente tempo de inatividade."},
+    "hr_avg_bpm": {"unidade": "bpm", "definicao": "Frequência cardíaca média ao longo da fase.", "calculo": "Média ponderada pelo tempo dos valores HR válidos.", "interpretacao": "Resume a exigência cardiovascular média da fase."},
+    "hr_peak_bpm": {"unidade": "bpm", "definicao": "Frequência cardíaca máxima observada na fase.", "calculo": "Máximo dos valores HR válidos.", "interpretacao": "Resume o pico cardiovascular da fase."},
+    "hr_time_min": {"unidade": "min", "definicao": "Tempo com sinal de frequência cardíaca válido.", "calculo": "Soma dos intervalos temporais com HR válido.", "interpretacao": "Indica quanta exposição cardíaca entrou no cálculo das m�tricas de carga interna."},
+    "hr_time_valid_pct": {"unidade": "%", "definicao": "Percentagem da fase coberta por sinal HR válido.", "calculo": "hr_time_min dividido por duracao_min, multiplicado por 100.", "interpretacao": "Ajuda a perceber a robustez das métricas de carga cardíaca."},
+    "beats_total": {"unidade": "batimentos", "definicao": "Número estimado de batimentos acumulados na fase.", "calculo": "Integral da frequência cardíaca ao longo do tempo válido.", "interpretacao": "Proxy direta de carga interna cardiovascular."},
+    "dist_per_beat_m": {"unidade": "m/bat", "definicao": "Distância percorrida por batimento cardíaco.", "calculo": "dist_m dividido por beats_total.", "interpretacao": "Proxy de eficiência locomotora por carga interna."},
+    "hsr_per_beat_m": {"unidade": "m/bat", "definicao": "Distância HSR por batimento cardíaco.", "calculo": "hsr_dist_m dividido por beats_total.", "interpretacao": "Relaciona exposição a alta velocidade com custo cardíaco."},
+    "sprint_per_beat_m": {"unidade": "m/bat", "definicao": "Distância de sprint por batimento cardíaco.", "calculo": "sprint_dist_m dividido por beats_total.", "interpretacao": "Relaciona exposição a sprint com custo cardíaco."},
+    "sprints_per_1000_beats": {"unidade": "contagem/1000 bat", "definicao": "Número de sprints por 1000 batimentos.", "calculo": "n_sprints dividido por beats_total, multiplicado por 1000.", "interpretacao": "Expressa a frequência de sprints em função da carga cardíaca."},
+    "acc_per_1000_beats": {"unidade": "contagem/1000 bat", "definicao": "Número de acelerações por 1000 batimentos.", "calculo": "n_acc_2_5 dividido por beats_total, multiplicado por 1000.", "interpretacao": "Relaciona ações de aceleração com a carga cardíaca."},
+    "dec_per_1000_beats": {"unidade": "contagem/1000 bat", "definicao": "Número de desacelerações por 1000 batimentos.", "calculo": "n_dec_3_0 dividido por beats_total, multiplicado por 1000.", "interpretacao": "Relaciona ações de desaceleração com a carga cardíaca."},
+    "external_load_score": {"unidade": "índice", "definicao": "índice proxy de carga externa que combina volume, intensidade, eventos, picos e tempo ativo.", "calculo": "Combinação ponderada de dist_m, m_min, HSR, sprint, eventos, picos e atividade.", "interpretacao": "Serve para comparação relativa de exigência externa entre fases, atletas ou sessões."},
+    "total_load_score": {"unidade": "índice", "definicao": "índice proxy de carga total que combina carga externa e frequência cardíaca m�dia.", "calculo": "external_load_score multiplicado por hr_avg_bpm/100.", "interpretacao": "Serve para comparação relativa de exigência total quando existe HR válido."},
     "n_points": {"unidade": "contagem", "definicao": "Número de pontos válidos usados no cálculo das métricas.", "calculo": "Conta linhas com Time, X_UTM e Y_UTM válidos.", "interpretacao": "Quanto maior, mais robusta tende a ser a estimativa."},
-    "pct_time_valid": {"unidade": "%", "definicao": "Percentagem de amostras válidas na fase.", "calculo": "Proporção de linhas com tempo e coordenadas válidos, multiplicada por 100.", "interpretacao": "Resume a completude do sinal disponível para cálculo."},
+    "pct_time_valid": {"unidade": "%", "definicao": "Percentagem de amostras v�lidas na fase.", "calculo": "Proporção de linhas com tempo e coordenadas válidos, multiplicada por 100.", "interpretacao": "Resume a completude do sinal disponível para cálculo."},
     "n_gaps_gt2s": {"unidade": "contagem", "definicao": "Número de gaps temporais superiores a 2 segundos.", "calculo": "Conta intervalos dt > 2.0 s entre amostras válidas.", "interpretacao": "Sinaliza perdas relevantes de continuidade temporal."},
     "qc_grade": {"unidade": "categórica", "definicao": "Classificação global da qualidade do sinal da fase.", "calculo": "Resultado das regras de QC: PASS, WARN, FAIL ou NA.", "interpretacao": "Apoia a decisão de aceitar, rever ou excluir a fase."},
     "qc_flags": {"unidade": "texto", "definicao": "Lista de flags de qualidade atribuídas à fase.", "calculo": "Concatenação dos alertas ativados pelo motor de QC.", "interpretacao": "Explica por que razão a fase recebeu o qc_grade observado."},
@@ -1386,13 +1986,87 @@ def _file_to_bytes(pathlike) -> bytes:
 # Main flow
 # -------------------------------
 if not f_atleta:
-    st.warning("⚠️ Ainda não carregaste ficheiros de atletas. Algumas funcionalidades podem não estar disponíveis.")
+    st.warning("?? Ainda não carregaste ficheiros de atletas. Algumas funcionalidades podem não estar disponíveis.")
+
+saved_fields_df = pd.DataFrame()
+auto_field_match = None
+alat = None
+alon = None
+if f_atleta:
+    try:
+        saved_fields_df = load_field_reference()
+    except Exception:
+        saved_fields_df = pd.DataFrame()
+    try:
+        alat, alon = get_atletas_centroid_latlon(f_atleta, amostra_n=amostra_geo_n)
+    except Exception:
+        alat, alon = None, None
+    auto_field_match = _find_field_match_from_athletes(saved_fields_df, alat, alon)
+
+use_detected_field = False
+selected_detected_field_name = ""
+
+if auto_field_match:
+    match_row = auto_field_match["row"]
+    estadio_match = str(match_row.get("estadio") or "").strip() or "Campo sem nome"
+    campo_local_match = str(match_row.get("campo_local") or "").strip()
+    field_match_label = estadio_match if not campo_local_match else f"{estadio_match} - {campo_local_match}"
+    dist_txt = f"{auto_field_match['athletes_m']:.1f} m" if pd.notna(auto_field_match.get("athletes_m")) else "-"
+    if auto_field_match.get("match_strength") == "forte":
+        st.success(
+            f"Campo identificado automaticamente na BD: '{field_match_label}'. "
+            f"A referencia geografica dos atletas esta muito proxima (~{dist_txt})."
+        )
+    else:
+        st.info(f"Foi encontrado um campo provável: '{estadio_match}' ({campo_local_match}). A referencia dos atletas sugere este campo (~{dist_txt}).")
+    auto_field_decision = st.radio(
+        "Como queres continuar?",
+        options=[
+            "Usar o campo identificado automaticamente",
+            "Continuar para identificacao manual do campo",
+        ],
+        index=0 if auto_field_match.get("match_strength") == "forte" else 1,
+        help="Se preferires confirmar ou corrigir o campo, segue para a identificacao manual.",
+    )
+    use_detected_field = auto_field_decision == "Usar o campo identificado automaticamente"
+    selected_detected_field_name = field_match_label
+else:
+    st.warning(
+        "Nao foi possivel identificar automaticamente um campo na base de dados. "
+        "Segue para a identificacao manual."
+    )
+
+metodo_campo = "Escolher um campo guardado anteriormente"
+f_campo = None
+if not use_detected_field:
+    st.subheader("Identificacao Manual do Campo")
+    st.caption("Escolhe uma das opcoes abaixo para identificar ou calibrar o campo manualmente.")
+    metodo_campo = st.radio(
+        "Como queres definir os 4 cantos?",
+        options=["Upload (BL/BR/TL/TR)", "Pick no mapa (clicar 4 cantos)", "Escolher um campo guardado anteriormente"],
+        index=0,
+        help="Alternativa ao upload: usa um mapa satélite e clica nos 4 cantos do campo.",
+    )
+    st.caption("Se escolheres 'Pick no mapa', não precisas de carregar os 4 CSVs do campo.")
+    f_campo = st.file_uploader(
+        "Dados de CAMPO (BL, BR, TL, TR)", accept_multiple_files=True, type=["csv"]
+    )
+    if (
+        metodo_campo == "Pick no mapa (clicar 4 cantos)"
+        and st.session_state.last_metodo_campo != metodo_campo
+    ):
+        st.session_state.pick_corners = []
+        st.session_state.pts_gps_picked = None
+        st.session_state.pick_last_click_sig = None
+    st.session_state.last_metodo_campo = metodo_campo
+else:
+    st.session_state.last_metodo_campo = None
 
 have_upload_corners = bool(f_campo)
 have_picked_corners = st.session_state.get("pts_gps_picked") is not None
 
 if metodo_campo == "Upload (BL/BR/TL/TR)" and not have_upload_corners:
-    st.info("👋 Selecionaste 'Upload', mas ainda não carregaste os 4 CSVs do campo (BL/BR/TL/TR).")
+    st.info("?? Selecionaste 'Upload', mas ainda não carregaste os 4 CSVs do campo (BL/BR/TL/TR).")
     st.stop()
 
 if metodo_campo == "Pick no mapa (clicar 4 cantos)" and not have_picked_corners:
@@ -1487,7 +2161,7 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
                     tooltip=f"Ajustado {k}",
                 ).add_to(m_pick)
 
-            # polígono final (retângulo ajustado)
+            # pol�gono final (ret�ngulo ajustado)
             poly = [
                 pts_rect_dict["TL"],
                 pts_rect_dict["TR"],
@@ -1499,7 +2173,7 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
                 color="cyan",
                 weight=3,
                 fill=False,
-                tooltip="Retângulo final (ajustado)",
+                tooltip="Ret�ngulo final (ajustado)",
             ).add_to(m_pick)
 
         except Exception as e:
@@ -1552,13 +2226,26 @@ if metodo_campo == "Pick no mapa (clicar 4 cantos)" and st.session_state.get("pt
     st.stop()
 
 try:
-    if metodo_campo == "Pick no mapa (clicar 4 cantos)":
+    if use_detected_field and auto_field_match:
+        row = auto_field_match["row"]
+        pts_gps_recuperado = {
+            "BL": [float(row["BL_lat"]), float(row["BL_lon"])],
+            "BR": [float(row["BR_lat"]), float(row["BR_lon"])],
+            "TL": [float(row["TL_lat"]), float(row["TL_lon"])],
+            "TR": [float(row["TR_lat"]), float(row["TR_lon"])],
+        }
+        pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
+            pts_gps_recuperado, int(row["epsg"]) if pd.notna(row.get("epsg")) else int(epsg_used)
+        )
+        st.success(f"✅ Campo '{selected_detected_field_name}' carregado automaticamente a partir da BD.")
+
+    elif metodo_campo == "Pick no mapa (clicar 4 cantos)":
         pts_gps, (clat, clon), pts_utm, origin, R, angulo_rad, dist_x, dist_y = calibrar_campo_from_pts_gps(
             st.session_state.pts_gps_picked, int(epsg_used)
         )
 
     elif metodo_campo == "Escolher um campo guardado anteriormente":
-        df_campos = load_field_reference()
+        df_campos = saved_fields_df if saved_fields_df is not None and not saved_fields_df.empty else load_field_reference()
 
         if df_campos is None or df_campos.empty:
             st.warning("Ainda não existem campos guardados.")
@@ -1599,11 +2286,11 @@ try:
     estadio = None
 
 except Exception as e:
-    st.error(f"❌ Erro na calibração do campo: {e}")
+    st.error(f"Erro na calibração do campo: {e}")
     st.stop()
 except Exception as e:
 
-    st.error(f"❌ Erro na calibração do campo: {e}")
+    st.error(f"Erro na calibração do campo: {e}")
     st.stop()
 
 passed_geo, pct_ok, ok_list, fora_list, geo_errors = geo_validacao_por_atleta(
@@ -1616,7 +2303,7 @@ n_avaliados_geo = n_ok_geo + n_fora_geo
 n_total_geo = len(set([get_atleta_id(f.name) for f in f_atleta]))
 n_erros_geo = len(geo_errors)
 
-st.header("Validação de Localização (Campo ↔ Atletas)")
+st.header("Validação de Localização (Campo -> Atletas)")
 
 # Campo (usa helper local cacheado, que era o comportamento funcional anterior)
 cidade_campo, pais_campo = _reverse_geocode_city_country(clat, clon)
@@ -1638,17 +2325,17 @@ st.markdown(f"**Campo, Local:** {campo_local}")
 st.markdown(f"**Atletas, Local:** {atletas_local}")
 st.markdown(f"**% Atletas dentro do raio (avaliados):** {pct_ok*100:.0f}%")
 st.caption(
-    f"{n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio, {n_fora_geo} fora do raio, {n_erros_geo} com erro de leitura."
+    f"{n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio, {n_fora_geo} fora do raio, {n_erros_geo} ficheiros sem GPS valido."
 )
 
 st.markdown("---")
 
 
 if passed_geo:
-    st.success("✅ Validação geográfica aprovada.")
+    st.success("Validação geográfica aprovada.")
 else:
     st.error(
-        f"❌ Validação geográfica falhou: apenas {n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio configurado."
+        f"Validação geográfica falhou: apenas {n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio configurado."
     )
 
 
@@ -1664,6 +2351,7 @@ for k, v in pts_gps.items():
 st_folium(m, width=1100, height=450, key="mapa_pipeline")
 
 st.divider()
+field_save_placeholder = st.container()
 
 # Audit by athlete phases
 st.header("Auditoria de Atletas")
@@ -1704,13 +2392,25 @@ with st.expander("Auditoria de atletas", expanded=False):
         st.write(
             f"**Regra de Treino:** 1 ficheiro por atleta. Válidos: {atletas_validos} / {len(audit_data)}"
         )
+if f_atleta:
+    with st.expander("Relação com a Base de Dados", expanded=st.session_state.get("athlete_registry_expanded", True)):
+        athlete_registry_df, athlete_registry_error = _build_athlete_registry_editor(
+            f_atleta,
+            genero,
+            selecao,
+        )
+        if athlete_registry_error:
+            st.session_state.athlete_registry_expanded = True
+            st.warning(athlete_registry_error)
+        else:
+            st.session_state.athlete_registry_expanded = False
 if not submission_valid:
     st.warning("A submissão não cumpre as condições mínimas definidas para este contexto.")
 
 st.divider()
 
 # Normalization + export
-st.header("Normalização | Calculo Métricas")
+st.header("Normalização | Cálculo Métricas")
 
 if not submission_valid:
     if contexto == "Jogo":
@@ -1725,13 +2425,14 @@ if not submission_valid:
 
 if not passed_geo:
     st.warning(
-        f"A exportação está desativada porque só {n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio configurado. Os ficheiros com erro de leitura ({n_erros_geo}) não entram nesta percentagem. O mínimo configurado é {min_pct_atletas_ok*100:.0f}%."
+        f"A exportação está desativada porque só {n_ok_geo}/{n_avaliados_geo} atletas avaliados ficaram dentro do raio configurado. Os ficheiros sem GPS valido ({n_erros_geo}) não entram nesta percentagem. O mínimo configurado é {min_pct_atletas_ok*100:.0f}%."
     )
     st.stop()
 
 # -- Obter e guardar campo -- #
 
 # Dados do campo
+suggested_field_name = _suggest_field_name(clat, clon, cidade_campo, pais_campo)
 field_data = {
     "estadio": '',
     "campo_local": [campo_local],
@@ -1752,19 +2453,91 @@ field_data = {
     'obs': ''
 }
 
+field_reference_df = pd.DataFrame(field_data)
+current_field_sig = hashlib.md5(
+    (
+        f"{round(float(clat), 6)}|{round(float(clon), 6)}|"
+        f"{round(float(dist_x), 2)}|{round(float(dist_y), 2)}|{int(epsg_used)}"
+    ).encode("utf-8")
+).hexdigest()
+existing_field_match = None
+try:
+    saved_fields_df = load_field_reference()
+    athletes_center = (alat, alon) if alat is not None and alon is not None else None
+    existing_field_match = _find_existing_field_match(field_reference_df, saved_fields_df, athletes_center=athletes_center)
+except Exception:
+    existing_field_match = None
 
 # Pop Up para Guardar campo na base de dados
+if False:
+    pass
+    """
 with st.sidebar.popover('💾 Guardar Campo'):
 
-    estadio = st.text_input('Adiciona o nome do estadio!')
-    obs = st.text_input('Adiciona uma observação!')
+    existing_name = ""
+    existing_obs = ""
+    if existing_field_match:
+        existing_name = str(existing_field_match["row"].get("estadio") or "").strip()
+        existing_obs = str(existing_field_match["row"].get("obs") or "").strip()
+
+    estadio = st.text_input('Adiciona o nome do estadio!', value=existing_name)
+    obs = st.text_input('Adiciona uma observação!', value=existing_obs)
 
     field_data['estadio'] = estadio
     field_data['obs'] = obs
     if st.button("Guardar"):
         campo_df = pd.DataFrame(field_data)
-        save_field_to_parquet(campo_df)
-        st.success("Campo Guardado!")
+        save_field_reference(campo_df)
+        if existing_field_match:
+            st.success("Campo guardado/atualizado com sucesso na referencia de campos.")
+        else:
+            st.success("Campo guardado com sucesso na referencia de campos.")
+    """
+
+if st.session_state.field_save_flash_msg:
+    st.toast(st.session_state.field_save_flash_msg)
+    st.session_state.field_save_flash_msg = None
+
+show_field_save_block = (
+    not use_detected_field
+    and st.session_state.field_save_completed_sig != current_field_sig
+)
+
+if show_field_save_block:
+    with field_save_placeholder:
+        st.subheader("Guardar Campo")
+
+        existing_name = ""
+        if existing_field_match:
+            existing_name = str(existing_field_match["row"].get("estadio") or "").strip()
+
+        default_field_name = existing_name or suggested_field_name
+        save_col1, save_col2 = st.columns([1.2, 1.0])
+        with save_col1:
+            estadio = st.text_input("Nome do campo", value=default_field_name)
+        with save_col2:
+            st.text_input("Sugestao", value=suggested_field_name, disabled=True)
+
+        meta_col1, meta_col2 = st.columns(2)
+        with meta_col1:
+            st.text_input("Cidade", value=str(cidade_campo or ""), disabled=True)
+        with meta_col2:
+            st.text_input("Pais", value=str(pais_campo or ""), disabled=True)
+
+        if existing_field_match:
+            st.caption("Foi encontrado um campo semelhante na BD.")
+
+        field_data["estadio"] = estadio
+        field_data["obs"] = ""
+        if st.button("Guardar Campo na BD"):
+            campo_df = pd.DataFrame(field_data)
+            save_field_reference(campo_df)
+            st.session_state.field_save_completed_sig = current_field_sig
+            if existing_field_match:
+                st.session_state.field_save_flash_msg = "Campo guardado/atualizado com sucesso na referencia de campos."
+            else:
+                st.session_state.field_save_flash_msg = "Campo guardado com sucesso na referencia de campos."
+            st.rerun()
 
 btn_row = st.columns([1.75, 0.8, 0.8, 0.8, 0.8, 1.05])
 with btn_row[0]:
@@ -1784,7 +2557,7 @@ if btn:
             status.update(
                 label="Validação geográfica falhou. Processamento interrompido.", state="error")
             st.error(
-                f"Validação geográfica falhou: {n_ok_geo}/{n_avaliados_geo} atletas avaliados dentro do raio configurado (mínimo {min_pct_atletas_ok*100:.0f}%). Ficheiros com erro de leitura: {n_erros_geo}. O processamento foi interrompido."
+                f"Validação geográfica falhou: {n_ok_geo}/{n_avaliados_geo} atletas avaliados dentro do raio configurado (mínimo {min_pct_atletas_ok*100:.0f}%). Ficheiros sem GPS valido: {n_erros_geo}. O processamento foi interrompido."
             )
             st.stop()
 
@@ -1810,7 +2583,7 @@ if btn:
 
             if not temp_files:
                 st.error(
-                    "❌ Não foi possível gerar ficheiros temporários (verifica colunas Time/Lat/Lon e nomes).")
+                    "? N�o foi possível gerar ficheiros tempor�rios (verifica colunas Time/Lat/Lon e nomes).")
                 st.stop()
 
             status.update(label="Sincronização temporal...", state="running")
@@ -1871,7 +2644,7 @@ if btn:
                     phase_present = bool(has_xy)
 
                     if not phase_present:
-                        # Fase não jogada / não submetida → NA (não é falha de qualidade)
+                        # Fase não jogada / não submetida -> NA (não é falha de qualidade)
                         met = compute_metrics_for_df(df_f)
                         qc = qc_gps_df(df_f, phase_present=False)
                     else:
@@ -1940,6 +2713,18 @@ if btn:
                     f, {}).get("n_acc_2_5", 0) for f in fases_target)
                 met_total["n_dec_3_0"] = sum(fase_mets.get(
                     f, {}).get("n_dec_3_0", 0) for f in fases_target)
+                met_total["player_load"] = sum(
+                    float(fase_mets.get(f, {}).get("player_load", 0.0))
+                    if pd.notna(fase_mets.get(f, {}).get("player_load", np.nan))
+                    else 0.0
+                    for f in fases_target
+                )
+                met_total["rhie_bouts"] = sum(
+                    fase_mets.get(f, {}).get("rhie_bouts", 0) or 0 for f in fases_target
+                )
+                met_total["rhie_actions"] = sum(
+                    fase_mets.get(f, {}).get("rhie_actions", 0) or 0 for f in fases_target
+                )
                 met_total["n_points"] = sum(fase_mets.get(
                     f, {}).get("n_points", 0) for f in fases_target)
 
@@ -1963,6 +2748,60 @@ if btn:
                     if dur_total_s > 0
                     else np.nan
                 )
+
+                met_total["hr_time_min"] = sum(
+                    fase_mets.get(f, {}).get("hr_time_min", 0.0) or 0.0
+                    for f in fases_target
+                )
+                met_total["beats_total"] = sum(
+                    fase_mets.get(f, {}).get("beats_total", 0.0)
+                    for f in fases_target
+                    if pd.notna(fase_mets.get(f, {}).get("beats_total", np.nan))
+                )
+                met_total["hr_avg_bpm"] = (
+                    met_total["beats_total"] / met_total["hr_time_min"]
+                    if met_total["hr_time_min"] > 0
+                    else np.nan
+                )
+                met_total["hr_peak_bpm"] = max(
+                    (fase_mets.get(f, {}).get("hr_peak_bpm", np.nan) for f in fases_target),
+                    default=np.nan,
+                )
+                met_total["hr_time_valid_pct"] = (
+                    met_total["hr_time_min"] / met_total["duracao_min"] * 100.0
+                    if met_total["duracao_min"] > 0
+                    else np.nan
+                )
+
+                for zone_prefix in [
+                    "zone1_walk",
+                    "zone2_jog",
+                    "zone3_run",
+                    "zone4_hsr",
+                    "zone5_sprint",
+                ]:
+                    met_total[f"{zone_prefix}_time_min"] = sum(
+                        fase_mets.get(f, {}).get(f"{zone_prefix}_time_min", 0.0) or 0.0
+                        for f in fases_target
+                    )
+                    met_total[f"{zone_prefix}_dist_m"] = sum(
+                        fase_mets.get(f, {}).get(f"{zone_prefix}_dist_m", 0.0) or 0.0
+                        for f in fases_target
+                    )
+
+                for peak_metric in [
+                    "peak_dist_1m_m", "peak_dist_3m_m", "peak_dist_5m_m",
+                    "peak_hsr_1m_m", "peak_hsr_3m_m", "peak_hsr_5m_m",
+                    "peak_sprint_1m_m", "peak_sprint_3m_m", "peak_sprint_5m_m",
+                    "peak_acc_actions_1m", "peak_acc_actions_3m", "peak_acc_actions_5m",
+                    "peak_hi_actions_1m", "peak_hi_actions_3m", "peak_hi_actions_5m",
+                    "trimp_banister", "trimp_per_min",
+                ]:
+                    met_total[peak_metric] = max(
+                        (fase_mets.get(f, {}).get(peak_metric, np.nan) for f in fases_target),
+                        default=np.nan,
+                    )
+                met_total.update(derive_load_metrics(met_total))
 
                 # Qualidade: pct_time_valid e gaps>2s — média ponderada simples por pontos válidos
                 try:
@@ -2061,10 +2900,10 @@ if btn:
             rot_deg = float(np.degrees(angulo_rad))
             report_lines = []
             report_lines.append(
-                "FPF Performance Hub — Relatório de Validação e Normalização")
+                "FPF Performance Hub - Relatório de Validação e Normalização")
             report_lines.append("=" * 70)
 
-            report_lines.append("Dados da Sessão")
+            report_lines.append("Dados da Sessóo")
             report_lines.append(
                 f"Data: {data_sessao.strftime('%d/%m/%Y') if hasattr(data_sessao, 'strftime') else data_sessao}"
             )
@@ -2080,7 +2919,7 @@ if btn:
             report_lines.append(f"EPSG (UTM): {epsg_used}")
             report_lines.append(f"Comprimento (BL→BR): {dist_x:.2f} m")
             report_lines.append(f"Largura (BL→TL):     {dist_y:.2f} m")
-            report_lines.append(f"Rotação aplicada:    {rot_deg:.2f}° (alinhamento BL→BR com eixo X)")
+            report_lines.append(f"Rotação aplicada:    {rot_deg:.2f}° (alinhamento BL->BR com eixo X)")
 
             report_lines.append("-" * 70)
             report_lines.append("Validação geográfica")
@@ -2090,7 +2929,7 @@ if btn:
             )
             report_lines.append(
                 f"  Dentro do raio: {len({a for a, _ in ok_list})} atletas | "
-                f"Fora: {len({a for a, _ in fora_list})} atletas | Erros: {len(geo_errors)}"
+                f"Fora: {len({a for a, _ in fora_list})} atletas | Sem GPS valido: {len(geo_errors)}"
             )
 
             report_lines.append("-" * 70)
@@ -2255,7 +3094,7 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     if "engine_version" in df_display.columns:
         df_display = df_display.drop(columns=["engine_version"])
 
-    # 4️⃣ Ordenação por atleta + fase (ordem personalizada)
+    # 4. Ordenação por atleta + fase (ordem personalizada)
     if "fase" in df_display.columns:
         ordem_fases = {
             "Warm-Up": 0,
@@ -2273,7 +3112,7 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     else:
         df_display = df_display.sort_values(by=[col_inicio])
 
-    # 5️⃣ Organização vertical por blocos e famílias
+    # 5. Organização vertical por blocos e famílias
     id_cols = [c for c in [col_inicio, "fase"] if c in df_display.columns]
     metric_groups = _build_metric_groups()
     performance_metric_groups = _build_performance_metric_groups()
@@ -2288,18 +3127,35 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
 
     df_export = df_display[id_cols + ordered_metric_cols].copy()
     df_display_ui = format_metrics_display_dataframe(df_display)
+    totals_by_athlete = _build_totals_by_athlete(df_metrics)
+    if totals_by_athlete is None:
+        totals_by_athlete = pd.DataFrame()
+    totals_by_athlete_ui = format_metrics_display_dataframe(totals_by_athlete)
+    if totals_by_athlete_ui is None:
+        totals_by_athlete_ui = pd.DataFrame()
+    athlete_name_map = _build_athlete_name_map()
 
     st.subheader("Métricas Performance")
     for familia, cols in performance_metric_groups.items():
-        cols_presentes = [c for c in cols if c in df_display.columns]
+        cols_presentes = [c for c in cols if c in totals_by_athlete.columns]
         if not cols_presentes:
             continue
         with st.expander(f"Performance | {familia}", expanded=False):
-            st.dataframe(
-                df_display_ui[id_cols + cols_presentes],
-                use_container_width=True,
-                hide_index=True,
-            )
+            rendered_any = False
+            for metric_col in cols_presentes:
+                st.markdown(f"**{_metric_user_label(metric_col)}**")
+                rendered = _render_metric_bar_chart(
+                    totals_by_athlete,
+                    metric_col,
+                    athlete_col=col_inicio,
+                    chart_key=f"perf_{familia}_{metric_col}",
+                    athlete_name_map=athlete_name_map,
+                )
+                if not rendered:
+                    st.info("Sem dados numéricos disponíveis para esta métrica.")
+                rendered_any = rendered_any or rendered
+            if not rendered_any:
+                st.info("Sem dados disponíveis para este grupo.")
 
     # 6️⃣ Downloads
     action_cols = st.columns([1.15, 1.05, 1.8])
@@ -2314,9 +3170,9 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     st.empty()
 
     if False and st.session_state.get("df_perf") is not None and not st.session_state.df_perf.empty:
-        st.info("Os dados jÃ¡ estÃ£o em modo draft. Podes terminar em visualizaÃ§Ã£o/download ou avanÃ§ar para publicaÃ§Ã£o.")
+        st.info("Os dados já estão em modo draft. Podes terminar em visualização/download ou avançar para publicação.")
         publish_mode = st.radio(
-            "Destino final desta sessÃ£o",
+            "Destino final desta sessão",
             options=["Visualizar / Download", "Publicar na base de dados"],
             horizontal=True,
             key="publish_mode",
@@ -2330,14 +3186,14 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
             athlete_registry_error = None
 
             if f_atleta:
-                with st.expander("Ficha de Atletas para PublicaÃ§Ã£o", expanded=True):
+                with st.expander("Ficha de Atletas para Publicação", expanded=True):
                     athlete_registry_df, athlete_registry_error = _build_athlete_registry_editor(
                         f_atleta,
                         genero,
                         selecao,
                     )
             else:
-                athlete_registry_error = "Carrega os ficheiros de atletas para conseguires publicar esta sessÃ£o."
+                athlete_registry_error = "Carrega os ficheiros de atletas para conseguires publicar esta sessão."
 
             if athlete_registry_error:
                 st.warning(athlete_registry_error)
@@ -2395,8 +3251,8 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                         athlete_registry_df=athlete_registry_df,
                         base_dir=CLEANDATA_DIR,
                     )
-                    progress_bar.progress(0.2, text="Dados preparados. A iniciar transferÃªncia...")
-                    progress_text.caption("Passo de preparaÃ§Ã£o concluÃ­do.")
+                    progress_bar.progress(0.2, text="Dados preparados. A iniciar transferência...")
+                    progress_text.caption("Passo de preparação concluído.")
 
                     stats = write_session_data(
                         df_perf_publish,
@@ -2409,7 +3265,7 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                     progress_text.caption("Passo finalizado: todos os envios terminaram.")
                     
                     # Build stats message
-                    stats_msg = "📊 **Resumo da Integração:**\n\n"
+                    stats_msg = "?? **Resumo da Integração:**\n\n"
                     for table, table_stats in stats.items():
                         if table_stats is not None:
                             inserted = table_stats.get('inserted', 0)
@@ -2425,36 +3281,59 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     else:
         st.empty()
 
-    st.subheader("Relatório Técnico")
     if report_txt:
-        report_title, report_sections = _parse_report_sections(report_txt)
-        report_sections = _order_technical_report_sections(report_sections)
-        if report_title:
-            st.caption(report_title)
+        with st.expander("Relatório Técnico", expanded=False):
+            report_title, report_sections = _parse_report_sections(report_txt)
+            report_sections = _order_technical_report_sections(report_sections)
+            if report_title:
+                st.caption(report_title)
 
-        if report_sections:
-            for section_title, section_body in report_sections:
+            if report_sections:
+                for section_title, section_body in report_sections:
+                    with st.expander(section_title, expanded=False):
+                        st.code(section_body or "Sem dados nesta secção.", language="text")
+            else:
+                st.code(report_txt, language="text")
+
+            for section_title, cols in technical_metric_groups.items():
+                cols_presentes = [c for c in cols if c in totals_by_athlete.columns]
+                if not cols_presentes:
+                    continue
                 with st.expander(section_title, expanded=False):
-                    st.code(section_body or "Sem dados nesta secção.", language="text")
-        else:
-            st.code(report_txt, language="text")
+                    fallback_cols = []
+                    rendered_any = False
+                    for metric_col in cols_presentes:
+                        numeric_series = pd.to_numeric(totals_by_athlete.get(metric_col), errors="coerce")
+                        if numeric_series.notna().any():
+                            st.markdown(f"**{_metric_user_label(metric_col)}**")
+                            rendered = _render_metric_bar_chart(
+                                totals_by_athlete,
+                                metric_col,
+                                athlete_col=col_inicio,
+                                chart_key=f"tech_{section_title}_{metric_col}",
+                                athlete_name_map=athlete_name_map,
+                            )
+                            rendered_any = rendered_any or rendered
+                        else:
+                            fallback_cols.append(metric_col)
 
-        for section_title, cols in technical_metric_groups.items():
-            cols_presentes = [c for c in cols if c in df_display.columns]
-            if not cols_presentes:
-                continue
-            with st.expander(section_title, expanded=False):
-                st.dataframe(
-                    df_display_ui[id_cols + cols_presentes],
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                    if fallback_cols:
+                        st.markdown("**Métricas não numéricas**")
+                        fallback_df = totals_by_athlete_ui[[col_inicio] + fallback_cols].copy()
+                        fallback_df = fallback_df.rename(columns={col: _metric_user_label(col) for col in fallback_cols})
+                        st.dataframe(
+                            fallback_df,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    if not rendered_any and not fallback_cols:
+                        st.info("Sem dados disponíveis para este grupo.")
 
-        if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
-            dfta = st.session_state.df_time_audit
-            if isinstance(dfta, pd.DataFrame) and not dfta.empty:
-                with st.expander("Auditoria de Timestamp", expanded=False):
-                    st.dataframe(dfta, use_container_width=True, hide_index=True)
+            if "df_time_audit" in st.session_state and st.session_state.df_time_audit is not None:
+                dfta = st.session_state.df_time_audit
+                if isinstance(dfta, pd.DataFrame) and not dfta.empty:
+                    with st.expander("Auditoria de Timestamp", expanded=False):
+                        st.dataframe(dfta, use_container_width=True, hide_index=True)
 
         report_action_cols = st.columns([1.35, 1.0, 3.65])
         with report_action_cols[0]:
@@ -2478,3 +3357,6 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
     if clear_results:
         clear_draft_session_state()
         st.rerun()
+
+
+
