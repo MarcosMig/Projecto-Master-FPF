@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 
+from fpf_modules.reference_data import load_selection_reference
 from fpf_modules.supabase_manager import (
     delete_public_storage_url,
     delete_table_rows,
@@ -18,6 +19,7 @@ ATHLETE_COLUMNS = [
     "foto_url",
     "data_nascimento",
     "posicao",
+    "selecao",
     "genero",
     "ativo",
 ]
@@ -27,6 +29,7 @@ ATHLETE_UPLOAD_COLUMNS = [
     "foto_url",
     "data_nascimento",
     "posicao",
+    "selecao",
     "genero",
     "ativo",
 ]
@@ -105,7 +108,7 @@ def _load_athletes() -> pd.DataFrame:
 
     df = df[ATHLETE_COLUMNS].copy()
     if not df.empty:
-        for col in ["atleta_id", "nome", "posicao", "genero", "foto_url"]:
+        for col in ["atleta_id", "nome", "posicao", "selecao", "genero", "foto_url"]:
             df[col] = df[col].map(_clean_text_value)
         df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce").dt.date
         df["ativo"] = df["ativo"].fillna(True).astype(bool)
@@ -218,7 +221,7 @@ def _load_athlete_history() -> pd.DataFrame:
 def _save_athletes(df: pd.DataFrame) -> None:
     initialize_schema()
     save_df = df.copy()
-    for col in ["atleta_id", "nome", "posicao", "genero", "foto_url"]:
+    for col in ["atleta_id", "nome", "posicao", "selecao", "genero", "foto_url"]:
         save_df[col] = save_df[col].map(_clean_text_value)
     save_df = save_df[save_df["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
     save_df["data_nascimento"] = pd.to_datetime(save_df["data_nascimento"], errors="coerce").dt.date
@@ -271,6 +274,7 @@ def _save_athlete_photo(row: pd.Series, foto) -> None:
             "foto_url": foto_url,
             "data_nascimento": row.get("data_nascimento"),
             "posicao": _clean_text_value(row.get("posicao")),
+            "selecao": _clean_text_value(row.get("selecao")),
             "genero": _clean_text_value(row.get("genero")),
             "ativo": bool(row.get("ativo")),
         }]
@@ -285,6 +289,7 @@ def _save_athlete_details(
     data_nascimento,
     genero_label: str,
     posicao: str,
+    selecao: str,
     ativo: bool,
 ) -> None:
     atleta_id = _clean_text_value(row.get("atleta_id"))
@@ -301,6 +306,8 @@ def _save_athlete_details(
         raise RuntimeError("O campo Sobrenome e obrigatorio.")
     if not genero:
         raise RuntimeError("O campo Genero e obrigatorio.")
+    if not _clean_text_value(selecao):
+        raise RuntimeError("O campo Selecao e obrigatorio.")
 
     updated_row = pd.DataFrame(
         [{
@@ -309,6 +316,7 @@ def _save_athlete_details(
             "foto_url": _clean_text_value(row.get("foto_url")),
             "data_nascimento": data_nascimento,
             "posicao": _clean_text_value(posicao),
+            "selecao": _clean_text_value(selecao),
             "genero": genero,
             "ativo": bool(ativo),
         }]
@@ -422,6 +430,7 @@ def _render_athlete_ficha(row: pd.Series, history_df: pd.DataFrame) -> None:
             info_left.markdown(f"**Nascimento:** {_format_birth_date(row.get('data_nascimento'))}")
             info_right.markdown(f"**Genero:** {genero_label}")
             info_right.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
+            info_right.markdown(f"**Selecao:** {_clean_text_value(row.get('selecao')) or '-'}")
             info_right.markdown(f"**Ativo:** {ativo_label}")
             st.caption(f"ID interno: {_clean_text_value(row.get('atleta_id')) or '-'}")
 
@@ -462,12 +471,16 @@ def _render_athlete_ficha(row: pd.Series, history_df: pd.DataFrame) -> None:
 
             with edit_form_col:
                 default_nome, default_sobrenome = _split_full_name(row.get("nome"))
+                selection_options = load_selection_reference(active_only=True)
+                current_selection = _clean_text_value(row.get("selecao"))
+                if current_selection and current_selection not in selection_options:
+                    selection_options = selection_options + [current_selection]
                 with st.form(f"edit_athlete_form_v2_{_clean_text_value(row.get('atleta_id'))}"):
                     form_col1, form_col2 = st.columns(2)
                     nome_edit = form_col1.text_input("Nome", value=default_nome)
                     sobrenome_edit = form_col2.text_input("Sobrenome", value=default_sobrenome)
 
-                    form_col3, form_col4, form_col5 = st.columns(3)
+                    form_col3, form_col4, form_col5, form_col6 = st.columns(4)
                     data_edit = form_col3.date_input(
                         "Data de nascimento",
                         value=row.get("data_nascimento") if pd.notna(row.get("data_nascimento")) else None,
@@ -484,6 +497,12 @@ def _render_athlete_ficha(row: pd.Series, history_df: pd.DataFrame) -> None:
                         index=ATHLETE_POSITIONS.index(_clean_text_value(row.get("posicao")))
                         if _clean_text_value(row.get("posicao")) in ATHLETE_POSITIONS else 0,
                     )
+                    selecao_edit = form_col6.selectbox(
+                        "Selecao",
+                        options=selection_options,
+                        index=selection_options.index(current_selection)
+                        if current_selection in selection_options else 0,
+                    )
                     ativo_edit = st.checkbox("Ativo", value=bool(row.get("ativo")))
                     save_edit = st.form_submit_button("Guardar alteracoes", type="primary")
 
@@ -495,6 +514,7 @@ def _render_athlete_ficha(row: pd.Series, history_df: pd.DataFrame) -> None:
                         data_edit,
                         genero_edit,
                         posicao_edit,
+                        selecao_edit,
                         ativo_edit,
                     )
                     st.session_state[edit_key] = False
@@ -517,15 +537,23 @@ st.caption("Consulta e cria fichas base de atleta para enriquecer a base analiti
 
 athletes_df = _load_athletes()
 athlete_history_df = _load_athlete_history()
+selection_options = load_selection_reference(active_only=True)
 tab_view, tab_insert = st.tabs(["Visualizar", "Inserir"])
 
 with tab_view:
     st.subheader("Atletas Registados")
     gender_filter_options = ["Todos", "Masculino", "Feminino"]
-    selected_gender_label = st.selectbox(
+    view_filter_col1, view_filter_col2 = st.columns(2)
+    selected_gender_label = view_filter_col1.selectbox(
         "Genero",
         options=gender_filter_options,
         key="athletes_view_gender_filter",
+    )
+    selection_filter_options = ["Todas", "Sem selecao"] + selection_options
+    selected_selection_filter = view_filter_col2.selectbox(
+        "Selecao",
+        options=selection_filter_options,
+        key="athletes_view_selection_filter",
     )
 
     if athletes_df.empty or selected_gender_label == "Todos":
@@ -533,6 +561,12 @@ with tab_view:
     else:
         gender_code = _genero_label_to_code(selected_gender_label)
         view_df = athletes_df[athletes_df["genero"].map(_clean_text_value).eq(gender_code)].copy()
+
+    if not view_df.empty and selected_selection_filter != "Todas":
+        if selected_selection_filter == "Sem selecao":
+            view_df = view_df[view_df["selecao"].map(_clean_text_value).eq("")].copy()
+        else:
+            view_df = view_df[view_df["selecao"].map(_clean_text_value).eq(selected_selection_filter)].copy()
 
     if view_df.empty:
         st.info("Sem atletas registados para este filtro.")
@@ -566,10 +600,11 @@ with tab_insert:
             nome = col1.text_input("Nome")
             sobrenome = col2.text_input("Sobrenome")
 
-            col3, col4, col5 = st.columns(3)
+            col3, col4, col5, col6 = st.columns(4)
             data_nascimento = col3.date_input("Data de nascimento", value=None, format="DD/MM/YYYY")
             genero_label = col4.selectbox("Genero", GENDER_OPTIONS)
             posicao = col5.selectbox("Posicao", ATHLETE_POSITIONS)
+            selecao = col6.selectbox("Selecao", options=selection_options)
 
             ativo = st.checkbox("Ativo", value=True)
 
@@ -587,6 +622,8 @@ with tab_insert:
             st.error("O campo Sobrenome e obrigatorio.")
         elif not genero:
             st.error("O campo Genero e obrigatorio.")
+        elif not _clean_text_value(selecao):
+            st.error("O campo Selecao e obrigatorio.")
         elif foto is None:
             st.error("A foto do atleta e obrigatoria.")
         else:
@@ -606,6 +643,7 @@ with tab_insert:
                         "foto_url": foto_url,
                         "data_nascimento": data_nascimento,
                         "posicao": posicao,
+                        "selecao": _clean_text_value(selecao),
                         "genero": genero,
                         "ativo": ativo,
                     }]

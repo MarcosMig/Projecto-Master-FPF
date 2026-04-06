@@ -4,7 +4,7 @@ import pandas as pd
 
 from .constants import CLEANDATA_DIR
 from .selections import load_selection_options
-from .supabase_manager import initialize_schema, read_field_from_parquet, read_table
+from .supabase_manager import initialize_schema, read_field_reference, read_selections_reference, read_table
 
 
 ATHLETE_REFERENCE_COLUMNS = [
@@ -21,12 +21,22 @@ ATHLETE_REFERENCE_COLUMNS = [
 
 def load_selection_reference(active_only: bool = True) -> list[str]:
     """Load selection options used by forms and filters."""
-    return load_selection_options(base_dir=CLEANDATA_DIR, active_only=active_only)
+    try:
+        df = read_selections_reference(active_only=active_only)
+    except Exception:
+        return load_selection_options(base_dir=CLEANDATA_DIR, active_only=active_only)
+
+    if df is None or df.empty or "codigo" not in df.columns:
+        return load_selection_options(base_dir=CLEANDATA_DIR, active_only=active_only)
+
+    options = df["codigo"].astype(str).str.strip().tolist()
+    options = [opt for opt in options if opt]
+    return options or load_selection_options(base_dir=CLEANDATA_DIR, active_only=active_only)
 
 
 def load_field_reference() -> pd.DataFrame:
-    """Load saved fields reference data from local parquet storage."""
-    return read_field_from_parquet()
+    """Load saved fields reference data from the active persistence layer."""
+    return read_field_reference()
 
 
 def load_active_athletes_by_selection(selecao: str = "") -> pd.DataFrame:

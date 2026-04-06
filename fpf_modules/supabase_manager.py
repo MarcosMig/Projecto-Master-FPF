@@ -16,7 +16,7 @@ from datetime import date, datetime
 import math
 import time
 from urllib.parse import urlparse
-from .constants import CLEANDATA_DIR
+from .constants import CLEANDATA_DIR, SELECOES_OPCOES
 
 try:
     import numpy as np
@@ -665,6 +665,52 @@ def read_table(table_name: str, filters: Dict = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def save_session_report(report_payload: Dict) -> Dict:
+    """Persist a technical session report for a game or training session."""
+    initialize_schema()
+
+    if not report_payload:
+        raise ValueError("Session report payload is empty.")
+
+    now_ts = pd.Timestamp.utcnow()
+    row = {
+        "session_fingerprint": str(report_payload.get("session_fingerprint") or "").strip(),
+        "session_sk": report_payload.get("session_sk"),
+        "data": report_payload.get("data"),
+        "selecao": str(report_payload.get("selecao") or "").strip(),
+        "genero": str(report_payload.get("genero") or "").strip(),
+        "contexto": str(report_payload.get("contexto") or "").strip(),
+        "jogo": str(report_payload.get("jogo") or "").strip(),
+        "report_title": str(report_payload.get("report_title") or "").strip(),
+        "report_txt": str(report_payload.get("report_txt") or "").strip(),
+        "updated_at": now_ts,
+    }
+    if report_payload.get("created_at") is not None:
+        row["created_at"] = report_payload.get("created_at")
+    else:
+        row["created_at"] = now_ts
+
+    if not row["session_fingerprint"]:
+        raise ValueError("Session report requires session_fingerprint.")
+    if not row["selecao"]:
+        raise ValueError("Session report requires selecao.")
+    if not row["contexto"]:
+        raise ValueError("Session report requires contexto.")
+    if not row["report_txt"]:
+        raise ValueError("Session report requires report_txt.")
+
+    df = pd.DataFrame([row])
+    if "session_sk" in df.columns:
+        df["session_sk"] = pd.to_numeric(df["session_sk"], errors="coerce").astype("Int64")
+    if "data" in df.columns:
+        df["data"] = pd.to_datetime(df["data"], errors="coerce").dt.date
+
+    stats = insert_or_update_table("session_reports", df, pk_columns=["session_fingerprint"])
+    if not stats.get("success", False):
+        raise RuntimeError(stats.get("error") or "Falha ao guardar relatorio tecnico.")
+    return stats
+
+
 # ==================== High-level API (matches old data_manager interface) ====================
 
 def write_session_data(
@@ -834,6 +880,186 @@ FIELD_REFERENCE_COLUMNS = [
     "TR_lon",
     "obs",
 ]
+
+SELECTION_REFERENCE_COLUMNS = [
+    "selection_sk",
+    "codigo",
+    "escalao",
+    "genero",
+    "ativo",
+    "sort_order",
+    "created_at",
+    "updated_at",
+]
+
+SESSION_REPORT_COLUMNS = [
+    "report_sk",
+    "session_fingerprint",
+    "session_sk",
+    "data",
+    "selecao",
+    "genero",
+    "contexto",
+    "jogo",
+    "report_title",
+    "report_txt",
+    "created_at",
+    "updated_at",
+]
+
+
+def _parse_selection_label(label: str) -> tuple[str, str]:
+    value = str(label or "").strip()
+    if not value:
+        return "", ""
+    parts = value.rsplit(" ", 1)
+    if len(parts) == 2 and parts[1] in {"M", "F"}:
+        return parts[0], parts[1]
+    return value, ""
+
+
+def _default_selections_reference_df() -> pd.DataFrame:
+    now_ts = pd.Timestamp.utcnow()
+    rows = []
+    for idx, codigo in enumerate(SELECOES_OPCOES, start=1):
+        escalao, genero = _parse_selection_label(codigo)
+        rows.append(
+            {
+                "selection_sk": idx,
+                "codigo": codigo,
+                "escalao": escalao,
+                "genero": genero,
+                "ativo": True,
+                "sort_order": idx,
+                "created_at": now_ts,
+                "updated_at": now_ts,
+            }
+        )
+    return pd.DataFrame(rows, columns=SELECTION_REFERENCE_COLUMNS)
+
+
+def _prepare_selections_reference_df(df_new: pd.DataFrame) -> pd.DataFrame:
+    if df_new is None or df_new.empty:
+        return _default_selections_reference_df()
+
+    df = df_new.copy()
+    for col in SELECTION_REFERENCE_COLUMNS:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    df = df[SELECTION_REFERENCE_COLUMNS].copy()
+    df["codigo"] = df["codigo"].astype(str).str.strip()
+    df = df[df["codigo"].ne("")].drop_duplicates(subset=["codigo"], keep="last")
+
+    parsed_pairs = df["codigo"].map(_parse_selection_label)
+    parsed_df = pd.DataFrame(parsed_pairs.tolist(), columns=["parsed_escalao", "parsed_genero"], index=df.index)
+
+    df["escalao"] = df["escalao"].astype("string").fillna("").str.strip()
+    df["genero"] = df["genero"].astype("string").fillna("").str.strip()
+    df.loc[df["escalao"].eq(""), "escalao"] = parsed_df["parsed_escalao"]
+    df.loc[df["genero"].eq(""), "genero"] = parsed_df["parsed_genero"]
+
+    df["ativo"] = df["ativo"].fillna(True).astype(bool)
+    df["selection_sk"] = pd.to_numeric(df["selection_sk"], errors="coerce")
+    if df["selection_sk"].isna().any():
+        df["selection_sk"] = range(1, len(df) + 1)
+    df["selection_sk"] = df["selection_sk"].astype(int)
+
+    df["sort_order"] = pd.to_numeric(df["sort_order"], errors="coerce")
+    if df["sort_order"].isna().any():
+        df["sort_order"] = range(1, len(df) + 1)
+    df["sort_order"] = df["sort_order"].astype(int)
+
+    now_ts = pd.Timestamp.utcnow()
+    df["created_at"] = pd.to_datetime(df["created_at"], errors="coerce").fillna(now_ts)
+    df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce").fillna(now_ts)
+    return df.sort_values(["sort_order", "codigo"], na_position="last").reset_index(drop=True)
+
+
+def save_selections_reference(df_new: pd.DataFrame) -> pd.DataFrame:
+    """Persist selections reference data to Supabase."""
+    df_prepared = _prepare_selections_reference_df(df_new)
+    if df_prepared.empty:
+        return pd.DataFrame(columns=SELECTION_REFERENCE_COLUMNS)
+
+    initialize_schema()
+    # Preserve the database-managed surrogate key when upserting by codigo.
+    upload_columns = [
+        "codigo",
+        "escalao",
+        "genero",
+        "ativo",
+        "sort_order",
+        "updated_at",
+    ]
+    if "created_at" in df_prepared.columns:
+        upload_columns.append("created_at")
+    stats = insert_or_update_table("selecoes", df_prepared[upload_columns], pk_columns=["codigo"])
+    if not stats.get("success", False):
+        raise RuntimeError(stats.get("error") or "Falha ao guardar selecoes no Supabase.")
+    return df_prepared
+
+
+def read_selections_reference(active_only: bool = False) -> pd.DataFrame:
+    """Read selections reference data from Supabase."""
+    initialize_schema()
+    df_db = read_table("selecoes")
+    if df_db is None or df_db.empty:
+        df_db = _default_selections_reference_df()
+
+    df = _prepare_selections_reference_df(df_db)
+    if active_only:
+        df = df[df["ativo"]].copy()
+    return df.sort_values(["sort_order", "codigo"], na_position="last").reset_index(drop=True)
+
+
+def sync_selections_reference(include_default: bool = True) -> pd.DataFrame:
+    """Ensure Supabase contains the known selections plus any athlete-linked selections."""
+    frames = []
+    try:
+        current_df = read_table("selecoes")
+    except Exception:
+        current_df = pd.DataFrame()
+
+    if current_df is not None and not current_df.empty:
+        frames.append(current_df)
+
+    if include_default:
+        frames.append(_default_selections_reference_df())
+
+    try:
+        athletes_df = read_table("athletes")
+    except Exception:
+        athletes_df = pd.DataFrame()
+
+    if athletes_df is not None and not athletes_df.empty and "selecao" in athletes_df.columns:
+        selecao_series = athletes_df["selecao"].astype("string").fillna("").str.strip()
+        athlete_codes = [code for code in selecao_series.unique().tolist() if code]
+        if athlete_codes:
+            rows = []
+            now_ts = pd.Timestamp.utcnow()
+            for idx, codigo in enumerate(athlete_codes, start=1):
+                escalao, genero = _parse_selection_label(codigo)
+                rows.append(
+                    {
+                        "selection_sk": idx,
+                        "codigo": codigo,
+                        "escalao": escalao,
+                        "genero": genero,
+                        "ativo": True,
+                        "sort_order": idx,
+                        "created_at": now_ts,
+                        "updated_at": now_ts,
+                    }
+                )
+            frames.append(pd.DataFrame(rows, columns=SELECTION_REFERENCE_COLUMNS))
+
+    if not frames:
+        return save_selections_reference(_default_selections_reference_df())
+
+    merged = pd.concat(frames, ignore_index=True)
+    merged = _prepare_selections_reference_df(merged)
+    return save_selections_reference(merged)
 
 
 def _field_fingerprint_from_row(row: pd.Series) -> str:

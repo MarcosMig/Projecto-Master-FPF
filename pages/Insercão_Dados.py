@@ -81,6 +81,7 @@ from fpf_modules.supabase_manager import (
     insert_or_update_table,
     read_table,
     save_field_reference,
+    save_session_report,
     resolve_athlete_sk,
     resolve_session_sk,
     write_session_data,
@@ -2093,6 +2094,31 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                     df_athlete_session_publish,
                     progress_callback=_on_db_progress,
                 )
+                session_sk_value = pd.NA
+                for candidate_df in [df_perf_publish, df_collective_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish]:
+                    if candidate_df is not None and not candidate_df.empty and "session_sk" in candidate_df.columns:
+                        candidate_series = pd.to_numeric(candidate_df["session_sk"], errors="coerce").dropna()
+                        if not candidate_series.empty:
+                            session_sk_value = int(candidate_series.iloc[0])
+                            break
+
+                report_registry_error = None
+                try:
+                    save_session_report(
+                        {
+                            "session_fingerprint": publish_payload.get("session_fingerprint"),
+                            "session_sk": session_sk_value,
+                            "data": publish_payload.get("data_sessao", data_sessao),
+                            "selecao": publish_context.get("selecao", selecao),
+                            "genero": publish_context.get("genero", genero),
+                            "contexto": publish_context.get("contexto", contexto),
+                            "jogo": publish_payload.get("jogo", adversario),
+                            "report_title": "Relatorio Tecnico",
+                            "report_txt": st.session_state.get("report_txt", ""),
+                        }
+                    )
+                except Exception as report_exc:
+                    report_registry_error = str(report_exc)
                 progress_bar.progress(1.0, text="Transferência concluída.")
                 progress_text.caption("Passo finalizado: todos os envios terminaram.")
 
@@ -2104,6 +2130,11 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                         stats_msg += f"• **{table}**: {inserted} inseridos, {updated} atualizados\n"
 
                 st.success("✅ Dados gravados com sucesso no Supabase.")
+                if report_registry_error:
+                    st.warning(
+                        "Os dados da sessão foram publicados, mas o registo do relatório técnico não foi guardado. "
+                        f"Detalhe: {report_registry_error}"
+                    )
                 st.markdown(stats_msg)
                 st.session_state.publish_success = True
                 st.switch_page("pages/Análise_Performance.py")
