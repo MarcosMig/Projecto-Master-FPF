@@ -5,7 +5,10 @@ __pycache__/
 
 # Virtual environments
 venv/
+.venv/
 .env
+.codex_tmp/
+.tmp/
 
 # Streamlit
 .streamlit/secrets.toml
@@ -23,6 +26,7 @@ Thumbs.db
 # Data outputs (do not version large generated files)
 Data/raw_data/
 Data/clean_data/
+Data/admin/
 
 # Database files
 Data/*.duckdb
