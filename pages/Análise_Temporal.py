@@ -35,8 +35,6 @@ TEMPORAL_METRICS = [
     ("player_load", "Player Load", ""),
     ("rhie_bouts", "RHIE", ""),
     ("trimp_banister", "TRIMP", ""),
-    ("acwr_external_load_score", "ACWR Carga Externa", ""),
-    ("acwr_trimp_banister", "ACWR TRIMP", ""),
     ("vmax_mps", "Vmax", "m/s"),
     ("peak_1m_m_min", "Pico 1m", "m/min"),
 ]
@@ -254,6 +252,9 @@ def _build_temporal_figure(df: pd.DataFrame, metric_key: str, metric_label: str,
     plot_df = df.copy()
     plot_df["ordem"] = np.arange(len(plot_df))
     plot_df["label"] = plot_df.apply(_build_session_label, axis=1)
+    if metric_key not in plot_df.columns:
+        plot_df[metric_key] = np.nan
+    plot_df[metric_key] = pd.to_numeric(plot_df[metric_key], errors="coerce")
     plot_df["rolling"] = pd.to_numeric(plot_df[metric_key], errors="coerce").rolling(window=rolling_window, min_periods=1).mean()
 
     if go is None:
@@ -330,10 +331,6 @@ with selector_right:
 with selector_extra:
     rolling_window = st.selectbox("Media movel", options=[2, 3, 5], index=1)
 
-metric_labels = {label: (key, suffix) for key, label, suffix in TEMPORAL_METRICS}
-selected_label = st.selectbox("Metrica", options=list(metric_labels.keys()), index=0)
-metric_key, metric_suffix = metric_labels[selected_label]
-
 df_athlete = perf_df[perf_df["atleta_id"].eq(athlete_id)].copy()
 if contexto_filter != "Todos":
     df_athlete = df_athlete[df_athlete["contexto"].eq(contexto_filter)].copy()
@@ -346,9 +343,18 @@ sort_cols = [c for c in ["data", "session_sk"] if c in df_athlete.columns]
 if sort_cols:
     df_athlete = df_athlete.sort_values(sort_cols, ascending=[True] * len(sort_cols)).reset_index(drop=True)
 
-for load_metric in ["external_load_score", "trimp_banister"]:
-    if load_metric in df_athlete.columns:
-        df_athlete[f"acwr_{load_metric}"] = _compute_acwr(df_athlete[load_metric])
+available_metrics = [
+    (key, label, suffix)
+    for key, label, suffix in TEMPORAL_METRICS
+    if key in df_athlete.columns
+]
+if not available_metrics:
+    st.info("Sem metricas disponiveis para as sessoes selecionadas.")
+    st.stop()
+
+metric_labels = {label: (key, suffix) for key, label, suffix in available_metrics}
+selected_label = st.selectbox("Metrica", options=list(metric_labels.keys()), index=0)
+metric_key, metric_suffix = metric_labels[selected_label]
 
 athlete_info = athletes_df[athletes_df["atleta_id"].eq(athlete_id)].head(1)
 athlete_row = athlete_info.iloc[0] if not athlete_info.empty else {}
@@ -388,15 +394,6 @@ if go is None:
 else:
     st.plotly_chart(chart_data, use_container_width=True)
 
-if {"acwr_external_load_score", "acwr_trimp_banister"}.intersection(df_athlete.columns):
-    acwr_cols = st.columns(2, gap="large")
-    with acwr_cols[0]:
-        current_acwr_ext = _safe_numeric_series(df_athlete, "acwr_external_load_score")
-        st.metric("ACWR Carga Externa", f"{current_acwr_ext.iloc[-1]:.2f}" if not current_acwr_ext.empty else "-")
-    with acwr_cols[1]:
-        current_acwr_trimp = _safe_numeric_series(df_athlete, "acwr_trimp_banister")
-        st.metric("ACWR TRIMP", f"{current_acwr_trimp.iloc[-1]:.2f}" if not current_acwr_trimp.empty else "-")
-
 table_cols = list(
     dict.fromkeys(
         c
@@ -404,14 +401,7 @@ table_cols = list(
             "data",
             "contexto",
             "jogo",
-            metric_key,
             "duracao_min",
-            "dist_m",
-            "m_min",
-            "external_load_score",
-            "trimp_banister",
-            "acwr_external_load_score",
-            "acwr_trimp_banister",
         ]
         if c in df_athlete.columns
     )
@@ -419,6 +409,8 @@ table_cols = list(
 table_df = df_athlete[table_cols].copy()
 if "data" in table_df.columns:
     table_df["data"] = table_df["data"].dt.strftime("%d/%m/%Y")
+if "duracao_min" in table_df.columns:
+    table_df = table_df.rename(columns={"duracao_min": "Minutos"})
 
 st.markdown("## Sessoes")
 st.dataframe(table_df.sort_index(ascending=False), use_container_width=True, hide_index=True)

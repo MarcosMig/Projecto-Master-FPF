@@ -31,6 +31,9 @@ except ImportError:
     Client = None
 
 
+_SCHEMA_INITIALIZED = False
+
+
 def get_supabase_client() -> Client:
     """Get or create a Supabase client using credentials from Streamlit secrets."""
     if not SUPABASE_AVAILABLE:
@@ -54,8 +57,12 @@ def get_supabase_client() -> Client:
     return create_client(supabase_url, supabase_key)
 
 
-def initialize_schema() -> None:
+def initialize_schema(force: bool = False) -> None:
     """Create all necessary tables in Supabase if they don't exist."""
+    global _SCHEMA_INITIALIZED
+    if _SCHEMA_INITIALIZED and not force:
+        return
+
     client = get_supabase_client()
     
     tables_sql = """
@@ -347,6 +354,7 @@ def initialize_schema() -> None:
     
     # Execute via RPC or direct SQL (if your Supabase tier supports it)
     # For now, we assume the schema was created beforehand in Supabase.
+    _SCHEMA_INITIALIZED = True
 
 
 def upload_image_to_storage(
@@ -511,6 +519,50 @@ def delete_table_rows(table_name: str, filters: Dict) -> Dict:
     return stats
 
 
+def _table_has_session_rows(table_name: str, session_sk: int) -> bool:
+    """Check whether a table already contains rows for a given session."""
+    if session_sk is None:
+        return False
+
+    df = read_table(table_name, {"session_sk": session_sk}, columns="session_sk", limit=1)
+    return df is not None and not df.empty
+
+
+def cleanup_session_upload(session_sk: int, delete_session_row: bool = True) -> Dict:
+    """Best-effort cleanup for a partially uploaded session."""
+    stats = {"success": True, "deleted": {}, "errors": {}}
+
+    if session_sk is None:
+        return stats
+
+    table_order = [
+        "session_reports",
+        "samples",
+        "quality_metrics",
+        "collective_performance_metrics",
+        "performance_metrics",
+        "athlete_session",
+    ]
+
+    for table_name in table_order:
+        result = delete_table_rows(table_name, {"session_sk": session_sk})
+        stats["deleted"][table_name] = result.get("deleted", 0)
+        if not result.get("success", False):
+            stats["success"] = False
+            stats["errors"][table_name] = result.get("error")
+
+    if delete_session_row:
+        remaining_refs = any(_table_has_session_rows(table_name, session_sk) for table_name in table_order)
+        if not remaining_refs:
+            result = delete_table_rows("sessions", {"session_sk": session_sk})
+            stats["deleted"]["sessions"] = result.get("deleted", 0)
+            if not result.get("success", False):
+                stats["success"] = False
+                stats["errors"]["sessions"] = result.get("error")
+
+    return stats
+
+
 def delete_public_storage_url(bucket_name: str, public_url: str) -> None:
     """Delete a storage object from its public URL when possible."""
     resolved_url = str(public_url or "").strip()
@@ -634,12 +686,14 @@ def _emit_progress(progress_callback: Optional[Callable], step: int, total_steps
     })
 
 
-def read_table(table_name: str, filters: Dict = None) -> pd.DataFrame:
+def read_table(table_name: str, filters: Dict = None, columns: str = "*", limit: Optional[int] = None) -> pd.DataFrame:
     """Read data from Supabase table.
     
     Args:
         table_name: name of the Supabase table
         filters: optional dict of {column: value} for filtering
+        columns: comma-separated columns to select
+        limit: optional row limit
     
     Returns:
         DataFrame with query results
@@ -647,11 +701,14 @@ def read_table(table_name: str, filters: Dict = None) -> pd.DataFrame:
     client = get_supabase_client()
     
     try:
-        query = client.table(table_name).select("*")
+        query = client.table(table_name).select(columns)
         
         if filters:
             for col, val in filters.items():
                 query = query.eq(col, val)
+
+        if limit is not None and limit > 0:
+            query = query.limit(limit)
         
         response = query.execute()
         
@@ -768,6 +825,35 @@ def write_session_data(
         athlete_sks=sorted(athlete_sks),
         base_dir=CLEANDATA_DIR,
     )
+
+    rollback_session_sk = None
+    rollback_enabled = False
+    if len(session_sks) == 1:
+        rollback_session_sk = next(iter(session_sks))
+        tracked_tables = [
+            "performance_metrics",
+            "collective_performance_metrics",
+            "quality_metrics",
+            "samples",
+            "athlete_session",
+            "session_reports",
+        ]
+        rollback_enabled = not any(
+            _table_has_session_rows(table_name, rollback_session_sk)
+            for table_name in tracked_tables
+        )
+
+    def _raise_with_optional_cleanup(error_message: str) -> None:
+        if rollback_enabled and rollback_session_sk is not None:
+            cleanup_stats = cleanup_session_upload(rollback_session_sk, delete_session_row=True)
+            if cleanup_stats.get("success", False):
+                raise RuntimeError(
+                    f"{error_message} A limpeza automática dos dados parciais da sessão {rollback_session_sk} foi concluída."
+                )
+            raise RuntimeError(
+                f"{error_message} A limpeza automática da sessão {rollback_session_sk} falhou parcialmente: {cleanup_stats.get('errors')}."
+            )
+        raise RuntimeError(error_message)
     
     if df_perf is not None and not df_perf.empty:
         current_step += 1
@@ -777,7 +863,9 @@ def write_session_data(
             pk_columns=["session_sk", "athlete_sk", "phase_id"],
         )
         if not stats['performance_metrics'].get("success", False):
-            raise RuntimeError(f"Falha ao gravar performance_metrics: {stats['performance_metrics'].get('error')}")
+            _raise_with_optional_cleanup(
+                f"Falha ao gravar performance_metrics: {stats['performance_metrics'].get('error')}"
+            )
 
     if df_collective_perf is not None and not df_collective_perf.empty:
         current_step += 1
@@ -787,7 +875,7 @@ def write_session_data(
             pk_columns=["session_sk", "phase_id"],
         )
         if not stats['collective_performance_metrics'].get("success", False):
-            raise RuntimeError(
+            _raise_with_optional_cleanup(
                 f"Falha ao gravar collective_performance_metrics: {stats['collective_performance_metrics'].get('error')}"
             )
     
@@ -799,30 +887,41 @@ def write_session_data(
             pk_columns=["session_sk", "athlete_sk", "phase_id"],
         )
         if not stats['quality_metrics'].get("success", False):
-            raise RuntimeError(f"Falha ao gravar quality_metrics: {stats['quality_metrics'].get('error')}")
+            _raise_with_optional_cleanup(
+                f"Falha ao gravar quality_metrics: {stats['quality_metrics'].get('error')}"
+            )
     
     if df_samples is not None and not df_samples.empty:
-        current_step += 1
-        _emit_progress(progress_callback, current_step, total_steps, f"A gravar samples ({len(df_samples)} linhas)...", "samples")
-        stats['samples'] = insert_or_update_table(
-            "samples", df_samples,
-            pk_columns=["session_sk", "athlete_sk", "phase_id", "time"],
-            batch_size=1500,
-            max_retries=3,
-            batch_progress_callback=lambda idx, total, size, retry_attempt=0, retry_wait_seconds=0: _emit_progress(
-                progress_callback,
-                current_step,
-                total_steps,
-                (
-                    f"A gravar samples: lote {idx}/{total} ({size} linhas)..."
-                    if retry_attempt == 0
-                    else f"A repetir samples: lote {idx}/{total}, tentativa {retry_attempt}/3 em {retry_wait_seconds}s..."
+        df_samples = df_samples.copy()
+        if "time" in df_samples.columns:
+            df_samples["time"] = pd.to_datetime(df_samples["time"], errors="coerce")
+            df_samples = df_samples[df_samples["time"].notna()].copy()
+        if df_samples.empty:
+            stats['samples'] = {'inserted': 0, 'updated': 0, 'success': True, 'error': None}
+        else:
+            current_step += 1
+            _emit_progress(progress_callback, current_step, total_steps, f"A gravar samples ({len(df_samples)} linhas)...", "samples")
+            stats['samples'] = insert_or_update_table(
+                "samples", df_samples,
+                pk_columns=["session_sk", "athlete_sk", "phase_id", "time"],
+                batch_size=5000,
+                max_retries=3,
+                batch_progress_callback=lambda idx, total, size, retry_attempt=0, retry_wait_seconds=0: _emit_progress(
+                    progress_callback,
+                    current_step,
+                    total_steps,
+                    (
+                        f"A gravar samples: lote {idx}/{total} ({size} linhas)..."
+                        if retry_attempt == 0
+                        else f"A repetir samples: lote {idx}/{total}, tentativa {retry_attempt}/3 em {retry_wait_seconds}s..."
+                    ),
+                    "samples",
                 ),
-                "samples",
-            ),
-        )
-        if not stats['samples'].get("success", False):
-            raise RuntimeError(f"Falha ao gravar samples: {stats['samples'].get('error')}")
+            )
+            if not stats['samples'].get("success", False):
+                _raise_with_optional_cleanup(
+                    f"Falha ao gravar samples: {stats['samples'].get('error')}"
+                )
     
     if df_athlete_session is not None and not df_athlete_session.empty:
         current_step += 1
@@ -832,7 +931,9 @@ def write_session_data(
             pk_columns=["session_sk", "athlete_sk"]
         )
         if not stats['athlete_session'].get("success", False):
-            raise RuntimeError(f"Falha ao gravar athlete_session: {stats['athlete_session'].get('error')}")
+            _raise_with_optional_cleanup(
+                f"Falha ao gravar athlete_session: {stats['athlete_session'].get('error')}"
+            )
 
     _emit_progress(progress_callback, total_steps, total_steps, "Transferência concluída com sucesso.")
     

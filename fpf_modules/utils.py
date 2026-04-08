@@ -15,6 +15,8 @@ def round_metrics_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         "n_sprints",
         "n_acc_2_5",
         "n_dec_3_0",
+        "rhie_bouts",
+        "rhie_actions",
         "n_points",
         "n_gaps_gt2s",
         "n_jumps_gt15m",
@@ -22,6 +24,11 @@ def round_metrics_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         "session_sk",
         "athlete_sk",
         "phase_id",
+        "n_sprints_total",
+        "n_acc_2_5_total",
+        "n_dec_3_0_total",
+        "rhie_bouts_total",
+        "rhie_actions_total",
     ]
 
     round_1 = [

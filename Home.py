@@ -8,7 +8,7 @@ navigation = st.navigation(
     {
         "Hub": [
             st.Page("pages/Inicio.py", title="Inicio", default=True, url_path="inicio"),
-            st.Page("pages/Insercão_Dados.py", title="Insercao de Dados"),
+            st.Page("pages/Insercão_Dados.py", title="Upload de Dados"),
         ],
         "Base de Dados": [
             st.Page("pages/Seleções.py", title="Selecoes", url_path="selecoes"),
@@ -18,10 +18,8 @@ navigation = st.navigation(
         ],
         "Analise": [
             st.Page("pages/Análise_Performance.py", title="Comparar Perfis", url_path="comparar-perfis"),
-            st.Page("pages/Análise_Temporal.py", title="Analise Temporal", url_path="analise-temporal"),
-            st.Page("pages/Análise_Performance_Dev1.py", title="Analise Performance Dev1", url_path="analise-performance-dev1"),
-            st.Page("pages/Análise_Performance copy.py", title="Analise Performance Copy", url_path="analise-performance-copy"),
-            st.Page("pages/Análise_Performance copy 2.py", title="Analise Performance Copy 2", url_path="analise-performance-copy-2"),
+            st.Page("pages/Análise_Temporal.py", title="Perfil Temporal", url_path="perfil-temporal"),
+            st.Page("pages/Análise_Performance_Dev1.py", title="Metricas Colectivas", url_path="analise-performance-dev1"),
         ],
         "Administracao": [
             st.Page("pages/Admin_Utilizadores.py", title="Utilizadores", url_path="admin-utilizadores"),

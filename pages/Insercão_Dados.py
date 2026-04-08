@@ -349,7 +349,11 @@ def _find_potential_duplicate_sessions(
     if str(contexto or "").strip() == "Jogo":
         filters["jogo"] = str(jogo or "").strip()
 
-    df_existing = read_table("performance_metrics", filters=filters)
+    df_existing = read_table(
+        "performance_metrics",
+        filters=filters,
+        columns="session_sk,data,selecao,genero,contexto,jogo,fase,atleta_id",
+    )
     if df_existing is None or df_existing.empty:
         return pd.DataFrame()
 
@@ -732,45 +736,76 @@ def _build_samples_export(out_files, session_fingerprint: str, athlete_map: dict
             "hr_bpm": df_sync[hr_col] if hr_col else np.nan,
         })
 
-        # Convert time column to proper timestamp format for DuckDB
+        # Convert time column to a publishable timestamp. If some raw values are invalid,
+        # recover them from the relative event clock when available instead of inventing samples.
         if "time" in sample_df.columns and not sample_df["time"].isna().all():
+            raw_time = sample_df["time"].copy()
             # Handle relative time format (HH:MM:SS.s) by combining with a base date
             try:
                 # Check if time values contain date separators
-                time_strs = sample_df["time"].astype(str)
+                time_strs = raw_time.astype(str)
                 has_dates = time_strs.str.contains('-', na=False)
                 
                 if has_dates.any():
                     # Some values have dates, try full timestamp format first
-                    sample_df["time"] = pd.to_datetime(sample_df["time"], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
+                    sample_df["time"] = pd.to_datetime(raw_time, format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
                     # Fill any NaT values with time-only parsing
                     still_nat = sample_df["time"].isna()
                     if still_nat.any():
-                        time_only = pd.to_datetime(sample_df.loc[still_nat, "time"], format='%H:%M:%S.%f', errors='coerce')
+                        time_only = pd.to_datetime(raw_time.loc[still_nat], format='%H:%M:%S.%f', errors='coerce')
                         base_date = pd.Timestamp('2023-01-01')
                         sample_df.loc[still_nat, "time"] = base_date + (time_only - time_only.dt.normalize())
                 else:
                     # Handle relative time format by adding a base date (e.g., 2023-01-01)
                     base_date = pd.Timestamp('2023-01-01')
                     # Parse time strings and add to base date
-                    time_parsed = pd.to_datetime(sample_df["time"], format='%H:%M:%S.%f', errors='coerce')
+                    time_parsed = pd.to_datetime(raw_time, format='%H:%M:%S.%f', errors='coerce')
                     sample_df["time"] = base_date + (time_parsed - time_parsed.dt.normalize())
             except:
                 # Fallback: try direct conversion with specific formats
                 try:
-                    sample_df["time"] = pd.to_datetime(sample_df["time"], format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
+                    sample_df["time"] = pd.to_datetime(raw_time, format='%Y-%m-%d %H:%M:%S.%f', errors='coerce')
                 except:
                     try:
-                        sample_df["time"] = pd.to_datetime(sample_df["time"], format='%H:%M:%S.%f', errors='coerce')
+                        sample_df["time"] = pd.to_datetime(raw_time, format='%H:%M:%S.%f', errors='coerce')
                         base_date = pd.Timestamp('2023-01-01')
                         sample_df["time"] = base_date + (sample_df["time"] - sample_df["time"].dt.normalize())
                     except:
                         # Final fallback
-                        sample_df["time"] = pd.to_datetime(sample_df["time"], errors="coerce")
-            
+                        sample_df["time"] = pd.to_datetime(raw_time, errors="coerce")
+
+            invalid_time_mask = sample_df["time"].isna()
+            if invalid_time_mask.any():
+                fallback_seconds = pd.Series(np.nan, index=sample_df.index, dtype="float64")
+                if "time_evento_s" in sample_df.columns:
+                    fallback_seconds = pd.to_numeric(sample_df["time_evento_s"], errors="coerce")
+                if fallback_seconds.notna().sum() == 0 and "time_evento" in sample_df.columns:
+                    fallback_seconds = time_to_seconds(sample_df["time_evento"])
+                if fallback_seconds.notna().sum() == 0:
+                    fallback_seconds = time_to_seconds(raw_time)
+
+                base_timestamp = None
+                anchor_mask = sample_df["time"].notna() & fallback_seconds.notna()
+                if anchor_mask.any():
+                    anchor_idx = anchor_mask[anchor_mask].index[0]
+                    base_timestamp = sample_df.loc[anchor_idx, "time"] - pd.to_timedelta(float(fallback_seconds.loc[anchor_idx]), unit="s")
+                elif sample_df["time"].notna().any():
+                    first_valid_time = sample_df["time"].dropna().iloc[0]
+                    base_timestamp = first_valid_time.normalize() if isinstance(first_valid_time, pd.Timestamp) else pd.Timestamp("2023-01-01")
+                elif fallback_seconds.notna().any():
+                    base_timestamp = pd.Timestamp("2023-01-01")
+
+                if base_timestamp is not None:
+                    recoverable_mask = invalid_time_mask & fallback_seconds.notna()
+                    if recoverable_mask.any():
+                        sample_df.loc[recoverable_mask, "time"] = (
+                            base_timestamp + pd.to_timedelta(fallback_seconds.loc[recoverable_mask], unit="s")
+                        )
+
             # Keep as datetime for DuckDB TIMESTAMP compatibility (don't convert to string)
 
         sample_df["phase_id"] = sample_df["fase"].map(PHASE_MAP)
+        sample_df = sample_df[sample_df["time"].notna() & sample_df["phase_id"].notna()].copy()
         sample_frames.append(sample_df)
 
         fases_presentes = sorted([f for f in sample_df["fase"].dropna().astype(str).unique().tolist() if f in ["Warm-Up", "1P", "2P"]], key=lambda x: PHASE_MAP.get(x, 99))
@@ -997,6 +1032,12 @@ def _prepare_publish_payloads(
             "periodo_jogo", "minuto_jogo", "lat", "lon", "x_utm", "y_utm", "hr_bpm", "phase_id",
         ]
     ].copy()
+    if not df_samples_publish.empty:
+        df_samples_publish["time"] = pd.to_datetime(df_samples_publish["time"], errors="coerce")
+        df_samples_publish["phase_id"] = pd.to_numeric(df_samples_publish["phase_id"], errors="coerce").astype("Int64")
+        df_samples_publish = df_samples_publish[
+            df_samples_publish["time"].notna() & df_samples_publish["phase_id"].notna()
+        ].copy()
     df_athlete_session_publish = df_athlete_session_publish[
         [
             "session_sk", "athlete_sk", "atleta_id", "participou_warmup", "participou_1p",
@@ -1015,6 +1056,22 @@ def _prepare_publish_payloads(
                 "player_load_total", "rhie_bouts_total", "rhie_actions_total", "trimp_banister_total",
             ]
         ].copy()
+        collective_int_cols = [
+            "session_sk",
+            "phase_id",
+            "n_sprints_total",
+            "n_acc_2_5_total",
+            "n_dec_3_0_total",
+            "rhie_bouts_total",
+            "rhie_actions_total",
+        ]
+        for col in collective_int_cols:
+            if col in df_collective_perf_publish.columns:
+                df_collective_perf_publish[col] = (
+                    pd.to_numeric(df_collective_perf_publish[col], errors="coerce")
+                    .round()
+                    .astype("Int64")
+                )
 
     return df_perf_publish, df_collective_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish
 
