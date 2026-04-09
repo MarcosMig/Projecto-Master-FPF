@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import folium
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 from pyproj import Geod, Transformer
 from pathlib import Path
 import tempfile
@@ -17,10 +18,12 @@ import uuid
 import requests
 import re
 import io
+import textwrap
 
 # testing
 from streamlit_folium import st_folium
 from scipy.signal import savgol_filter
+from matplotlib.backends.backend_pdf import PdfPages
 
 # -- Local Modules -- #
 from fpf_modules.constants import (
@@ -121,6 +124,7 @@ ATHLETE_FEET = ["", "Direito", "Esquerdo", "Ambidestro"]
 ATHLETE_ESCALOES = ["", "A", "Sub-23", "Sub-21", "Sub-20", "Sub-19", "Sub-18", "Sub-17", "Sub-16", "Sub-15"]
 SELECTION_OPTIONS = load_selection_reference()
 GENDER_OPTIONS = ["Masculino", "Feminino"]
+SESSION_REPORTS_DIR = Path(CLEANDATA_DIR) / "session_reports_pdf"
 
 
 def _clean_text_value(value):
@@ -703,6 +707,345 @@ def _parse_report_sections(report_txt: str):
         sections.append((current_title, "\n".join(current_lines).strip()))
 
     return title, sections
+
+
+def _sanitize_filename_part(value: str) -> str:
+    text = _clean_text_value(value)
+    if not text:
+        return "sessao"
+    text = re.sub(r"[^\w\-]+", "_", text, flags=re.UNICODE)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text or "sessao"
+
+
+def _session_pdf_paths(session_fingerprint: str, selecao: str, contexto: str, jogo: str) -> tuple[Path, Path]:
+    SESSION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    selecao_part = _sanitize_filename_part(selecao)
+    contexto_part = _sanitize_filename_part(contexto)
+    jogo_part = _sanitize_filename_part(jogo)
+    base_name = f"{selecao_part}_{contexto_part}_{jogo_part}_{_sanitize_filename_part(session_fingerprint)[:16]}"
+    return (
+        SESSION_REPORTS_DIR / f"{base_name}_coletivo.pdf",
+        SESSION_REPORTS_DIR / f"{base_name}_individual.pdf",
+    )
+
+
+def _pdf_add_text_page(pdf: PdfPages, title: str, body: str) -> None:
+    fig = plt.figure(figsize=(8.27, 11.69))
+    ax = fig.add_axes([0.06, 0.04, 0.88, 0.92])
+    ax.axis("off")
+    wrapped_lines = []
+    for raw_line in str(body or "").splitlines():
+        chunks = textwrap.wrap(raw_line, width=100) or [""]
+        wrapped_lines.extend(chunks)
+
+    lines_per_page = 48
+    pages = [wrapped_lines[i:i + lines_per_page] for i in range(0, max(len(wrapped_lines), 1), lines_per_page)] or [[]]
+    plt.close(fig)
+    for idx, page_lines in enumerate(pages, start=1):
+        fig = plt.figure(figsize=(8.27, 11.69))
+        ax = fig.add_axes([0.06, 0.04, 0.88, 0.92])
+        ax.axis("off")
+        ax.text(0, 1.0, title if idx == 1 else f"{title} ({idx})", fontsize=14, fontweight="bold", va="top")
+        ax.text(0, 0.96, "\n".join(page_lines) if page_lines else "-", fontsize=8.5, va="top", family="monospace")
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _pdf_add_table_pages(pdf: PdfPages, title: str, df: pd.DataFrame, rows_per_page: int = 24) -> None:
+    if df is None or df.empty:
+        _pdf_add_text_page(pdf, title, "Sem dados disponíveis.")
+        return
+
+    display_df = df.copy().fillna("-")
+    display_df.columns = [str(col) for col in display_df.columns]
+    pages = [display_df.iloc[i:i + rows_per_page].copy() for i in range(0, len(display_df), rows_per_page)]
+    for idx, page_df in enumerate(pages, start=1):
+        fig, ax = plt.subplots(figsize=(11.69, 8.27))
+        ax.axis("off")
+        ax.set_title(title if len(pages) == 1 else f"{title} ({idx})", fontsize=13, fontweight="bold", pad=12)
+        table = ax.table(
+            cellText=page_df.astype(str).values,
+            colLabels=page_df.columns.tolist(),
+            loc="center",
+            cellLoc="center",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(7.5)
+        table.scale(1, 1.25)
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _plot_grouped_bars_on_axis(
+    ax,
+    *,
+    title: str,
+    categories: list[str],
+    current_values: list[float],
+    reference_values: list[float],
+    current_label: str,
+    reference_label: str,
+    metric_col: str,
+    rotate_xticks: bool = False,
+) -> None:
+    x = np.arange(len(categories))
+    width = 0.38
+
+    current_series = pd.to_numeric(pd.Series(current_values), errors="coerce").fillna(0.0)
+    reference_series = pd.to_numeric(pd.Series(reference_values), errors="coerce")
+    reference_available = reference_series.notna().any()
+    if not reference_available:
+        reference_series = pd.Series([0.0] * len(categories))
+    else:
+        reference_series = reference_series.fillna(0.0)
+
+    bars_current = ax.bar(
+        x - (width / 2 if reference_available else 0),
+        current_series,
+        width=width if reference_available else 0.6,
+        color="#7fb24d",
+        edgecolor="#2f3b1f",
+        linewidth=1.0,
+        label=current_label,
+    )
+    bars_reference = None
+    if reference_available:
+        bars_reference = ax.bar(
+            x + width / 2,
+            reference_series,
+            width=width,
+            color="#d9dde5",
+            edgecolor="#6b7280",
+            linewidth=1.0,
+            label=reference_label,
+        )
+
+    ax.set_title(title, loc="left", fontsize=12, fontweight="bold")
+    ax.set_ylabel(title)
+    ax.set_xticks(x)
+    ax.set_xticklabels(categories, rotation=90 if rotate_xticks else 0)
+    ax.grid(axis="y", color="#e2e8f0")
+    ax.set_axisbelow(True)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+
+    ymax = max(float(current_series.max()) if not current_series.empty else 0.0, float(reference_series.max()) if not reference_series.empty else 0.0)
+    ax.set_ylim(0, ymax * 1.18 if ymax > 0 else 1)
+
+    for bars, values in [(bars_current, current_series), (bars_reference, reference_series if reference_available else None)]:
+        if bars is None or values is None:
+            continue
+        labels = _format_metric_chart_text(metric_col, values)
+        for rect, label in zip(bars, labels):
+            ax.text(
+                rect.get_x() + rect.get_width() / 2,
+                rect.get_height() + (ymax * 0.02 if ymax > 0 else 0.02),
+                label,
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                color="#64748b",
+            )
+
+    if reference_available:
+        ax.legend(loc="upper right", frameon=False)
+
+
+def _pdf_add_collective_group_charts(
+    pdf: PdfPages,
+    *,
+    family_name: str,
+    metric_cols: list[str],
+    df_metrics: pd.DataFrame,
+    selecao: str,
+    contexto: str,
+) -> None:
+    charts = []
+    collective_family_df = _build_collective_phase_totals(df_metrics, metric_cols)
+    if collective_family_df is None or collective_family_df.empty:
+        return
+
+    for metric_col in metric_cols:
+        metric_spec = COLLECTIVE_PROFILE_METRIC_MAP.get(metric_col, (metric_col, metric_col, _metric_user_label(metric_col)))
+        current_metric_col, _, display_label = metric_spec
+        if current_metric_col not in collective_family_df.columns:
+            continue
+        reference_phase_df = _load_historical_collective_phase_reference(
+            selecao=selecao,
+            contexto=contexto,
+            metric_col=metric_col,
+        )
+        phase_order = ["Warm-Up", "1P", "2P"]
+        current_df = collective_family_df[["fase", current_metric_col]].copy()
+        current_df["fase"] = current_df["fase"].astype(str).str.strip()
+        current_df = current_df[current_df["fase"].isin(phase_order)].copy()
+        if current_df.empty:
+            continue
+        current_map = dict(zip(current_df["fase"], pd.to_numeric(current_df[current_metric_col], errors="coerce")))
+        reference_map = {}
+        if reference_phase_df is not None and not reference_phase_df.empty:
+            reference_map = dict(zip(reference_phase_df["fase"], pd.to_numeric(reference_phase_df["reference_value"], errors="coerce")))
+        categories = [phase for phase in phase_order if phase in current_map]
+        charts.append(
+            {
+                "title": display_label,
+                "categories": categories,
+                "current_values": [current_map.get(cat, np.nan) for cat in categories],
+                "reference_values": [reference_map.get(cat, np.nan) for cat in categories],
+                "metric_col": metric_col,
+                "rotate_xticks": False,
+            }
+        )
+
+    if not charts:
+        return
+
+    for chart in charts:
+        fig, ax = plt.subplots(1, 1, figsize=(11.69, 8.27))
+        fig.suptitle(family_name, fontsize=14, fontweight="bold", x=0.06, ha="left", y=0.98)
+        _plot_grouped_bars_on_axis(
+            ax,
+            title=chart["title"],
+            categories=chart["categories"],
+            current_values=chart["current_values"],
+            reference_values=chart["reference_values"],
+            current_label="Sessão Atual",
+            reference_label="Média Equipa",
+            metric_col=chart["metric_col"],
+            rotate_xticks=chart["rotate_xticks"],
+        )
+        fig.tight_layout(rect=[0.03, 0.03, 0.98, 0.94])
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _pdf_add_individual_group_charts(
+    pdf: PdfPages,
+    *,
+    family_name: str,
+    metric_cols: list[str],
+    totals_by_athlete: pd.DataFrame,
+    selecao: str,
+    contexto: str,
+    athlete_name_map: dict[str, str],
+    athlete_target_map: dict[str, str],
+    athlete_col: str = "atleta_id",
+) -> None:
+    if totals_by_athlete is None or totals_by_athlete.empty or athlete_col not in totals_by_athlete.columns:
+        return
+
+    charts = []
+    for metric_col in metric_cols:
+        metric_spec = INDIVIDUAL_PROFILE_METRIC_MAP.get(metric_col, (metric_col, metric_col, _metric_user_label(metric_col)))
+        current_metric_col, _, display_label = metric_spec
+        if current_metric_col not in totals_by_athlete.columns:
+            continue
+
+        reference_df = _load_historical_individual_metric_reference(
+            selecao=selecao,
+            contexto=contexto,
+            metric_col=metric_col,
+        )
+        reference_map = {}
+        if reference_df is not None and not reference_df.empty:
+            reference_map = (
+                reference_df[["atleta_id_norm", "reference_value"]]
+                .drop_duplicates(subset=["atleta_id_norm"], keep="last")
+                .set_index("atleta_id_norm")["reference_value"]
+                .to_dict()
+            )
+
+        chart_df = totals_by_athlete[[athlete_col, current_metric_col]].copy()
+        chart_df[athlete_col] = chart_df[athlete_col].map(_normalize_athlete_identifier)
+        chart_df[current_metric_col] = pd.to_numeric(chart_df[current_metric_col], errors="coerce")
+        chart_df = chart_df[chart_df[athlete_col].ne("") & chart_df[current_metric_col].notna()].copy()
+        if chart_df.empty:
+            continue
+        chart_df["athlete_ref_id"] = chart_df[athlete_col].map(lambda athlete_id: athlete_target_map.get(athlete_id, athlete_id))
+        chart_df["athlete_label"] = chart_df[athlete_col].map(
+            lambda athlete_id: athlete_name_map.get(_normalize_athlete_identifier(athlete_id), _normalize_athlete_identifier(athlete_id))
+        )
+        chart_df = chart_df.sort_values(by=current_metric_col, ascending=False).reset_index(drop=True)
+
+        charts.append(
+            {
+                "title": display_label,
+                "categories": chart_df["athlete_label"].tolist(),
+                "current_values": chart_df[current_metric_col].tolist(),
+                "reference_values": [reference_map.get(ref_id, np.nan) for ref_id in chart_df["athlete_ref_id"].tolist()],
+                "metric_col": metric_col,
+                "rotate_xticks": True,
+            }
+        )
+
+    if not charts:
+        return
+
+    for chart in charts:
+        fig, ax = plt.subplots(1, 1, figsize=(11.69, 8.27))
+        fig.suptitle(family_name, fontsize=14, fontweight="bold", x=0.06, ha="left", y=0.98)
+        _plot_grouped_bars_on_axis(
+            ax,
+            title=chart["title"],
+            categories=chart["categories"],
+            current_values=chart["current_values"],
+            reference_values=chart["reference_values"],
+            current_label="Sessão Atual",
+            reference_label="Média Individual",
+            metric_col=chart["metric_col"],
+            rotate_xticks=chart["rotate_xticks"],
+        )
+        fig.tight_layout(rect=[0.03, 0.03, 0.98, 0.94])
+        pdf.savefig(fig, bbox_inches="tight")
+        plt.close(fig)
+
+
+def _generate_session_report_pdfs(
+    *,
+    session_fingerprint: str,
+    selecao: str,
+    contexto: str,
+    jogo: str,
+    report_txt: str,
+    df_metrics: pd.DataFrame,
+    athlete_name_map: dict[str, str] | None = None,
+    athlete_target_map: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    collective_pdf_path, individual_pdf_path = _session_pdf_paths(session_fingerprint, selecao, contexto, jogo)
+    athlete_name_map = athlete_name_map or {}
+    athlete_target_map = athlete_target_map or {}
+
+    totals_by_athlete = _build_totals_by_athlete(df_metrics)
+    if totals_by_athlete is None:
+        totals_by_athlete = pd.DataFrame()
+
+    collective_groups = _build_performance_metric_groups()
+    with PdfPages(collective_pdf_path) as pdf:
+        for familia, cols in collective_groups.items():
+            _pdf_add_collective_group_charts(
+                pdf,
+                family_name=familia,
+                metric_cols=cols,
+                df_metrics=df_metrics,
+                selecao=selecao,
+                contexto=contexto,
+            )
+
+    with PdfPages(individual_pdf_path) as pdf:
+        for familia, cols in collective_groups.items():
+            _pdf_add_individual_group_charts(
+                pdf,
+                family_name=familia,
+                metric_cols=cols,
+                totals_by_athlete=totals_by_athlete,
+                selecao=selecao,
+                contexto=contexto,
+                athlete_name_map=athlete_name_map,
+                athlete_target_map=athlete_target_map,
+            )
+
+    return str(collective_pdf_path), str(individual_pdf_path)
 
 
 def _build_samples_export(out_files, session_fingerprint: str, athlete_map: dict | None = None):
@@ -1549,7 +1892,10 @@ def _build_totals_by_athlete(df_metrics: pd.DataFrame) -> pd.DataFrame:
         if col in totals_df.columns:
             totals_df[col] = pd.to_numeric(totals_df[col], errors="coerce")
 
-    duration = pd.to_numeric(totals_df.get(duration_col), errors="coerce")
+    if duration_col in totals_df.columns:
+        duration = pd.to_numeric(totals_df[duration_col], errors="coerce")
+    else:
+        duration = pd.Series(np.nan, index=totals_df.index, dtype="float64")
     valid_duration = duration.notna() & (duration > 0)
 
     rename_map = {
@@ -1642,6 +1988,9 @@ def _build_collective_phase_totals(df_metrics: pd.DataFrame, metric_cols: list[s
         return pd.DataFrame()
 
     cols_present = [col for col in metric_cols if col in work_df.columns]
+    duration_col = "duracao_min"
+    if duration_col in work_df.columns and duration_col not in cols_present:
+        cols_present = [duration_col] + cols_present
     if not cols_present:
         return pd.DataFrame()
 
@@ -1709,6 +2058,32 @@ def _build_collective_phase_totals(df_metrics: pd.DataFrame, metric_cols: list[s
     collective_df = pd.DataFrame(collective_rows)
     if collective_df.empty:
         return pd.DataFrame()
+    if "duracao_min" in collective_df.columns:
+        duration = pd.to_numeric(collective_df["duracao_min"], errors="coerce")
+    else:
+        duration = pd.Series(np.nan, index=collective_df.index, dtype="float64")
+    valid_duration = duration.notna() & (duration > 0)
+    per90_map = {
+        "dist_m": "dist_m_90",
+        "hsr_dist_m": "hsr_dist_m_90",
+        "sprint_dist_m": "sprint_dist_m_90",
+        "active_time_min": "active_time_min_90",
+        "n_sprints": "n_sprints_90",
+        "n_acc_2_5": "n_acc_2_5_90",
+        "n_dec_3_0": "n_dec_3_0_90",
+        "external_load_score": "external_load_score_90",
+        "total_load_score": "total_load_score_90",
+        "player_load": "player_load_90",
+        "rhie_bouts": "rhie_bouts_90",
+        "trimp_banister": "trimp_banister_90",
+    }
+    for source_col, target_col in per90_map.items():
+        if source_col in collective_df.columns:
+            collective_df[target_col] = np.where(
+                valid_duration,
+                pd.to_numeric(collective_df[source_col], errors="coerce") / duration * 90.0,
+                np.nan,
+            )
     collective_df["__fase_ord"] = collective_df["fase"].map({phase: idx for idx, phase in enumerate(phase_order)})
     collective_df = collective_df.sort_values("__fase_ord").drop(columns="__fase_ord").reset_index(drop=True)
     return round_metrics_dataframe(collective_df)
@@ -1808,6 +2183,92 @@ METRIC_LABELS = {
     "n_gaps_gt2s_qc": "Falhas QC > 2s",
 }
 
+TEAM_REFERENCE_METRICS = [
+    "duracao_min",
+    "dist_m",
+    "m_min",
+    "hsr_pct",
+    "n_sprints",
+    "n_acc_2_5",
+    "n_dec_3_0",
+    "vmax_mps",
+    "peak_1m_m_min",
+]
+
+INDIVIDUAL_REFERENCE_METRICS = [
+    "dist_m",
+    "m_min",
+    "hsr_pct",
+    "n_sprints",
+]
+
+COLLECTIVE_REFERENCE_COLUMN_MAP = {
+    "duracao_min": "duracao_min_total",
+    "dist_m": "dist_m_total",
+    "hsr_dist_m": "hsr_dist_m_total",
+    "sprint_dist_m": "sprint_dist_m_total",
+    "active_time_min": "active_time_min_total",
+    "m_min": "m_min_avg",
+    "hsr_pct": "hsr_pct_avg",
+    "active_pct": "active_pct_avg",
+    "n_sprints": "n_sprints_total",
+    "n_acc_2_5": "n_acc_2_5_total",
+    "n_dec_3_0": "n_dec_3_0_total",
+    "vmax_mps": "vmax_mps_max",
+    "peak_1m_m_min": "peak_1m_m_min_max",
+    "hr_avg_bpm": "hr_avg_bpm_avg",
+    "external_load_score": "external_load_score_total",
+    "total_load_score": "total_load_score_total",
+    "player_load": "player_load_total",
+    "rhie_bouts": "rhie_bouts_total",
+    "rhie_actions": "rhie_actions_total",
+    "trimp_banister": "trimp_banister_total",
+}
+
+INDIVIDUAL_PROFILE_METRIC_MAP = {
+    "duracao_min": ("duracao_min", "duracao_min_media", "Duração Média (min)"),
+    "dist_m": ("dist_m_90", "dist_m_90", "Distância / 90 (m)"),
+    "hsr_dist_m": ("hsr_dist_m_90", "hsr_dist_m_90", "Distância HSR / 90 (m)"),
+    "sprint_dist_m": ("sprint_dist_m_90", "sprint_dist_m_90", "Distância Sprint / 90 (m)"),
+    "active_time_min": ("active_time_min_90", "active_time_min_90", "Tempo Ativo / 90 (min)"),
+    "m_min": ("m_min", "m_min", "Intensidade (m/min)"),
+    "hsr_pct": ("hsr_pct", "hsr_pct", "HSR (%)"),
+    "active_pct": ("active_pct", "active_pct", "Tempo Ativo (%)"),
+    "n_sprints": ("n_sprints_90", "n_sprints_90", "N.º Sprints / 90"),
+    "n_acc_2_5": ("n_acc_2_5_90", "n_acc_2_5_90", "N.º Acelerações / 90"),
+    "n_dec_3_0": ("n_dec_3_0_90", "n_dec_3_0_90", "N.º Desacelerações / 90"),
+    "hr_avg_bpm": ("hr_avg_bpm", "hr_avg_bpm", "FC Média (bpm)"),
+    "external_load_score": ("external_load_score_90", "external_load_score_90", "Carga Externa / 90"),
+    "total_load_score": ("total_load_score_90", "total_load_score_90", "Carga Total / 90"),
+    "player_load": ("player_load_90", "player_load_90", "Player Load / 90"),
+    "rhie_bouts": ("rhie_bouts_90", "rhie_bouts_90", "RHIE / 90"),
+    "trimp_banister": ("trimp_banister_90", "trimp_banister_90", "TRIMP / 90"),
+    "vmax_mps": ("vmax_mps", "vmax_mps_peak", "Velocidade Máxima (m/s)"),
+    "peak_1m_m_min": ("peak_1m_m_min", "peak_1m_m_min_peak", "Pico 1 min (m/min)"),
+}
+
+COLLECTIVE_PROFILE_METRIC_MAP = {
+    "duracao_min": ("duracao_min", "duracao_min", "Duração (min)"),
+    "dist_m": ("dist_m_90", "dist_m_90", "Distância / 90 (m)"),
+    "hsr_dist_m": ("hsr_dist_m_90", "hsr_dist_m_90", "Distância HSR / 90 (m)"),
+    "sprint_dist_m": ("sprint_dist_m_90", "sprint_dist_m_90", "Distância Sprint / 90 (m)"),
+    "active_time_min": ("active_time_min_90", "active_time_min_90", "Tempo Ativo / 90 (min)"),
+    "m_min": ("m_min", "m_min", "Intensidade (m/min)"),
+    "hsr_pct": ("hsr_pct", "hsr_pct", "HSR (%)"),
+    "active_pct": ("active_pct", "active_pct", "Tempo Ativo (%)"),
+    "n_sprints": ("n_sprints_90", "n_sprints_90", "N.º Sprints / 90"),
+    "n_acc_2_5": ("n_acc_2_5_90", "n_acc_2_5_90", "N.º Acelerações / 90"),
+    "n_dec_3_0": ("n_dec_3_0_90", "n_dec_3_0_90", "N.º Desacelerações / 90"),
+    "hr_avg_bpm": ("hr_avg_bpm", "hr_avg_bpm", "FC Média (bpm)"),
+    "external_load_score": ("external_load_score_90", "external_load_score_90", "Carga Externa / 90"),
+    "total_load_score": ("total_load_score_90", "total_load_score_90", "Carga Total / 90"),
+    "player_load": ("player_load_90", "player_load_90", "Player Load / 90"),
+    "rhie_bouts": ("rhie_bouts_90", "rhie_bouts_90", "RHIE / 90"),
+    "trimp_banister": ("trimp_banister_90", "trimp_banister_90", "TRIMP / 90"),
+    "vmax_mps": ("vmax_mps", "vmax_mps", "Velocidade Máxima (m/s)"),
+    "peak_1m_m_min": ("peak_1m_m_min", "peak_1m_m_min", "Pico 1 min (m/min)"),
+}
+
 
 def _metric_user_label(metric_col: str) -> str:
     return METRIC_LABELS.get(metric_col, metric_col)
@@ -1831,6 +2292,380 @@ def _format_metric_value_for_ui(metric_col: str, value) -> str:
     if metric_col in integer_metrics:
         return f"{int(round(float(value)))}"
     return f"{float(value):.1f}" if isinstance(value, (int, float, np.number)) else str(value)
+
+
+def _safe_mean(series) -> float:
+    numeric = pd.to_numeric(pd.Series(series), errors="coerce")
+    return float(numeric.mean()) if numeric.notna().any() else np.nan
+
+
+def _comparison_marker(current_value, reference_value, tolerance_pct: float = 5.0) -> str:
+    if pd.isna(current_value) or pd.isna(reference_value):
+        return "SEM REF"
+    if float(reference_value) == 0:
+        if float(current_value) == 0:
+            return "EM LINHA"
+        return "ACIMA"
+    delta_pct = ((float(current_value) - float(reference_value)) / float(reference_value)) * 100.0
+    if abs(delta_pct) <= tolerance_pct:
+        return "EM LINHA"
+    return "ACIMA" if delta_pct > 0 else "ABAIXO"
+
+
+def _format_pct_delta(current_value, reference_value) -> str:
+    if pd.isna(current_value) or pd.isna(reference_value) or float(reference_value) == 0:
+        return "-"
+    delta_pct = ((float(current_value) - float(reference_value)) / float(reference_value)) * 100.0
+    return f"{delta_pct:+.0f}%"
+
+
+def _format_text_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    if not headers:
+        return []
+    widths = [len(str(header)) for header in headers]
+    for row in rows:
+        for idx, cell in enumerate(row):
+            widths[idx] = max(widths[idx], len(str(cell)))
+
+    def _fmt(row_values: list[str]) -> str:
+        return " | ".join(str(value).ljust(widths[idx]) for idx, value in enumerate(row_values))
+
+    return [
+        _fmt(headers),
+        "-+-".join("-" * width for width in widths),
+        *[_fmt(row) for row in rows],
+    ]
+
+
+def _load_historical_total_rows(selecao: str, contexto: str) -> pd.DataFrame:
+    try:
+        hist_df = read_table(
+            "performance_metrics",
+            filters={"selecao": selecao, "contexto": contexto, "fase": "Total"},
+            columns=(
+                "session_sk,atleta_id,data,selecao,contexto,fase,duracao_min,dist_m,m_min,"
+                "hsr_dist_m,hsr_pct,sprint_dist_m,n_sprints,n_acc_2_5,n_dec_3_0,"
+                "active_time_min,active_pct,hr_avg_bpm,external_load_score,total_load_score,"
+                "player_load,rhie_bouts,trimp_banister,vmax_mps,peak_1m_m_min"
+            ),
+        )
+    except Exception:
+        return pd.DataFrame()
+
+    if hist_df is None or hist_df.empty:
+        return pd.DataFrame()
+
+    for col in ["session_sk", "atleta_id", "selecao", "contexto", "fase"]:
+        if col not in hist_df.columns:
+            hist_df[col] = ""
+        hist_df[col] = hist_df[col].map(_clean_text_value)
+
+    if "data" in hist_df.columns:
+        hist_df["data"] = pd.to_datetime(hist_df["data"], errors="coerce")
+
+    numeric_cols = [
+        "duracao_min",
+        "dist_m",
+        "m_min",
+        "hsr_dist_m",
+        "hsr_pct",
+        "sprint_dist_m",
+        "n_sprints",
+        "n_acc_2_5",
+        "n_dec_3_0",
+        "active_time_min",
+        "active_pct",
+        "hr_avg_bpm",
+        "external_load_score",
+        "total_load_score",
+        "player_load",
+        "rhie_bouts",
+        "trimp_banister",
+        "vmax_mps",
+        "peak_1m_m_min",
+    ]
+    for col in numeric_cols:
+        if col in hist_df.columns:
+            hist_df[col] = pd.to_numeric(hist_df[col], errors="coerce")
+
+    hist_df["atleta_id_norm"] = hist_df["atleta_id"].map(_normalize_athlete_identifier)
+    return hist_df
+
+
+def _load_historical_collective_phase_reference(selecao: str, contexto: str, metric_col: str) -> pd.DataFrame:
+    metric_spec = COLLECTIVE_PROFILE_METRIC_MAP.get(metric_col)
+    source_col = COLLECTIVE_REFERENCE_COLUMN_MAP.get(metric_col)
+    if not source_col or metric_spec is None:
+        return pd.DataFrame()
+
+    try:
+        hist_df = read_table(
+            "collective_performance_metrics",
+            filters={"selecao": selecao, "contexto": contexto},
+            columns=f"session_sk,fase,duracao_min_total,{source_col}",
+        )
+    except Exception:
+        return pd.DataFrame()
+
+    if hist_df is None or hist_df.empty or source_col not in hist_df.columns:
+        return pd.DataFrame()
+
+    hist_df["fase"] = hist_df["fase"].map(_clean_text_value)
+    hist_df = hist_df[hist_df["fase"].isin(["Warm-Up", "1P", "2P"])].copy()
+    hist_df[source_col] = pd.to_numeric(hist_df[source_col], errors="coerce")
+    hist_df = hist_df[hist_df[source_col].notna()].copy()
+    if hist_df.empty:
+        return pd.DataFrame()
+
+    _, profile_metric_key, _ = metric_spec
+    rows = []
+    for fase, fase_df in hist_df.groupby("fase", dropna=False):
+        duration = pd.to_numeric(fase_df.get("duracao_min_total"), errors="coerce")
+        current_series = pd.to_numeric(fase_df[source_col], errors="coerce")
+        valid_duration = duration.notna() & (duration > 0)
+
+        if profile_metric_key == "duracao_min":
+            reference_value = _safe_mean(current_series)
+        elif profile_metric_key.endswith("_90"):
+            reference_value = _safe_mean(np.where(valid_duration, current_series / duration * 90.0, np.nan))
+        else:
+            reference_value = _safe_mean(current_series)
+
+        rows.append({"fase": fase, "reference_value": reference_value})
+
+    reference_df = pd.DataFrame(rows)
+    return reference_df[reference_df["reference_value"].notna()].reset_index(drop=True)
+
+
+def _load_historical_individual_metric_reference(selecao: str, contexto: str, metric_col: str) -> pd.DataFrame:
+    metric_spec = INDIVIDUAL_PROFILE_METRIC_MAP.get(metric_col)
+    if not metric_col or metric_spec is None:
+        return pd.DataFrame()
+
+    historical_df = _load_historical_total_rows(selecao, contexto)
+    if historical_df.empty:
+        return pd.DataFrame()
+
+    _, profile_metric_key, _ = metric_spec
+    work_df = historical_df.copy()
+    numeric_cols = [
+        "duracao_min",
+        "dist_m",
+        "hsr_dist_m",
+        "sprint_dist_m",
+        "n_sprints",
+        "n_acc_2_5",
+        "n_dec_3_0",
+        "active_time_min",
+        "m_min",
+        "hsr_pct",
+        "active_pct",
+        "hr_avg_bpm",
+        "external_load_score",
+        "total_load_score",
+        "player_load",
+        "rhie_bouts",
+        "trimp_banister",
+        "vmax_mps",
+        "peak_1m_m_min",
+    ]
+    for col in numeric_cols:
+        if col in work_df.columns:
+            work_df[col] = pd.to_numeric(work_df[col], errors="coerce")
+
+    rows = []
+    for athlete_id_norm, athlete_df in work_df.groupby("atleta_id_norm", dropna=False):
+        if not athlete_id_norm:
+            continue
+        dur = float(athlete_df["duracao_min"].sum()) if "duracao_min" in athlete_df.columns else np.nan
+        dist = float(athlete_df["dist_m"].sum()) if "dist_m" in athlete_df.columns else np.nan
+        hsr = float(athlete_df["hsr_dist_m"].sum()) if "hsr_dist_m" in athlete_df.columns else np.nan
+        sprint = float(athlete_df["sprint_dist_m"].sum()) if "sprint_dist_m" in athlete_df.columns else np.nan
+        active_time = float(athlete_df["active_time_min"].sum()) if "active_time_min" in athlete_df.columns else np.nan
+        n_sprints = float(athlete_df["n_sprints"].sum()) if "n_sprints" in athlete_df.columns else np.nan
+        n_acc = float(athlete_df["n_acc_2_5"].sum()) if "n_acc_2_5" in athlete_df.columns else np.nan
+        n_dec = float(athlete_df["n_dec_3_0"].sum()) if "n_dec_3_0" in athlete_df.columns else np.nan
+        hr_avg = _safe_mean(athlete_df["hr_avg_bpm"]) if "hr_avg_bpm" in athlete_df.columns else np.nan
+        external_load = float(athlete_df["external_load_score"].sum()) if "external_load_score" in athlete_df.columns else np.nan
+        total_load = float(athlete_df["total_load_score"].sum()) if "total_load_score" in athlete_df.columns else np.nan
+        player_load = float(athlete_df["player_load"].sum()) if "player_load" in athlete_df.columns else np.nan
+        rhie_bouts = float(athlete_df["rhie_bouts"].sum()) if "rhie_bouts" in athlete_df.columns else np.nan
+        trimp_banister = float(athlete_df["trimp_banister"].sum()) if "trimp_banister" in athlete_df.columns else np.nan
+        n_sessoes = int(athlete_df["session_sk"].nunique()) if "session_sk" in athlete_df.columns else int(len(athlete_df))
+
+        profile_metrics = {
+            "duracao_min_media": (dur / n_sessoes) if pd.notna(dur) and n_sessoes > 0 else np.nan,
+            "m_min": (dist / dur) if pd.notna(dist) and pd.notna(dur) and dur > 0 else np.nan,
+            "hsr_pct": (hsr / dist * 100.0) if pd.notna(hsr) and pd.notna(dist) and dist > 0 else np.nan,
+            "active_pct": (active_time / dur * 100.0) if pd.notna(active_time) and pd.notna(dur) and dur > 0 else np.nan,
+            "dist_m_90": (dist / dur * 90.0) if pd.notna(dist) and pd.notna(dur) and dur > 0 else np.nan,
+            "hsr_dist_m_90": (hsr / dur * 90.0) if pd.notna(hsr) and pd.notna(dur) and dur > 0 else np.nan,
+            "sprint_dist_m_90": (sprint / dur * 90.0) if pd.notna(sprint) and pd.notna(dur) and dur > 0 else np.nan,
+            "n_sprints_90": (n_sprints / dur * 90.0) if pd.notna(n_sprints) and pd.notna(dur) and dur > 0 else np.nan,
+            "n_acc_2_5_90": (n_acc / dur * 90.0) if pd.notna(n_acc) and pd.notna(dur) and dur > 0 else np.nan,
+            "n_dec_3_0_90": (n_dec / dur * 90.0) if pd.notna(n_dec) and pd.notna(dur) and dur > 0 else np.nan,
+            "active_time_min_90": (active_time / dur * 90.0) if pd.notna(active_time) and pd.notna(dur) and dur > 0 else np.nan,
+            "hr_avg_bpm": hr_avg,
+            "external_load_score_90": (external_load / dur * 90.0) if pd.notna(external_load) and pd.notna(dur) and dur > 0 else np.nan,
+            "total_load_score_90": (total_load / dur * 90.0) if pd.notna(total_load) and pd.notna(dur) and dur > 0 else np.nan,
+            "player_load_90": (player_load / dur * 90.0) if pd.notna(player_load) and pd.notna(dur) and dur > 0 else np.nan,
+            "rhie_bouts_90": (rhie_bouts / dur * 90.0) if pd.notna(rhie_bouts) and pd.notna(dur) and dur > 0 else np.nan,
+            "trimp_banister_90": (trimp_banister / dur * 90.0) if pd.notna(trimp_banister) and pd.notna(dur) and dur > 0 else np.nan,
+            "vmax_mps_peak": float(athlete_df["vmax_mps"].max()) if "vmax_mps" in athlete_df.columns and athlete_df["vmax_mps"].notna().any() else np.nan,
+            "peak_1m_m_min_peak": float(athlete_df["peak_1m_m_min"].max()) if "peak_1m_m_min" in athlete_df.columns and athlete_df["peak_1m_m_min"].notna().any() else np.nan,
+        }
+        rows.append(
+            {
+                "atleta_id_norm": athlete_id_norm,
+                "reference_value": profile_metrics.get(profile_metric_key, np.nan),
+            }
+        )
+
+    reference_df = pd.DataFrame(rows)
+    if reference_df.empty:
+        return pd.DataFrame()
+
+    reference_df["reference_value"] = pd.to_numeric(reference_df["reference_value"], errors="coerce")
+    return reference_df[reference_df["reference_value"].notna()].reset_index(drop=True)
+
+
+def _build_team_reference_rows(current_totals_df: pd.DataFrame, historical_df: pd.DataFrame) -> tuple[list[list[str]], int]:
+    if current_totals_df is None or current_totals_df.empty:
+        return [], 0
+
+    current_work = current_totals_df.copy()
+    current_metrics = {}
+    for metric_col in TEAM_REFERENCE_METRICS:
+        if metric_col not in current_work.columns:
+            continue
+        series = pd.to_numeric(current_work[metric_col], errors="coerce")
+        if metric_col in {"m_min", "hsr_pct"}:
+            current_metrics[metric_col] = float(series.mean()) if series.notna().any() else np.nan
+        elif metric_col in {"vmax_mps", "peak_1m_m_min"}:
+            current_metrics[metric_col] = float(series.max()) if series.notna().any() else np.nan
+        else:
+            current_metrics[metric_col] = float(series.sum()) if not series.empty else np.nan
+
+    session_count = 0
+    reference_metrics = {}
+    if historical_df is not None and not historical_df.empty and "session_sk" in historical_df.columns:
+        grouped_rows = []
+        for _, session_df in historical_df.groupby("session_sk", dropna=False):
+            session_row = {}
+            for metric_col in TEAM_REFERENCE_METRICS:
+                if metric_col not in session_df.columns:
+                    continue
+                series = pd.to_numeric(session_df[metric_col], errors="coerce")
+                if metric_col in {"m_min", "hsr_pct"}:
+                    session_row[metric_col] = float(series.mean()) if series.notna().any() else np.nan
+                elif metric_col in {"vmax_mps", "peak_1m_m_min"}:
+                    session_row[metric_col] = float(series.max()) if series.notna().any() else np.nan
+                else:
+                    session_row[metric_col] = float(series.sum()) if not series.empty else np.nan
+            grouped_rows.append(session_row)
+        grouped_df = pd.DataFrame(grouped_rows)
+        session_count = len(grouped_df)
+        for metric_col in TEAM_REFERENCE_METRICS:
+            if metric_col in grouped_df.columns:
+                reference_metrics[metric_col] = _safe_mean(grouped_df[metric_col])
+
+    rows = []
+    for metric_col in TEAM_REFERENCE_METRICS:
+        current_value = current_metrics.get(metric_col, np.nan)
+        reference_value = reference_metrics.get(metric_col, np.nan)
+        rows.append(
+            [
+                _metric_user_label(metric_col),
+                _format_metric_value_for_ui(metric_col, current_value),
+                _format_metric_value_for_ui(metric_col, reference_value),
+                _format_pct_delta(current_value, reference_value),
+                _comparison_marker(current_value, reference_value),
+            ]
+        )
+    return rows, session_count
+
+
+def _build_individual_reference_rows(current_totals_df: pd.DataFrame, historical_df: pd.DataFrame) -> list[list[str]]:
+    if current_totals_df is None or current_totals_df.empty:
+        return []
+
+    current_work = current_totals_df.copy()
+    current_work["atleta_id_norm"] = current_work["atleta_id"].map(_normalize_athlete_identifier)
+
+    reference_df = pd.DataFrame()
+    if historical_df is not None and not historical_df.empty:
+        agg_map = {metric_col: "mean" for metric_col in INDIVIDUAL_REFERENCE_METRICS if metric_col in historical_df.columns}
+        if agg_map:
+            reference_df = (
+                historical_df.groupby("atleta_id_norm", dropna=False)
+                .agg(agg_map)
+                .reset_index()
+            )
+            counts_df = (
+                historical_df.groupby("atleta_id_norm", dropna=False)["session_sk"]
+                .nunique()
+                .reset_index(name="n_refs")
+            )
+            reference_df = reference_df.merge(counts_df, on="atleta_id_norm", how="left")
+
+    rows = []
+    for _, athlete_row in current_work.sort_values("atleta_id").iterrows():
+        athlete_id = _clean_text_value(athlete_row.get("atleta_id")) or "-"
+        ref_row = (
+            reference_df[reference_df["atleta_id_norm"].eq(athlete_row.get("atleta_id_norm"))].head(1)
+            if not reference_df.empty else pd.DataFrame()
+        )
+        row = [athlete_id]
+        for metric_col in INDIVIDUAL_REFERENCE_METRICS:
+            current_value = pd.to_numeric(pd.Series([athlete_row.get(metric_col)]), errors="coerce").iloc[0]
+            reference_value = (
+                pd.to_numeric(pd.Series([ref_row.iloc[0].get(metric_col)]), errors="coerce").iloc[0]
+                if not ref_row.empty and metric_col in ref_row.columns
+                else np.nan
+            )
+            row.append(_format_pct_delta(current_value, reference_value))
+        n_refs = int(ref_row.iloc[0]["n_refs"]) if not ref_row.empty and pd.notna(ref_row.iloc[0].get("n_refs")) else 0
+        row.append(str(n_refs))
+        rows.append(row)
+    return rows
+
+
+def _build_historical_reference_report_lines(
+    df_metrics: pd.DataFrame,
+    selecao: str,
+    contexto: str,
+) -> list[str]:
+    totals_by_athlete = _build_totals_by_athlete(df_metrics)
+    if totals_by_athlete is None or totals_by_athlete.empty:
+        return ["Referências históricas indisponíveis: sem métricas totais por atleta."]
+
+    historical_df = _load_historical_total_rows(selecao, contexto)
+    lines = ["Referências Históricas"]
+    lines.append("  Base de comparação: médias das sessões anteriores da mesma seleção e contexto.")
+
+    team_rows, team_sessions = _build_team_reference_rows(totals_by_athlete, historical_df)
+    lines.append(f"  Equipa | sessões de referência: {team_sessions}")
+    if team_rows and team_sessions > 0:
+        lines.extend([f"  {line}" for line in _format_text_table(
+            ["Métrica", "Atual", "Média Ant.", "Delta", "Marca"],
+            team_rows,
+        )])
+    else:
+        lines.append("  Sem histórico suficiente para referência de equipa.")
+
+    individual_rows = _build_individual_reference_rows(totals_by_athlete, historical_df)
+    lines.append("")
+    lines.append("  Individual | delta % vs média histórica do próprio atleta")
+    if individual_rows and any(row[-1] != "0" for row in individual_rows):
+        lines.extend([f"  {line}" for line in _format_text_table(
+            ["Atleta", "Dist", "Int", "HSR", "Sprint", "N Ref"],
+            individual_rows,
+        )])
+        lines.append("  Legenda: Dist=Distância Total | Int=Intensidade | HSR=HSR (%) | Sprint=N.º Sprints")
+    else:
+        lines.append("  Sem histórico individual suficiente para comparação.")
+
+    return lines
 
 
 def _build_group_matrix_by_athlete(
@@ -1936,53 +2771,111 @@ def _build_athlete_name_map() -> dict[str, str]:
     return athlete_name_map
 
 
+def _build_athlete_target_map() -> dict[str, str]:
+    athlete_target_map: dict[str, str] = {}
+    registry_df = st.session_state.get("athlete_registry_editor_df")
+    if not isinstance(registry_df, pd.DataFrame) or registry_df.empty:
+        return athlete_target_map
+
+    reg = registry_df.copy()
+    if "atleta_id_ficheiro" in reg.columns:
+        reg["atleta_id_ficheiro"] = reg["atleta_id_ficheiro"].map(_normalize_athlete_identifier)
+    if "atleta_id" in reg.columns:
+        reg["atleta_id"] = reg["atleta_id"].map(_normalize_athlete_identifier)
+
+    for _, row in reg.iterrows():
+        athlete_file_id = str(row.get("atleta_id_ficheiro") or "").strip()
+        athlete_db_id = str(row.get("atleta_id") or "").strip()
+        if athlete_file_id and athlete_db_id:
+            athlete_target_map[athlete_file_id] = athlete_db_id
+    return athlete_target_map
+
+
 def _render_metric_bar_chart(
     source_df: pd.DataFrame,
     metric_col: str,
     athlete_col: str = "atleta_id",
+    reference_df: pd.DataFrame | None = None,
     chart_key: str | None = None,
     athlete_name_map: dict[str, str] | None = None,
+    athlete_target_map: dict[str, str] | None = None,
+    comparison_col: str | None = None,
+    yaxis_label: str | None = None,
 ) -> bool:
-    if source_df is None or source_df.empty or metric_col not in source_df.columns or athlete_col not in source_df.columns:
+    value_col = comparison_col or metric_col
+    if source_df is None or source_df.empty or value_col not in source_df.columns or athlete_col not in source_df.columns:
         return False
 
-    chart_df = source_df[[athlete_col, metric_col]].copy()
+    chart_df = source_df[[athlete_col, value_col]].copy()
     chart_df[athlete_col] = chart_df[athlete_col].map(_normalize_athlete_identifier)
-    chart_df[metric_col] = pd.to_numeric(chart_df[metric_col], errors="coerce")
+    chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce")
     chart_df = chart_df[chart_df[athlete_col].ne("")].copy()
     zero_fill_metrics = {"player_load"}
     if metric_col in zero_fill_metrics:
-        chart_df[metric_col] = chart_df[metric_col].fillna(0.0)
+        chart_df[value_col] = chart_df[value_col].fillna(0.0)
     else:
-        chart_df = chart_df[chart_df[metric_col].notna()].copy()
+        chart_df = chart_df[chart_df[value_col].notna()].copy()
     if chart_df.empty:
         return False
 
     athlete_name_map = athlete_name_map or {}
+    athlete_target_map = athlete_target_map or {}
+    chart_df["athlete_id_norm"] = chart_df[athlete_col].map(_normalize_athlete_identifier)
+    chart_df["athlete_ref_id"] = chart_df["athlete_id_norm"].map(
+        lambda athlete_id: athlete_target_map.get(athlete_id, athlete_id)
+    )
     chart_df["athlete_label"] = chart_df[athlete_col].map(
         lambda athlete_id: athlete_name_map.get(_normalize_athlete_identifier(athlete_id), _normalize_athlete_identifier(athlete_id))
     )
-    chart_df = chart_df.sort_values(by=metric_col, ascending=False).reset_index(drop=True)
+    chart_df = chart_df.sort_values(by=value_col, ascending=False).reset_index(drop=True)
     fig = go.Figure(
         data=[
             go.Bar(
+                name="Sessão Atual",
                 x=chart_df["athlete_label"],
-                y=chart_df[metric_col],
-                text=_format_metric_chart_text(metric_col, chart_df[metric_col]),
+                y=chart_df[value_col],
+                text=_format_metric_chart_text(metric_col, chart_df[value_col]),
                 textposition="outside",
                 marker=dict(color="#7fb24d", line=dict(color="#2f3b1f", width=1.0)),
                 cliponaxis=False,
             )
         ]
     )
+
+    has_reference = False
+    if reference_df is not None and not reference_df.empty and "atleta_id_norm" in reference_df.columns and "reference_value" in reference_df.columns:
+        reference_map = (
+            reference_df[["atleta_id_norm", "reference_value"]]
+            .drop_duplicates(subset=["atleta_id_norm"], keep="last")
+            .set_index("atleta_id_norm")["reference_value"]
+        )
+        ref_chart_df = chart_df[["athlete_ref_id", "athlete_label"]].copy()
+        ref_chart_df["reference_value"] = pd.to_numeric(
+            ref_chart_df["athlete_ref_id"].map(reference_map),
+            errors="coerce",
+        )
+        if ref_chart_df["reference_value"].notna().any():
+            has_reference = True
+            fig.add_trace(
+                go.Bar(
+                    name="Média Individual",
+                    x=ref_chart_df["athlete_label"],
+                    y=ref_chart_df["reference_value"],
+                    text=_format_metric_chart_text(metric_col, ref_chart_df["reference_value"]),
+                    textposition="outside",
+                    marker=dict(color="#d9dde5", line=dict(color="#6b7280", width=1.0)),
+                    cliponaxis=False,
+                )
+            )
     fig.update_layout(
         margin=dict(l=20, r=20, t=10, b=20),
         height=360,
         xaxis_title="",
-        yaxis_title=_metric_user_label(metric_col),
+        yaxis_title=yaxis_label or _metric_user_label(metric_col),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        showlegend=False,
+        showlegend=has_reference,
+        barmode="group",
     )
     fig.update_xaxes(type="category", tickangle=-90, showgrid=False, automargin=True)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.18)", zeroline=False)
@@ -1994,42 +2887,68 @@ def _render_phase_metric_bar_chart(
     source_df: pd.DataFrame,
     metric_col: str,
     phase_col: str = "fase",
+    reference_df: pd.DataFrame | None = None,
+    comparison_col: str | None = None,
+    yaxis_label: str | None = None,
     chart_key: str | None = None,
 ) -> bool:
-    if source_df is None or source_df.empty or metric_col not in source_df.columns or phase_col not in source_df.columns:
+    value_col = comparison_col or metric_col
+    if source_df is None or source_df.empty or value_col not in source_df.columns or phase_col not in source_df.columns:
         return False
 
     phase_order = ["Warm-Up", "1P", "2P"]
-    chart_df = source_df[[phase_col, metric_col]].copy()
+    chart_df = source_df[[phase_col, value_col]].copy()
     chart_df[phase_col] = chart_df[phase_col].astype(str).str.strip()
     chart_df = chart_df[chart_df[phase_col].isin(phase_order)].copy()
-    chart_df[metric_col] = pd.to_numeric(chart_df[metric_col], errors="coerce").fillna(0.0)
+    chart_df[value_col] = pd.to_numeric(chart_df[value_col], errors="coerce").fillna(0.0)
     if chart_df.empty:
         return False
 
     chart_df["__fase_ord"] = chart_df[phase_col].map({phase: idx for idx, phase in enumerate(phase_order)})
     chart_df = chart_df.sort_values("__fase_ord").drop(columns="__fase_ord").reset_index(drop=True)
-
-    fig = go.Figure(
-        data=[
-            go.Bar(
-                x=chart_df[phase_col],
-                y=chart_df[metric_col],
-                text=_format_metric_chart_text(metric_col, chart_df[metric_col]),
-                textposition="outside",
-                marker=dict(color="#7fb24d", line=dict(color="#2f3b1f", width=1.0)),
-                cliponaxis=False,
-            )
-        ]
+    fig = go.Figure()
+    fig.add_trace(
+        go.Bar(
+            name="Sessão Atual",
+            x=chart_df[phase_col],
+            y=chart_df[value_col],
+            text=_format_metric_chart_text(metric_col, chart_df[value_col]),
+            textposition="outside",
+            marker=dict(color="#7fb24d", line=dict(color="#2f3b1f", width=1.0)),
+            cliponaxis=False,
+        )
     )
+
+    has_reference = False
+    if reference_df is not None and not reference_df.empty and "reference_value" in reference_df.columns and phase_col in reference_df.columns:
+        ref_chart_df = reference_df[[phase_col, "reference_value"]].copy()
+        ref_chart_df[phase_col] = ref_chart_df[phase_col].astype(str).str.strip()
+        ref_chart_df = ref_chart_df[ref_chart_df[phase_col].isin(phase_order)].copy()
+        ref_chart_df["reference_value"] = pd.to_numeric(ref_chart_df["reference_value"], errors="coerce")
+        ref_chart_df["__fase_ord"] = ref_chart_df[phase_col].map({phase: idx for idx, phase in enumerate(phase_order)})
+        ref_chart_df = ref_chart_df.sort_values("__fase_ord").drop(columns="__fase_ord")
+        if not ref_chart_df.empty and ref_chart_df["reference_value"].notna().any():
+            has_reference = True
+            fig.add_trace(
+                go.Bar(
+                    name="Média Equipa",
+                    x=ref_chart_df[phase_col],
+                    y=ref_chart_df["reference_value"],
+                    text=_format_metric_chart_text(metric_col, ref_chart_df["reference_value"]),
+                    textposition="outside",
+                    marker=dict(color="#d9dde5", line=dict(color="#6b7280", width=1.0)),
+                    cliponaxis=False,
+                )
+            )
     fig.update_layout(
         margin=dict(l=20, r=20, t=10, b=20),
         height=320,
         xaxis_title="",
-        yaxis_title=_metric_user_label(metric_col),
+        yaxis_title=yaxis_label or _metric_user_label(metric_col),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        showlegend=False,
+        showlegend=has_reference,
+        barmode="group",
     )
     fig.update_xaxes(type="category", showgrid=False, automargin=True)
     fig.update_yaxes(showgrid=True, gridcolor="rgba(148,163,184,0.18)", zeroline=False)
@@ -2159,6 +3078,21 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                             session_sk_value = int(candidate_series.iloc[0])
                             break
 
+                report_pdf_error = None
+                try:
+                    _generate_session_report_pdfs(
+                        session_fingerprint=str(publish_payload.get("session_fingerprint") or ""),
+                        selecao=publish_context.get("selecao", selecao),
+                        contexto=publish_context.get("contexto", contexto),
+                        jogo=publish_payload.get("jogo", adversario),
+                        report_txt=st.session_state.get("report_txt", ""),
+                        df_metrics=st.session_state.get("df_metrics", pd.DataFrame()),
+                        athlete_name_map=_build_athlete_name_map(),
+                        athlete_target_map=_build_athlete_target_map(),
+                    )
+                except Exception as pdf_exc:
+                    report_pdf_error = str(pdf_exc)
+
                 report_registry_error = None
                 try:
                     save_session_report(
@@ -2192,9 +3126,15 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                         "Os dados da sessão foram publicados, mas o registo do relatório técnico não foi guardado. "
                         f"Detalhe: {report_registry_error}"
                     )
+                if report_pdf_error:
+                    st.warning(
+                        "Os dados da sessão foram publicados, mas os PDFs do relatório não foram gerados. "
+                        f"Detalhe: {report_pdf_error}"
+                    )
                 st.markdown(stats_msg)
                 st.session_state.publish_success = True
-                st.switch_page("pages/Análise_Performance.py")
+                if not report_pdf_error:
+                    st.switch_page("pages/Análise_Performance.py")
             except Exception as e:
                 progress_bar.progress(1.0, text="Transferência interrompida.")
                 progress_text.caption("A transferência foi interrompida por um erro.")
@@ -3315,6 +4255,16 @@ if btn:
             else:
                 report_lines.append("  (Sem métricas calculadas)")
 
+            if df_metrics is not None and not df_metrics.empty:
+                report_lines.append("-" * 70)
+                report_lines.extend(
+                    _build_historical_reference_report_lines(
+                        df_metrics=df_metrics,
+                        selecao=selecao,
+                        contexto=contexto,
+                    )
+                )
+
             report_lines.append("-" * 70)
             report_lines.append("Qualidade do Sinal GPS")
             report_lines.append(f"  Micro-gaps corrigidos (≤1 amostra consecutiva): {total_micro_gaps}")
@@ -3453,21 +4403,32 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
         if totals_by_athlete_ui is None:
             totals_by_athlete_ui = pd.DataFrame()
         athlete_name_map = _build_athlete_name_map()
+        athlete_target_map = _build_athlete_target_map()
 
-        st.markdown("**Métricas Performance Colectivas**")
+        st.markdown("**Métricas Coletivas**")
         for idx, (familia, cols) in enumerate(performance_metric_groups.items()):
             collective_family_df = _build_collective_phase_totals(df_metrics, cols)
             collective_cols_presentes = [c for c in cols if c in collective_family_df.columns]
             if not collective_cols_presentes:
                 continue
-            with st.expander(f"Performance | {familia}", expanded=(idx == 0)):
+            with st.expander(familia, expanded=(idx == 0)):
                 rendered_collective = False
                 for metric_col in collective_cols_presentes:
-                    st.markdown(f"**{_metric_user_label(metric_col)}**")
+                    metric_spec = COLLECTIVE_PROFILE_METRIC_MAP.get(metric_col, (metric_col, metric_col, _metric_user_label(metric_col)))
+                    current_metric_col, _, display_label = metric_spec
+                    st.markdown(f"**{display_label}**")
+                    reference_phase_df = _load_historical_collective_phase_reference(
+                        selecao=selecao,
+                        contexto=contexto,
+                        metric_col=metric_col,
+                    )
                     rendered = _render_phase_metric_bar_chart(
                         collective_family_df,
                         metric_col,
                         phase_col="fase",
+                        reference_df=reference_phase_df,
+                        comparison_col=current_metric_col,
+                        yaxis_label=display_label,
                         chart_key=f"collective_{familia}_{metric_col}",
                     )
                     if not rendered:
@@ -3475,28 +4436,43 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                     rendered_collective = rendered_collective or rendered
                 if not rendered_collective:
                     st.info("Sem dados disponíveis para este grupo.")
+                else:
+                    st.caption("Verde: sessão atual | Cinza: média equipa da mesma seleção e contexto.")
 
-        st.markdown("**Métricas Performance Individuais**")
+        st.markdown("**Métricas Individuais**")
         for idx, (familia, cols) in enumerate(performance_metric_groups.items()):
             cols_presentes = [c for c in cols if c in totals_by_athlete.columns]
             if not cols_presentes:
                 continue
-            with st.expander(f"Performance | {familia}", expanded=(idx == 0)):
+            with st.expander(familia, expanded=(idx == 0)):
                 rendered_any = False
                 for metric_col in cols_presentes:
-                    st.markdown(f"**{_metric_user_label(metric_col)}**")
+                    metric_spec = INDIVIDUAL_PROFILE_METRIC_MAP.get(metric_col, (metric_col, metric_col, _metric_user_label(metric_col)))
+                    current_metric_col, _, display_label = metric_spec
+                    st.markdown(f"**{display_label}**")
+                    reference_metric_df = _load_historical_individual_metric_reference(
+                        selecao=selecao,
+                        contexto=contexto,
+                        metric_col=metric_col,
+                    )
                     rendered = _render_metric_bar_chart(
                         totals_by_athlete,
                         metric_col,
                         athlete_col=col_inicio,
+                        reference_df=reference_metric_df,
                         chart_key=f"perf_{familia}_{metric_col}",
                         athlete_name_map=athlete_name_map,
+                        athlete_target_map=athlete_target_map,
+                        comparison_col=current_metric_col,
+                        yaxis_label=display_label,
                     )
                     if not rendered:
                         st.info("Sem dados numéricos disponíveis para esta métrica.")
                     rendered_any = rendered_any or rendered
                 if not rendered_any:
                     st.info("Sem dados disponíveis para este grupo.")
+                else:
+                    st.caption("Verde: sessão atual | Cinza: média individual do próprio atleta.")
 
         st.empty()
 
@@ -3558,6 +4534,7 @@ if st.session_state.process_done and df_metrics is not None and isinstance(df_me
                                     athlete_col=col_inicio,
                                     chart_key=f"tech_{section_title}_{metric_col}",
                                     athlete_name_map=athlete_name_map,
+                                    athlete_target_map=athlete_target_map,
                                 )
                                 rendered_any = rendered_any or rendered
                             else:
