@@ -1,12 +1,12 @@
 import streamlit as st
 
 
-st.set_page_config(page_title="FPF Analytics Hub", layout="wide")
+st.set_page_config(page_title="FPF Performance Hub", layout="wide")
 
 
 navigation = st.navigation(
     {
-        "Hub": [
+        "Performance Hub": [
             st.Page("pages/Inicio.py", title="Inicio", default=True, url_path="inicio"),
             st.Page("pages/Insercão_Dados.py", title="Upload de Dados"),
         ],

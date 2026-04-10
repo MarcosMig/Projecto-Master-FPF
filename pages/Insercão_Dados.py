@@ -3270,7 +3270,7 @@ with st.expander(
     expanded=not st.session_state.get("phase3_complete", False),
 ):
     if not f_atleta:
-        st.warning("?? Ainda não carregaste ficheiros de atletas. Algumas funcionalidades podem não estar disponíveis.")
+        st.warning("Aguardar dados de Atletas.")
     
     saved_fields_df = pd.DataFrame()
     auto_field_match = None
@@ -3314,11 +3314,8 @@ with st.expander(
         )
         use_detected_field = auto_field_decision == "Usar o campo identificado automaticamente"
         selected_detected_field_name = field_match_label
-    else:
-        st.warning(
-            "Nao foi possivel identificar automaticamente um campo na base de dados. "
-            "Segue para a identificacao manual."
-        )
+    elif f_atleta:
+        st.warning("Aguardar dados de Atletas.")
     
     metodo_campo = "Escolher um campo guardado anteriormente"
     f_campo = None
