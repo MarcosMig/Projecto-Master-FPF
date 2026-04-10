@@ -1,5 +1,6 @@
 import pandas as pd
 import streamlit as st
+from datetime import date
 
 from fpf_modules.reference_data import load_selection_reference
 from fpf_modules.supabase_manager import (
@@ -37,6 +38,8 @@ ATHLETE_POSITIONS = ["", "GR", "DD", "DE", "DC", "MD", "ME", "MC", "MDC", "MAC",
 GENDER_OPTIONS = ["Masculino", "Feminino"]
 ATHLETE_PHOTO_BUCKET = "athlete-photos"
 ATHLETE_PHOTO_UPLOADER_KEY = "athlete_photo_uploader"
+ATHLETE_BIRTHDATE_MIN = date(1980, 1, 1)
+ATHLETE_BIRTHDATE_MAX = date.today()
 
 
 def _empty_athletes_df() -> pd.DataFrame:
@@ -374,6 +377,8 @@ def _render_athlete_ficha(row: pd.Series, history_df: pd.DataFrame) -> None:
                     data_edit = form_col3.date_input(
                         "Data de nascimento",
                         value=row.get("data_nascimento") if pd.notna(row.get("data_nascimento")) else None,
+                        min_value=ATHLETE_BIRTHDATE_MIN,
+                        max_value=ATHLETE_BIRTHDATE_MAX,
                         format="DD/MM/YYYY",
                     )
                     genero_edit = form_col4.selectbox(
@@ -601,7 +606,13 @@ with tab_insert:
             sobrenome = col2.text_input("Sobrenome")
 
             col3, col4, col5, col6 = st.columns(4)
-            data_nascimento = col3.date_input("Data de nascimento", value=None, format="DD/MM/YYYY")
+            data_nascimento = col3.date_input(
+                "Data de nascimento",
+                value=None,
+                min_value=ATHLETE_BIRTHDATE_MIN,
+                max_value=ATHLETE_BIRTHDATE_MAX,
+                format="DD/MM/YYYY",
+            )
             genero_label = col4.selectbox("Genero", GENDER_OPTIONS)
             posicao = col5.selectbox("Posicao", ATHLETE_POSITIONS)
             selecao = col6.selectbox("Selecao", options=selection_options)
