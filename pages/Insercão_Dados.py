@@ -1,6 +1,6 @@
 ﻿# -*- coding: utf-8 -*-
 """
-FPF UTM Engine v16 (parquet downloads)
+FPF UTM Engine v16
 Autor: Marcos (base) + ajustes de estabilidade/indentação
 """
 
@@ -124,7 +124,6 @@ ATHLETE_FEET = ["", "Direito", "Esquerdo", "Ambidestro"]
 ATHLETE_ESCALOES = ["", "A", "Sub-23", "Sub-21", "Sub-20", "Sub-19", "Sub-18", "Sub-17", "Sub-16", "Sub-15"]
 SELECTION_OPTIONS = load_selection_reference()
 GENDER_OPTIONS = ["Masculino", "Feminino"]
-SESSION_REPORTS_DIR = Path(CLEANDATA_DIR) / "session_reports_pdf"
 
 
 def _clean_text_value(value):
@@ -3078,21 +3077,6 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                             session_sk_value = int(candidate_series.iloc[0])
                             break
 
-                report_pdf_error = None
-                try:
-                    _generate_session_report_pdfs(
-                        session_fingerprint=str(publish_payload.get("session_fingerprint") or ""),
-                        selecao=publish_context.get("selecao", selecao),
-                        contexto=publish_context.get("contexto", contexto),
-                        jogo=publish_payload.get("jogo", adversario),
-                        report_txt=st.session_state.get("report_txt", ""),
-                        df_metrics=st.session_state.get("df_metrics", pd.DataFrame()),
-                        athlete_name_map=_build_athlete_name_map(),
-                        athlete_target_map=_build_athlete_target_map(),
-                    )
-                except Exception as pdf_exc:
-                    report_pdf_error = str(pdf_exc)
-
                 report_registry_error = None
                 try:
                     save_session_report(
@@ -3126,15 +3110,9 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                         "Os dados da sessão foram publicados, mas o registo do relatório técnico não foi guardado. "
                         f"Detalhe: {report_registry_error}"
                     )
-                if report_pdf_error:
-                    st.warning(
-                        "Os dados da sessão foram publicados, mas os PDFs do relatório não foram gerados. "
-                        f"Detalhe: {report_pdf_error}"
-                    )
                 st.markdown(stats_msg)
                 st.session_state.publish_success = True
-                if not report_pdf_error:
-                    st.switch_page("pages/Análise_Performance.py")
+                st.switch_page("pages/Análise_Performance.py")
             except Exception as e:
                 progress_bar.progress(1.0, text="Transferência interrompida.")
                 progress_text.caption("A transferência foi interrompida por um erro.")
@@ -4103,7 +4081,7 @@ if btn:
             df_metrics = round_metrics_dataframe(df_metrics)
 
             # -------------------------------
-            # Persistência parquet analítica
+            # Persistência draft em memória
             # -------------------------------
             session_payload = {
                 "session_id_hex": session_id_hex,
@@ -4143,7 +4121,6 @@ if btn:
                 df_samples=df_samples,
                 df_athlete_session=df_athlete_session,
                 df_tracking=df_tracking,
-                base_dir=CLEANDATA_DIR,
             )
 
             df_time_audit = pd.DataFrame(audit_time_rows)

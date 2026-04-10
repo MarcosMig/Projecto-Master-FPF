@@ -2,13 +2,13 @@ import pandas as pd
 import streamlit as st
 
 from fpf_modules.constants import SELECOES_OPCOES
-from fpf_modules.selections import SELECOES_COLUMNS, ensure_selections_table
+from fpf_modules.selections import SELECOES_COLUMNS
 from fpf_modules.supabase_manager import (
     initialize_schema,
     read_selections_reference,
-    read_table,
     save_selections_reference,
     sync_selections_reference,
+    read_table,
 )
 
 
@@ -91,7 +91,23 @@ def _load_selections() -> pd.DataFrame:
     try:
         df = sync_selections_reference(include_default=True)
     except Exception:
-        df = ensure_selections_table()
+        now_ts = pd.Timestamp.utcnow()
+        df = pd.DataFrame(
+            [
+                {
+                    "selection_sk": idx,
+                    "codigo": codigo,
+                    "escalao": codigo.rsplit(" ", 1)[0],
+                    "genero": codigo.rsplit(" ", 1)[1] if " " in codigo else "",
+                    "ativo": True,
+                    "sort_order": idx,
+                    "created_at": now_ts,
+                    "updated_at": now_ts,
+                }
+                for idx, codigo in enumerate(SELECOES_OPCOES, start=1)
+            ],
+            columns=SELECOES_COLUMNS,
+        )
 
     for col in SELECOES_COLUMNS:
         if col not in df.columns:

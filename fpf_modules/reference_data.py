@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .constants import CLEANDATA_DIR
-from .selections import load_selection_options
+from .constants import SELECOES_OPCOES
 from .supabase_manager import initialize_schema, read_field_reference, read_selections_reference, read_table
 
 
@@ -24,14 +23,14 @@ def load_selection_reference(active_only: bool = True) -> list[str]:
     try:
         df = read_selections_reference(active_only=active_only)
     except Exception:
-        return load_selection_options(base_dir=CLEANDATA_DIR, active_only=active_only)
+        return [str(opt).strip() for opt in SELECOES_OPCOES if str(opt).strip()]
 
     if df is None or df.empty or "codigo" not in df.columns:
-        return load_selection_options(base_dir=CLEANDATA_DIR, active_only=active_only)
+        return [str(opt).strip() for opt in SELECOES_OPCOES if str(opt).strip()]
 
     options = df["codigo"].astype(str).str.strip().tolist()
     options = [opt for opt in options if opt]
-    return options or load_selection_options(base_dir=CLEANDATA_DIR, active_only=active_only)
+    return options or [str(opt).strip() for opt in SELECOES_OPCOES if str(opt).strip()]
 
 
 def load_field_reference() -> pd.DataFrame:

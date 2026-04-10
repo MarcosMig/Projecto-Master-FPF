@@ -642,35 +642,28 @@ def _dataframe_to_supabase_records(df: pd.DataFrame) -> List[Dict]:
 
 
 def _sync_dimension_tables(session_sks: List[int], athlete_sks: List[int], base_dir=None) -> None:
-    """Ensure referenced sessions and athletes exist in Supabase before fact inserts."""
-    base_dir = base_dir or CLEANDATA_DIR
-
+    """Ensure referenced dimensions already exist in Supabase before fact inserts."""
     if session_sks:
-        sessions_path = os.path.join(base_dir, "sessions.parquet")
-        if os.path.exists(sessions_path):
-            df_sessions = pd.read_parquet(sessions_path)
-            if not df_sessions.empty and "session_sk" in df_sessions.columns:
-                df_sessions = df_sessions[df_sessions["session_sk"].isin(session_sks)].copy()
-                if "session_fingerprint" not in df_sessions.columns:
-                    return
+        session_df = read_table("sessions")
+        known_session_sks = set()
+        if session_df is not None and not session_df.empty and "session_sk" in session_df.columns:
+            known_session_sks = set(pd.to_numeric(session_df["session_sk"], errors="coerce").dropna().astype(int).tolist())
+        missing_sessions = [session_sk for session_sk in session_sks if session_sk not in known_session_sks]
+        if missing_sessions:
+            raise RuntimeError(
+                f"Faltam sessões de referência no Supabase para os session_sk: {', '.join(map(str, missing_sessions))}."
+            )
 
-                if "started_at" not in df_sessions.columns:
-                    if "data" in df_sessions.columns:
-                        df_sessions["started_at"] = pd.to_datetime(df_sessions["data"], errors="coerce")
-                    else:
-                        df_sessions["started_at"] = pd.NaT
-
-                if "device" not in df_sessions.columns:
-                    df_sessions["device"] = None
-
-                allowed_cols = ["session_sk", "session_fingerprint", "started_at", "device"]
-                df_sessions = df_sessions[[c for c in allowed_cols if c in df_sessions.columns]]
-                if not df_sessions.empty:
-                    insert_or_update_table(
-                        "sessions",
-                        df_sessions,
-                        pk_columns=["session_sk"],
-                    )
+    if athlete_sks:
+        athlete_df = read_table("athletes", columns="athlete_sk")
+        known_athlete_sks = set()
+        if athlete_df is not None and not athlete_df.empty and "athlete_sk" in athlete_df.columns:
+            known_athlete_sks = set(pd.to_numeric(athlete_df["athlete_sk"], errors="coerce").dropna().astype(int).tolist())
+        missing_athletes = [athlete_sk for athlete_sk in athlete_sks if athlete_sk not in known_athlete_sks]
+        if missing_athletes:
+            raise RuntimeError(
+                f"Faltam atletas de referência no Supabase para os athlete_sk: {', '.join(map(str, missing_athletes[:20]))}."
+            )
 
 
 def _emit_progress(progress_callback: Optional[Callable], step: int, total_steps: int, message: str, table: Optional[str] = None) -> None:
@@ -1396,61 +1389,74 @@ def resolve_athlete_sk(df_metrics, base_dir=CLEANDATA_DIR, genero=None, athlete_
 
 
 def resolve_session_sk(session_fingerprint, session_payload, base_dir=CLEANDATA_DIR):
-    """Resolve persistent session_sk from session fingerprint (using parquet cache)."""
-    path = os.path.join(base_dir, "sessions.parquet")
-    os.makedirs(base_dir, exist_ok=True)
+    """Resolve persistent session_sk from session fingerprint using Supabase."""
+    initialize_schema()
+    session_fingerprint = str(session_fingerprint or session_payload.get("session_fingerprint") or "").strip()
+    if not session_fingerprint:
+        raise ValueError("session_fingerprint is required to resolve session_sk.")
 
-    if os.path.exists(path):
-        df = pd.read_parquet(path)
-    else:
-        df = pd.DataFrame()
+    existing_df = read_table("sessions", {"session_fingerprint": session_fingerprint})
+    if existing_df is not None and not existing_df.empty and "session_sk" in existing_df.columns:
+        session_sk = pd.to_numeric(existing_df["session_sk"], errors="coerce").dropna()
+        if not session_sk.empty:
+            return int(session_sk.iloc[0])
 
-    if not df.empty and "session_fingerprint" in df.columns:
-        mask = df["session_fingerprint"].astype(str) == str(session_fingerprint)
-        if mask.any():
-            return int(df.loc[mask, "session_sk"].iloc[0])
+    started_at = (
+        session_payload.get("started_at")
+        or session_payload.get("data")
+        or session_payload.get("data_sessao")
+    )
+    payload = pd.DataFrame([{
+        "session_fingerprint": session_fingerprint,
+        "started_at": pd.to_datetime(started_at, errors="coerce"),
+        "device": session_payload.get("device"),
+    }])
+    stats = insert_or_update_table("sessions", payload, pk_columns=["session_fingerprint"])
+    if not stats.get("success", False):
+        raise RuntimeError(stats.get("error") or "Falha ao criar sessão no Supabase.")
 
-    next_id = 1 if df.empty else int(pd.to_numeric(df["session_sk"], errors="coerce").max()) + 1
+    refreshed_df = read_table("sessions", {"session_fingerprint": session_fingerprint})
+    if refreshed_df is None or refreshed_df.empty or "session_sk" not in refreshed_df.columns:
+        raise RuntimeError("Não foi possível recuperar session_sk a partir do Supabase.")
 
-    payload = dict(session_payload)
-    payload["session_sk"] = next_id
-    if "created_at" not in payload:
-        payload["created_at"] = pd.Timestamp.utcnow()
-
-    df_new = pd.DataFrame([payload])
-    df = pd.concat([df, df_new], ignore_index=True)
-    df.to_parquet(path, index=False)
-
-    return next_id
+    session_sk = pd.to_numeric(refreshed_df["session_sk"], errors="coerce").dropna()
+    if session_sk.empty:
+        raise RuntimeError("session_sk inválido devolvido pelo Supabase.")
+    return int(session_sk.iloc[0])
 
 
 def resolve_game_sk(game_payload, base_dir=CLEANDATA_DIR):
-    """Resolve persistent game_sk from game metadata (using parquet cache)."""
-    path = os.path.join(base_dir, "games.parquet")
-    os.makedirs(base_dir, exist_ok=True)
+    """Resolve persistent game_sk from game metadata using Supabase."""
+    initialize_schema()
+    filters = {}
+    for key in ["game_date", "opponent", "location", "competition"]:
+        value = game_payload.get(key) if isinstance(game_payload, dict) else None
+        if value is not None and str(value).strip() != "" and not pd.isna(value):
+            filters[key] = value
 
-    if os.path.exists(path):
-        df = pd.read_parquet(path)
-    else:
-        df = pd.DataFrame()
+    if filters:
+        existing_df = read_table("games", filters)
+        if existing_df is not None and not existing_df.empty and "game_sk" in existing_df.columns:
+            game_sk = pd.to_numeric(existing_df["game_sk"], errors="coerce").dropna()
+            if not game_sk.empty:
+                return int(game_sk.iloc[0])
 
-    if not df.empty:
-        mask = pd.Series([True] * len(df))
-        for k, v in game_payload.items():
-            if k in df.columns:
-                mask &= df[k] == v
-        if mask.any():
-            return int(df.loc[mask, "game_sk"].iloc[0])
+    payload = pd.DataFrame([{
+        "game_date": pd.to_datetime(game_payload.get("game_date"), errors="coerce").date() if isinstance(game_payload, dict) and game_payload.get("game_date") is not None and str(game_payload.get("game_date")).strip() != "" else None,
+        "opponent": game_payload.get("opponent") if isinstance(game_payload, dict) else None,
+        "location": game_payload.get("location") if isinstance(game_payload, dict) else None,
+        "competition": game_payload.get("competition") if isinstance(game_payload, dict) else None,
+    }])
+    stats = insert_or_update_table("games", payload, pk_columns=[])
+    if not stats.get("success", False):
+        raise RuntimeError(stats.get("error") or "Falha ao criar jogo no Supabase.")
 
-    next_id = 1 if df.empty else int(pd.to_numeric(df["game_sk"], errors="coerce").max()) + 1
+    refreshed_df = read_table("games", filters or None)
+    if refreshed_df is None or refreshed_df.empty or "game_sk" not in refreshed_df.columns:
+        raise RuntimeError("Não foi possível recuperar game_sk a partir do Supabase.")
 
-    rec = dict(game_payload)
-    rec["game_sk"] = next_id
-    if "game_date" in rec and pd.isna(rec.get("game_date")):
-        rec["game_date"] = pd.NaT
-
-    df_new = pd.DataFrame([rec])
-    df = pd.concat([df, df_new], ignore_index=True)
-    df.to_parquet(path, index=False)
-
-    return next_id
+    refreshed_df["game_sk"] = pd.to_numeric(refreshed_df["game_sk"], errors="coerce")
+    refreshed_df = refreshed_df.dropna(subset=["game_sk"]).sort_values("game_sk", ascending=False)
+    if refreshed_df.empty:
+        raise RuntimeError("game_sk inválido devolvido pelo Supabase.")
+    return int(refreshed_df["game_sk"].iloc[0])

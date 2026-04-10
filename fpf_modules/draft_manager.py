@@ -1,12 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import streamlit as st
-
-from .constants import CLEANDATA_DIR
-from .supabase_manager import append_dedup_parquet
-
 
 DRAFT_STATE_DEFAULTS = {
     "df_metrics": None,
@@ -22,16 +16,6 @@ DRAFT_STATE_DEFAULTS = {
     "draft_session_payload": None,
     "draft_context": None,
 }
-
-DRAFT_FILE_SPECS = {
-    "performance_metrics": ("performance_metrics.parquet", ["session_fingerprint", "atleta_id", "phase_id"]),
-    "collective_performance_metrics": ("collective_performance_metrics.parquet", ["session_fingerprint", "phase_id"]),
-    "quality_metrics": ("quality_metrics.parquet", ["session_fingerprint", "atleta_id", "phase_id"]),
-    "samples": ("samples.parquet", ["session_fingerprint", "atleta_id", "phase_id", "time"]),
-    "athlete_session": ("athlete_session.parquet", ["session_fingerprint", "atleta_id"]),
-    "tracking": ("tracking.parquet", ["session_fingerprint", "atleta_id", "phase_id", "time"]),
-}
-
 
 def ensure_draft_session_state() -> None:
     """Initialize Streamlit session state used by the draft processing flow."""
@@ -77,25 +61,12 @@ def save_draft_outputs(
     df_samples,
     df_athlete_session,
     df_tracking,
-    base_dir: str = CLEANDATA_DIR,
 ) -> dict[str, str]:
-    """Write draft analytics outputs to local parquet storage."""
-    saved_paths = {}
-    for name, df in {
-        "performance_metrics": df_perf,
-        "collective_performance_metrics": df_collective_perf,
-        "quality_metrics": df_qc,
-        "samples": df_samples,
-        "athlete_session": df_athlete_session,
-        "tracking": df_tracking,
-    }.items():
-        if df is None or df.empty:
-            continue
-        filename, subset_keys = DRAFT_FILE_SPECS[name]
-        path = str(Path(base_dir) / filename)
-        append_dedup_parquet(df, path, subset_keys)
-        saved_paths[name] = path
-    return saved_paths
+    """Keep draft results in memory only.
+
+    The online workflow should not depend on local parquet persistence.
+    """
+    return {}
 
 
 def clear_draft_session_state() -> None:

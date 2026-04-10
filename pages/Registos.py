@@ -1,17 +1,15 @@
 import pandas as pd
 import streamlit as st
 import re
-from pathlib import Path
+import io
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
-from fpf_modules.constants import CLEANDATA_DIR
 from fpf_modules.reference_data import load_selection_reference
 from fpf_modules.supabase_manager import cleanup_session_upload, initialize_schema, read_table
 
 
-SESSION_REPORTS_DIR = Path(CLEANDATA_DIR) / "session_reports_pdf"
 PHASE_ORDER = ["Warm-Up", "1P", "2P"]
 PERFORMANCE_GROUPS = {
     "Volume": ["duracao_min", "dist_m", "hsr_dist_m", "sprint_dist_m", "active_time_min"],
@@ -110,14 +108,14 @@ def _sanitize_filename_part(value: str) -> str:
     return text or "sessao"
 
 
-def _session_pdf_paths(session_fingerprint: str, selecao: str, contexto: str, jogo: str) -> tuple[Path, Path]:
+def _session_pdf_names(session_fingerprint: str, selecao: str, contexto: str, jogo: str) -> tuple[str, str]:
     selecao_part = _sanitize_filename_part(selecao)
     contexto_part = _sanitize_filename_part(contexto)
     jogo_part = _sanitize_filename_part(jogo)
     base_name = f"{selecao_part}_{contexto_part}_{jogo_part}_{_sanitize_filename_part(session_fingerprint)[:16]}"
     return (
-        SESSION_REPORTS_DIR / f"{base_name}_coletivo.pdf",
-        SESSION_REPORTS_DIR / f"{base_name}_individual.pdf",
+        f"{base_name}_coletivo.pdf",
+        f"{base_name}_individual.pdf",
     )
 
 
@@ -151,14 +149,12 @@ def _load_session_reports() -> pd.DataFrame:
     return df.sort_values(["data", "updated_at"], ascending=[False, False], na_position="last").reset_index(drop=True)
 
 
-def _delete_session_assets(session_fingerprint: str, selecao: str, contexto: str, jogo: str) -> None:
-    collective_pdf_path, individual_pdf_path = _session_pdf_paths(session_fingerprint, selecao, contexto, jogo)
-    for pdf_path in [collective_pdf_path, individual_pdf_path]:
-        try:
-            if pdf_path.exists():
-                pdf_path.unlink()
-        except Exception:
-            pass
+def _session_pdf_cache() -> dict[str, dict[str, bytes]]:
+    return st.session_state.setdefault("session_pdf_cache", {})
+
+
+def _clear_session_pdf_cache(session_fingerprint: str) -> None:
+    _session_pdf_cache().pop(session_fingerprint, None)
 
 
 def _normalize_athlete_identifier(value) -> str:
@@ -410,7 +406,7 @@ def _plot_grouped_bars_on_axis(ax, *, title: str, categories: list[str], current
         ax.legend(loc="upper right", frameon=False)
 
 
-def _regenerate_session_pdfs(row: pd.Series) -> None:
+def _generate_session_pdfs_bytes(row: pd.Series) -> tuple[bytes, bytes]:
     session_sk = pd.to_numeric(pd.Series([row.get("session_sk")]), errors="coerce").iloc[0]
     if pd.isna(session_sk):
         raise ValueError("Session sem session_sk válido.")
@@ -419,15 +415,10 @@ def _regenerate_session_pdfs(row: pd.Series) -> None:
         raise ValueError("Sem performance_metrics para esta sessão.")
     athlete_name_map = _load_athlete_name_map()
     totals_by_athlete = _build_totals_by_athlete_from_session_df(session_df)
-    collective_pdf_path, individual_pdf_path = _session_pdf_paths(
-        _clean_text_value(row.get("session_fingerprint")),
-        _clean_text_value(row.get("selecao")),
-        _clean_text_value(row.get("contexto")),
-        _clean_text_value(row.get("jogo")),
-    )
-    SESSION_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    collective_buffer = io.BytesIO()
+    individual_buffer = io.BytesIO()
 
-    with PdfPages(collective_pdf_path) as pdf:
+    with PdfPages(collective_buffer) as pdf:
         for family_name, metric_cols in PERFORMANCE_GROUPS.items():
             collective_df = _build_collective_phase_totals_from_session_df(session_df, metric_cols)
             if collective_df.empty:
@@ -454,7 +445,7 @@ def _regenerate_session_pdfs(row: pd.Series) -> None:
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
 
-    with PdfPages(individual_pdf_path) as pdf:
+    with PdfPages(individual_buffer) as pdf:
         for family_name, metric_cols in PERFORMANCE_GROUPS.items():
             for metric_col in metric_cols:
                 metric_spec = INDIVIDUAL_PROFILE_METRIC_MAP.get(metric_col)
@@ -479,6 +470,8 @@ def _regenerate_session_pdfs(row: pd.Series) -> None:
                 fig.tight_layout(rect=[0.03, 0.03, 0.98, 0.94])
                 pdf.savefig(fig, bbox_inches="tight")
                 plt.close(fig)
+
+    return collective_buffer.getvalue(), individual_buffer.getvalue()
 
 
 def _render_delete_controls(row: pd.Series, selection_code: str, *, trigger_label: str = "Eliminar Jogo | Treino", use_container_width: bool = True) -> None:
@@ -514,12 +507,7 @@ def _render_delete_controls(row: pd.Series, selection_code: str, *, trigger_labe
             return
 
         cleanup_stats = cleanup_session_upload(int(session_sk), delete_session_row=True)
-        _delete_session_assets(
-            session_fingerprint=session_fingerprint,
-            selecao=_clean_text_value(row.get("selecao")),
-            contexto=contexto_txt,
-            jogo="" if jogo_txt == "-" else jogo_txt,
-        )
+        _clear_session_pdf_cache(session_fingerprint)
         if cleanup_stats.get("success", False):
             st.success("Sessao eliminada com sucesso.")
             for key in [delete_state_key, confirm_key_1, confirm_key_2]:
@@ -547,15 +535,15 @@ def _render_selection_section(selection_code: str, selection_df: pd.DataFrame) -
             contexto_txt = _clean_text_value(row.get("contexto")) or "Sessao"
             jogo_txt = _clean_text_value(row.get("jogo"))
             detail_txt = jogo_txt if contexto_txt == "Jogo" and jogo_txt else ("Treino" if contexto_txt == "Treino" else (jogo_txt or "-"))
-
-            collective_pdf_path, individual_pdf_path = _session_pdf_paths(
+            collective_name, individual_name = _session_pdf_names(
                 session_fingerprint,
                 _clean_text_value(row.get("selecao")),
                 contexto_txt,
                 jogo_txt,
             )
-            collective_exists = collective_pdf_path.exists()
-            individual_exists = individual_pdf_path.exists()
+            cached_pdfs = _session_pdf_cache().get(session_fingerprint, {})
+            collective_bytes = cached_pdfs.get("collective")
+            individual_bytes = cached_pdfs.get("individual")
 
             row_cols = st.columns([1.0, 0.9, 1.4, 1.1, 1.1, 1.0], gap="small")
             row_cols[0].write(date_txt)
@@ -563,11 +551,11 @@ def _render_selection_section(selection_code: str, selection_df: pd.DataFrame) -
             row_cols[2].write(detail_txt)
 
             with row_cols[3]:
-                if collective_exists:
+                if collective_bytes:
                     st.download_button(
                         "Coletivo",
-                        data=collective_pdf_path.read_bytes(),
-                        file_name=collective_pdf_path.name,
+                        data=collective_bytes,
+                        file_name=collective_name,
                         mime="application/pdf",
                         use_container_width=True,
                         key=f"collective_pdf_{selection_code}_{session_fingerprint}",
@@ -579,7 +567,11 @@ def _render_selection_section(selection_code: str, selection_df: pd.DataFrame) -
                         key=f"regen_collective_pdf_{selection_code}_{session_fingerprint}",
                     ):
                         try:
-                            _regenerate_session_pdfs(row)
+                            collective_bytes, individual_bytes = _generate_session_pdfs_bytes(row)
+                            _session_pdf_cache()[session_fingerprint] = {
+                                "collective": collective_bytes,
+                                "individual": individual_bytes,
+                            }
                         except Exception as exc:
                             st.error(f"Nao foi possivel regenerar os PDFs: {exc}")
                         else:
@@ -587,11 +579,11 @@ def _render_selection_section(selection_code: str, selection_df: pd.DataFrame) -
                             st.rerun()
 
             with row_cols[4]:
-                if individual_exists:
+                if individual_bytes:
                     st.download_button(
                         "Individual",
-                        data=individual_pdf_path.read_bytes(),
-                        file_name=individual_pdf_path.name,
+                        data=individual_bytes,
+                        file_name=individual_name,
                         mime="application/pdf",
                         use_container_width=True,
                         key=f"individual_pdf_{selection_code}_{session_fingerprint}",
@@ -603,7 +595,11 @@ def _render_selection_section(selection_code: str, selection_df: pd.DataFrame) -
                         key=f"regen_individual_pdf_{selection_code}_{session_fingerprint}",
                     ):
                         try:
-                            _regenerate_session_pdfs(row)
+                            collective_bytes, individual_bytes = _generate_session_pdfs_bytes(row)
+                            _session_pdf_cache()[session_fingerprint] = {
+                                "collective": collective_bytes,
+                                "individual": individual_bytes,
+                            }
                         except Exception as exc:
                             st.error(f"Nao foi possivel regenerar os PDFs: {exc}")
                         else:
