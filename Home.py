@@ -18,7 +18,7 @@ navigation = st.navigation(
         "Analise": [
             st.Page("pages/Análise_Performance.py", title="Comparar Perfis", url_path="comparar-perfis"),
             st.Page("pages/Análise_Temporal.py", title="Perfil Temporal", url_path="perfil-temporal"),
-            st.Page("pages/Análise_Performance_Dev1.py", title="Metricas de Campo", url_path="analise-performance-dev1"),
+            st.Page("pages/Análise_Performance_Dev1.py", title="Analise Posicional", url_path="analise-posicional"),
         ],
         "Administracao": [
             st.Page("pages/Admin_Utilizadores.py", title="Utilizadores", url_path="admin-utilizadores"),
