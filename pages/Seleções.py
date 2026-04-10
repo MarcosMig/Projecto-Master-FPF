@@ -1,6 +1,7 @@
 import pandas as pd
 import streamlit as st
 
+from fpf_modules.constants import SELECOES_OPCOES
 from fpf_modules.selections import SELECOES_COLUMNS, ensure_selections_table
 from fpf_modules.supabase_manager import (
     initialize_schema,
@@ -33,6 +34,8 @@ REPORT_COLUMNS = [
     "updated_at",
 ]
 
+SELECTION_ORDER_MAP = {codigo: idx for idx, codigo in enumerate(SELECOES_OPCOES, start=1)}
+
 
 def _clean_text_value(value) -> str:
     if pd.isna(value):
@@ -59,6 +62,31 @@ def _format_date(value) -> str:
         return str(value)
 
 
+def _selection_rank(codigo: str) -> tuple[int, str]:
+    codigo_txt = _clean_text_value(codigo)
+    if not codigo_txt:
+        return (10_000, "")
+    return (SELECTION_ORDER_MAP.get(codigo_txt, 10_000), codigo_txt)
+
+
+def _sort_selections_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=SELECOES_COLUMNS)
+
+    view_df = df.copy()
+    ranks = view_df["codigo"].map(_selection_rank)
+    view_df["__rank"] = [item[0] for item in ranks]
+    view_df["__label"] = [item[1] for item in ranks]
+    view_df["sort_order"] = view_df["codigo"].map(
+        lambda codigo: SELECTION_ORDER_MAP.get(_clean_text_value(codigo), pd.NA)
+    )
+    return (
+        view_df.sort_values(["__rank", "__label"], na_position="last")
+        .drop(columns=["__rank", "__label"])
+        .reset_index(drop=True)
+    )
+
+
 def _load_selections() -> pd.DataFrame:
     try:
         df = sync_selections_reference(include_default=True)
@@ -68,7 +96,7 @@ def _load_selections() -> pd.DataFrame:
     for col in SELECOES_COLUMNS:
         if col not in df.columns:
             df[col] = pd.NA
-    return df[SELECOES_COLUMNS].copy()
+    return _sort_selections_df(df[SELECOES_COLUMNS].copy())
 
 
 def _load_athletes() -> pd.DataFrame:
@@ -90,7 +118,14 @@ def _load_athletes() -> pd.DataFrame:
         df[col] = df[col].map(_clean_text_value)
     df["ativo"] = df["ativo"].fillna(True).astype(bool)
     df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce")
-    return df.sort_values(["selecao", "nome", "atleta_id"], na_position="last").reset_index(drop=True)
+    ranks = df["selecao"].map(_selection_rank)
+    df["__rank"] = [item[0] for item in ranks]
+    df["__label"] = [item[1] for item in ranks]
+    return (
+        df.sort_values(["__rank", "__label", "nome", "atleta_id"], na_position="last")
+        .drop(columns=["__rank", "__label"])
+        .reset_index(drop=True)
+    )
 
 
 def _load_reports() -> pd.DataFrame:
@@ -198,7 +233,7 @@ def _render_selection_expanders(selecoes_df: pd.DataFrame, athletes_df: pd.DataF
         expander_label = codigo
 
         with st.expander(expander_label, expanded=False):
-            with st.expander("Jogos | Treinos", expanded=False):
+            with st.expander("Sessões", expanded=False):
                 _render_report_details(reports_df, codigo)
 
             with st.expander("Atletas", expanded=False):
@@ -229,7 +264,7 @@ with tab_view:
 with tab_manage:
     st.subheader("Tabela Mestre")
     edited_df = st.data_editor(
-        selecoes_df,
+        _sort_selections_df(selecoes_df),
         hide_index=True,
         use_container_width=True,
         num_rows="dynamic",
@@ -250,7 +285,7 @@ with tab_manage:
 
     with col_save:
         if st.button("Guardar seleções", type="primary", use_container_width=True):
-            save_selections_reference(edited_df)
+            save_selections_reference(_sort_selections_df(edited_df))
             st.success("Tabela de seleções atualizada na base de dados.")
             st.rerun()
 

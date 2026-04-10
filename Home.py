@@ -14,12 +14,11 @@ navigation = st.navigation(
             st.Page("pages/Seleções.py", title="Selecoes", url_path="selecoes"),
             st.Page("pages/Atletas.py", title="Atletas", url_path="atletas"),
             st.Page("pages/Campos.py", title="Campos", url_path="campos"),
-            st.Page("pages/Registos.py", title="Jogos | Treinos", url_path="jogos-treinos"),
         ],
         "Analise": [
             st.Page("pages/Análise_Performance.py", title="Comparar Perfis", url_path="comparar-perfis"),
             st.Page("pages/Análise_Temporal.py", title="Perfil Temporal", url_path="perfil-temporal"),
-            st.Page("pages/Análise_Performance_Dev1.py", title="Metricas Colectivas", url_path="analise-performance-dev1"),
+            st.Page("pages/Análise_Performance_Dev1.py", title="Metricas de Campo", url_path="analise-performance-dev1"),
         ],
         "Administracao": [
             st.Page("pages/Admin_Utilizadores.py", title="Utilizadores", url_path="admin-utilizadores"),
