@@ -19,6 +19,7 @@ FIELD_VIEW_OPTIONS = [
     "Convex Hull",
     "Distancia entre Jogadores",
     "Movimento Relativo de Jogadores ao Longo do Tempo",
+    "Aceleração / Desaceleração",
 ]
 
 
@@ -144,6 +145,28 @@ def get_convex_hull(snapshot: pd.DataFrame):
     return [hull_points], float(hull.volume)
 
 
+@st.cache_data
+def calcular_aceleracao_desaceleracao(tracking_df: pd.DataFrame) -> pd.DataFrame:
+    if tracking_df.empty:
+        return tracking_df.copy()
+
+    df = tracking_df.sort_values(["atleta_id", "time_evento_s"]).copy()
+    grouped = df.groupby("atleta_id", sort=False)
+    df["delta_t"] = grouped["time_evento_s"].diff()
+    df["delta_x"] = grouped["x_tr"].diff()
+    df["delta_y"] = grouped["y_tr"].diff()
+    df["distancia_m"] = np.hypot(df["delta_x"], df["delta_y"])
+    df["velocidade_m_s"] = np.where(df["delta_t"] > 0, df["distancia_m"] / df["delta_t"], np.nan)
+    df["velocidade_m_s_suave"] = grouped["velocidade_m_s"].transform(
+        lambda serie: serie.rolling(window=3, min_periods=1).mean()
+    )
+    df["aceleracao_m_s2"] = grouped["velocidade_m_s_suave"].diff() / df["delta_t"]
+    df["aceleracao_m_s2"] = df["aceleracao_m_s2"].replace([np.inf, -np.inf], np.nan).fillna(0)
+    df["aceleracao_pos_m_s2"] = df["aceleracao_m_s2"].clip(lower=0)
+    df["desaceleracao_m_s2"] = df["aceleracao_m_s2"].clip(upper=0)
+    return df.drop(columns=["delta_t", "delta_x", "delta_y", "distancia_m"], errors="ignore")
+
+
 def draw_animated_tracking(
     df_intervalo: pd.DataFrame,
     timestamps_intervalo: list[float],
@@ -151,6 +174,7 @@ def draw_animated_tracking(
     show_convex_hull: bool = False,
     movimento_relativo_jogadores: tuple[str, str] | None = None,
     janela_segundos: int = 1,
+    show_aceleracao: bool = False,
 ) -> go.Figure:
     if df_intervalo.empty or not timestamps_intervalo:
         return go.Figure()
@@ -165,18 +189,61 @@ def draw_animated_tracking(
             & df_intervalo["x_tr"].notna()
             & df_intervalo["y_tr"].notna()
         ].copy()
+        if show_aceleracao:
+            hover_text = frame_df.apply(
+                lambda row: (
+                    f"Atleta {row['atleta_id']}<br>"
+                    f"Aceleração: +{float(row.get('aceleracao_pos_m_s2', 0)):.2f} m/s²<br>"
+                    f"Desaceleração: {float(row.get('desaceleracao_m_s2', 0)):.2f} m/s²"
+                ),
+                axis=1,
+            )
+            marker_size = 30
+            trace_text = frame_df["atleta_id"].astype(str)
+            marker_color = "rgba(227, 6, 19, 0.15)"
+            marker_line_color = "rgba(255, 255, 255, 0.85)"
+        else:
+            hover_text = frame_df.apply(lambda row: f"Atleta {row['atleta_id']}<br>x={row['x_tr']:.1f}<br>y={row['y_tr']:.1f}", axis=1)
+            marker_size = 24
+            trace_text = frame_df["atleta_id"].astype(str)
+            marker_color = "#E30613"
+            marker_line_color = "white"
+
         traces = [
             go.Scatter(
                 x=frame_df["x_tr"],
                 y=frame_df["y_tr"],
                 mode="markers+text",
-                text=frame_df["atleta_id"].astype(str),
+                text=trace_text,
                 textposition="middle center",
                 textfont={"color": "white", "size": 10},
-                marker={"size": 24, "color": "#E30613", "line": {"color": "white", "width": 1}},
-                hovertemplate="Atleta %{text}<br>x=%{x:.1f}<br>y=%{y:.1f}<extra></extra>",
+                marker={"size": marker_size, "color": marker_color, "line": {"color": marker_line_color, "width": 1}},
+                hovertext=hover_text,
+                hoverinfo="text",
             )
         ]
+
+        if show_aceleracao:
+            traces.extend(
+                [
+                    go.Scatter(
+                        x=frame_df["x_tr"],
+                        y=frame_df["y_tr"] - 3,
+                        mode="text",
+                        text=frame_df["aceleracao_pos_m_s2"].map(lambda valor: f"+{float(valor):.2f}"),
+                        textfont={"color": "#39FF14", "size": 13},
+                        hoverinfo="skip",
+                    ),
+                    go.Scatter(
+                        x=frame_df["x_tr"],
+                        y=frame_df["y_tr"] + 3,
+                        mode="text",
+                        text=frame_df["desaceleracao_m_s2"].map(lambda valor: f"{float(valor):.2f}"),
+                        textfont={"color": "#FF1744", "size": 13},
+                        hoverinfo="skip",
+                    ),
+                ]
+            )
 
         if show_convex_hull and len(frame_df) >= 3:
             points = frame_df[["x_tr", "y_tr"]].dropna().drop_duplicates().to_numpy()
@@ -616,6 +683,16 @@ elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogado
     )
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
+    st.stop()
+elif campo == "Aceleração / Desaceleração":
+    df_intervalo_acc = calcular_aceleracao_desaceleracao(df_intervalo)
+    st.plotly_chart(
+        draw_animated_tracking(df_intervalo_acc, timestamps, show_aceleracao=True),
+        use_container_width=True,
+    )
+    st.caption("Valores em m/s². Aceleração acima do atleta e desaceleração abaixo.")
+    st.divider()
+    st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo_acc.shape[0]}")
     st.stop()
 col_map, col_info = st.columns([3, 1])
 
