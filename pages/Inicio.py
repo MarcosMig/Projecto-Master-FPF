@@ -1,12 +1,14 @@
 import streamlit as st
 
 
-st.title("Federacao Portuguesa de Futebol")
-st.header("Performance Hub")
+st.title("Federação Portuguesa de Futebol")
+st.header("Bem-vindo!")
 st.write(
-    "O Performance Hub e um espaco simples e intuitivo para analisar o desempenho fisico dos atletas "
-    "com base em dados GPS. Carrega os ficheiros, valida os registos e obtem "
-    "automaticamente metricas claras e organizadas. Tudo num unico local, "
-    "acessivel em qualquer momento, permitindo focar no que realmente importa: "
-    "interpretar os dados e tomar decisoes no treino e na competicao."
+    """
+O Performance Hub foi desenvolvido para analisar o desempenho de atletas com base em dados GPS.
+
+Carrega os ficheiros, valida os registos e obtém automaticamente métricas claras e organizadas.
+
+Tudo num único local, acessível em qualquer local e momento, permitindo-nos focar no que realmente importa: interpretar os dados e tomar decisões no treino e na competição.
+    """
 )

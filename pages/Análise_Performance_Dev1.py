@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import mplsoccer as mpl
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 from scipy.spatial import ConvexHull, QhullError
 
@@ -14,6 +15,7 @@ from fpf_modules.selections import load_selection_options
 SELECTION_OPTIONS = load_selection_options()
 PHASE_OPTIONS = ["1P", "2P"]
 FIELD_VIEW_OPTIONS = [
+    "Movimento dos Jogadores",
     "Convex Hull",
     "Distancia entre Jogadores",
     "Movimento Relativo de Jogadores ao Longo do Tempo",
@@ -142,6 +144,267 @@ def get_convex_hull(snapshot: pd.DataFrame):
     return [hull_points], float(hull.volume)
 
 
+def draw_animated_tracking(
+    df_intervalo: pd.DataFrame,
+    timestamps_intervalo: list[float],
+    pares_selecionados: list[str] | None = None,
+    show_convex_hull: bool = False,
+    movimento_relativo_jogadores: tuple[str, str] | None = None,
+    janela_segundos: int = 1,
+) -> go.Figure:
+    if df_intervalo.empty or not timestamps_intervalo:
+        return go.Figure()
+
+    frame_duration_ms = 100
+    if len(timestamps_intervalo) > 1:
+        frame_duration_ms = int(max(50, min(float(np.median(np.diff(timestamps_intervalo))) * 1000, 1000)))
+
+    def frame_traces(momento: float) -> list[go.Scatter]:
+        frame_df = df_intervalo.loc[
+            (df_intervalo["time_evento_s"] == momento)
+            & df_intervalo["x_tr"].notna()
+            & df_intervalo["y_tr"].notna()
+        ].copy()
+        traces = [
+            go.Scatter(
+                x=frame_df["x_tr"],
+                y=frame_df["y_tr"],
+                mode="markers+text",
+                text=frame_df["atleta_id"].astype(str),
+                textposition="middle center",
+                textfont={"color": "white", "size": 10},
+                marker={"size": 24, "color": "#E30613", "line": {"color": "white", "width": 1}},
+                hovertemplate="Atleta %{text}<br>x=%{x:.1f}<br>y=%{y:.1f}<extra></extra>",
+            )
+        ]
+
+        if show_convex_hull and len(frame_df) >= 3:
+            points = frame_df[["x_tr", "y_tr"]].dropna().drop_duplicates().to_numpy()
+            if len(points) >= 3:
+                try:
+                    hull = ConvexHull(points)
+                    hull_points = points[hull.vertices]
+                    hull_points = np.vstack([hull_points, hull_points[0]])
+                    traces.append(
+                        go.Scatter(
+                            x=hull_points[:, 0],
+                            y=hull_points[:, 1],
+                            mode="lines",
+                            fill="toself",
+                            fillcolor="rgba(227, 6, 19, 0.25)",
+                            line={"color": "#E30613", "width": 3},
+                            hoverinfo="skip",
+                        )
+                    )
+                except QhullError:
+                    pass
+
+        if movimento_relativo_jogadores:
+            jogador_1_id, jogador_2_id = movimento_relativo_jogadores
+            idx_tempo = timestamps_intervalo.index(momento)
+            janela_frames = max(1, int(janela_segundos) * 10)
+            janela_timestamps = timestamps_intervalo[max(0, idx_tempo - janela_frames + 1): idx_tempo + 1]
+            trilho_df = df_intervalo.loc[
+                df_intervalo["time_evento_s"].isin(janela_timestamps)
+                & df_intervalo["atleta_id"].astype(str).isin([str(jogador_1_id), str(jogador_2_id)])
+                & df_intervalo["x_tr"].notna()
+                & df_intervalo["y_tr"].notna()
+            ].copy()
+            jogador_1_trilho = trilho_df.loc[trilho_df["atleta_id"].astype(str) == str(jogador_1_id)]
+            jogador_2_trilho = trilho_df.loc[trilho_df["atleta_id"].astype(str) == str(jogador_2_id)]
+
+            if not jogador_1_trilho.empty:
+                traces.append(
+                    go.Scatter(
+                        x=jogador_1_trilho["x_tr"],
+                        y=jogador_1_trilho["y_tr"],
+                        mode="lines",
+                        line={"color": "#2ECC71", "width": 4},
+                        hoverinfo="skip",
+                    )
+                )
+            if not jogador_2_trilho.empty:
+                traces.append(
+                    go.Scatter(
+                        x=jogador_2_trilho["x_tr"],
+                        y=jogador_2_trilho["y_tr"],
+                        mode="lines",
+                        line={"color": "#F2F2F2", "width": 4},
+                        hoverinfo="skip",
+                    )
+                )
+
+            jogador_1 = frame_df.loc[frame_df["atleta_id"].astype(str) == str(jogador_1_id)]
+            jogador_2 = frame_df.loc[frame_df["atleta_id"].astype(str) == str(jogador_2_id)]
+            if not jogador_1.empty and not jogador_2.empty:
+                x1, y1 = jogador_1[["x_tr", "y_tr"]].iloc[0]
+                x2, y2 = jogador_2[["x_tr", "y_tr"]].iloc[0]
+                distancia_rel = float(np.hypot(x2 - x1, y2 - y1))
+                traces.extend(
+                    [
+                        go.Scatter(
+                            x=[x1, x2],
+                            y=[y1, y2],
+                            mode="lines",
+                            line={"color": "#FFC857", "width": 4},
+                            hoverinfo="skip",
+                        ),
+                        go.Scatter(
+                            x=[x1, x2],
+                            y=[y1, y2],
+                            mode="markers",
+                            marker={"size": 30, "color": ["#2ECC71", "#F2F2F2"], "line": {"color": "black", "width": 2}},
+                            text=[jogador_1_id, jogador_2_id],
+                            hovertemplate="Atleta %{text}<extra></extra>",
+                        ),
+                        go.Scatter(
+                            x=[(x1 + x2) / 2],
+                            y=[(y1 + y2) / 2],
+                            mode="text",
+                            text=[f"{distancia_rel:.2f} m"],
+                            textfont={"color": "#FFC857", "size": 14},
+                            hoverinfo="skip",
+                        ),
+                    ]
+                )
+
+        for par in pares_selecionados or []:
+            jogador_1_id, jogador_2_id = par.split(" - ")
+            jogador_1 = frame_df.loc[frame_df["atleta_id"].astype(str) == str(jogador_1_id)]
+            jogador_2 = frame_df.loc[frame_df["atleta_id"].astype(str) == str(jogador_2_id)]
+            if jogador_1.empty or jogador_2.empty:
+                continue
+
+            x1, y1 = jogador_1[["x_tr", "y_tr"]].iloc[0]
+            x2, y2 = jogador_2[["x_tr", "y_tr"]].iloc[0]
+            distancia_par = float(np.hypot(x2 - x1, y2 - y1))
+            traces.extend(
+                [
+                    go.Scatter(
+                        x=[x1, x2],
+                        y=[y1, y2],
+                        mode="lines",
+                        line={"color": "#FFD166", "width": 4},
+                        hoverinfo="skip",
+                    ),
+                    go.Scatter(
+                        x=[x1, x2],
+                        y=[y1, y2],
+                        mode="markers",
+                        marker={"size": 28, "color": "#2ECC71", "line": {"color": "black", "width": 2}},
+                        hovertemplate="Atleta %{text}<extra></extra>",
+                        text=[jogador_1_id, jogador_2_id],
+                    ),
+                    go.Scatter(
+                        x=[(x1 + x2) / 2],
+                        y=[(y1 + y2) / 2],
+                        mode="text",
+                        text=[f"{distancia_par:.2f} m"],
+                        textfont={"color": "#FFD166", "size": 14},
+                        hoverinfo="skip",
+                    ),
+                ]
+            )
+
+        return traces
+
+    first_time = timestamps_intervalo[0]
+    fig = go.Figure(data=frame_traces(first_time))
+    fig.frames = [
+        go.Frame(
+            data=frame_traces(momento),
+            name=str(momento),
+            layout=go.Layout(title_text=f"Momento do Jogo: {converter_para_relogio_fpf(momento)}"),
+        )
+        for momento in timestamps_intervalo
+    ]
+
+    slider_steps = [
+        {
+            "method": "animate",
+            "label": converter_para_relogio_fpf(momento),
+            "args": [
+                [str(momento)],
+                {
+                    "mode": "immediate",
+                    "frame": {"duration": 0, "redraw": True},
+                    "transition": {"duration": 0},
+                },
+            ],
+        }
+        for momento in timestamps_intervalo
+    ]
+
+    field_shapes = [
+        {"type": "rect", "x0": 0, "y0": 0, "x1": 120, "y1": 80, "line": {"color": "#c7d5cc", "width": 2}},
+        {"type": "line", "x0": 60, "y0": 0, "x1": 60, "y1": 80, "line": {"color": "#c7d5cc", "width": 1.5}},
+        {"type": "circle", "x0": 50, "y0": 30, "x1": 70, "y1": 50, "line": {"color": "#c7d5cc", "width": 1.5}},
+        {"type": "rect", "x0": 0, "y0": 18, "x1": 18, "y1": 62, "line": {"color": "#c7d5cc", "width": 1.5}},
+        {"type": "rect", "x0": 102, "y0": 18, "x1": 120, "y1": 62, "line": {"color": "#c7d5cc", "width": 1.5}},
+        {"type": "rect", "x0": 0, "y0": 30, "x1": 6, "y1": 50, "line": {"color": "#c7d5cc", "width": 1.5}},
+        {"type": "rect", "x0": 114, "y0": 30, "x1": 120, "y1": 50, "line": {"color": "#c7d5cc", "width": 1.5}},
+    ]
+
+    fig.update_layout(
+        title=f"Momento do Jogo: {converter_para_relogio_fpf(first_time)}",
+        height=650,
+        margin={"l": 10, "r": 10, "t": 85, "b": 10},
+        paper_bgcolor="#1e1e1e",
+        plot_bgcolor="#22312b",
+        showlegend=False,
+        shapes=field_shapes,
+        xaxis={"range": [0, 120], "showgrid": False, "zeroline": False, "showticklabels": False},
+        yaxis={
+            "range": [80, 0],
+            "showgrid": False,
+            "zeroline": False,
+            "showticklabels": False,
+            "scaleanchor": "x",
+            "scaleratio": 1,
+        },
+        updatemenus=[
+            {
+                "type": "buttons",
+                "direction": "left",
+                "x": 0.02,
+                "xanchor": "left",
+                "y": 0.98,
+                "yanchor": "top",
+                "pad": {"r": 10, "t": 0},
+                "showactive": True,
+                "buttons": [
+                    {
+                        "label": "▶ Play",
+                        "method": "animate",
+                        "args": [
+                            None,
+                            {
+                                "frame": {"duration": frame_duration_ms, "redraw": True},
+                                "fromcurrent": True,
+                                "transition": {"duration": 0},
+                            },
+                        ],
+                    },
+                    {
+                        "label": "Ⅱ Pause",
+                        "method": "animate",
+                        "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}],
+                    },
+                ],
+            }
+        ],
+        sliders=[
+            {
+                "active": 0,
+                "currentvalue": {"prefix": "Momento: "},
+                "steps": slider_steps,
+                "pad": {"t": 35},
+            }
+        ],
+    )
+    return fig
+
+
 try:
     tracking_df, sessions_df = load_and_merge_data()
 except Exception as exc:
@@ -183,21 +446,28 @@ with st.expander("Seleção de Dados Analisar:", expanded=True):
         key="campo_sessao_selecionada",
     )
 
-    nav_col1, nav_col2 = st.columns([2, 1.2])
-    campo = nav_col1.selectbox(
-        "Visualizacao de Campo",
-        options=FIELD_VIEW_OPTIONS,
-        index=0,
-        key="campo_visualizacao",
-    )
-    fase_selected = nav_col2.radio(
-        "Fase",
-        PHASE_OPTIONS,
-        index=0,
-        horizontal=True,
-    )
-
 selected_session_sk = session_lookup.get(jogo_ou_treino)
+
+st.divider()
+
+if selected_session_sk is None:
+    st.info("Seleciona um jogo ou treino para visualizar o campo.")
+    st.stop()
+
+nav_col1, nav_col2 = st.columns([2, 1.2])
+campo = nav_col1.selectbox(
+    "Métrica Posicional",
+    options=FIELD_VIEW_OPTIONS,
+    index=0,
+    key="campo_visualizacao",
+)
+fase_selected = nav_col2.radio(
+    "Fase",
+    PHASE_OPTIONS,
+    index=0,
+    horizontal=True,
+)
+
 df_fase = tracking_df.loc[
     (tracking_df["selecao"] == selecao)
     & (tracking_df["contexto"] == contexto)
@@ -205,23 +475,41 @@ df_fase = tracking_df.loc[
     & (tracking_df["session_sk"] == selected_session_sk)
 ].copy()
 
-st.divider()
-st.subheader("Analise Posicional")
-
-if selected_session_sk is None:
-    st.info("Seleciona um jogo ou treino para visualizar o campo.")
+timestamps = sorted(df_fase["time_evento_s"].dropna().unique().tolist()) if not df_fase.empty else []
+if not timestamps:
+    st.info("A sessao selecionada nao tem dados de tracking para esta fase.")
     st.stop()
 
-timestamps = sorted(df_fase["time_evento_s"].dropna().unique().tolist()) if not df_fase.empty else []
-if timestamps:
-    selected_time = st.session_state.get("selected_time_jogo", timestamps[0])
-    if selected_time not in timestamps:
-        selected_time = timestamps[0]
-else:
-    selected_time = None
+timeline_context = f"{selected_session_sk}|{fase_selected}"
+default_interval_end = timestamps[min(len(timestamps) - 1, 600)]
+default_interval = (timestamps[0], default_interval_end)
 
-if selected_time is None:
-    st.info("A sessao selecionada nao tem dados de tracking para esta fase.")
+if st.session_state.get("timeline_context") != timeline_context:
+    st.session_state["timeline_context"] = timeline_context
+    st.session_state["selected_time_jogo"] = timestamps[0]
+
+interval_start, interval_end = st.select_slider(
+    "Intervalo de tempo",
+    options=timestamps,
+    value=default_interval,
+    format_func=converter_para_relogio_fpf,
+    key=f"tempo_intervalo_jogo_{timeline_context}",
+)
+timestamps = [tempo for tempo in timestamps if interval_start <= tempo <= interval_end]
+st.caption(
+    f"Intervalo selecionado: {converter_para_relogio_fpf(interval_start)} - {converter_para_relogio_fpf(interval_end)}"
+)
+
+selected_time = st.session_state.get("selected_time_jogo", timestamps[0])
+if selected_time not in timestamps:
+    selected_time = timestamps[0]
+st.session_state["selected_time_jogo"] = selected_time
+
+if campo == "Movimento dos Jogadores":
+    df_intervalo = df_fase.loc[df_fase["time_evento_s"].isin(timestamps)].copy()
+    st.plotly_chart(draw_animated_tracking(df_intervalo, timestamps), use_container_width=True)
+    st.divider()
+    st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
     st.stop()
 
 snapshot = build_snapshot(df_fase, selected_time)
@@ -231,7 +519,8 @@ compactacao_frame = (
     if not df_compactacao.empty
     else pd.DataFrame()
 )
-jogadores_disponiveis = sorted(snapshot["atleta_id"].dropna().astype(str).unique().tolist()) if not snapshot.empty else []
+df_intervalo = df_fase.loc[df_fase["time_evento_s"].isin(timestamps)].copy()
+jogadores_disponiveis = sorted(df_intervalo["atleta_id"].dropna().astype(str).unique().tolist()) if not df_intervalo.empty else []
 
 jogadores_selecionados = []
 pares_selecionados = []
@@ -276,6 +565,21 @@ if campo == "Distancia entre Jogadores" and len(jogadores_disponiveis) >= 2:
         default=pares_opcoes[:1],
         key="dist_pares_selecionados",
     )
+    st.plotly_chart(
+        draw_animated_tracking(df_intervalo, timestamps, pares_selecionados=pares_selecionados),
+        use_container_width=True,
+    )
+    st.divider()
+    st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
+    st.stop()
+elif campo == "Convex Hull":
+    st.plotly_chart(
+        draw_animated_tracking(df_intervalo, timestamps, show_convex_hull=True),
+        use_container_width=True,
+    )
+    st.divider()
+    st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
+    st.stop()
 elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogadores_disponiveis) >= 2:
     control_col1, control_col2, control_col3 = st.columns(3)
     jogador_rel_1 = control_col1.selectbox(
@@ -297,29 +601,36 @@ elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogado
         key="mov_rel_janela_segundos",
         format_func=lambda valor: f"{valor}s",
     )
+    if jogador_rel_1 == jogador_rel_2:
+        st.warning("Seleciona dois jogadores diferentes para visualizar o movimento relativo.")
+        st.stop()
+
+    st.plotly_chart(
+        draw_animated_tracking(
+            df_intervalo,
+            timestamps,
+            movimento_relativo_jogadores=(str(jogador_rel_1), str(jogador_rel_2)),
+            janela_segundos=int(janela_segundos),
+        ),
+        use_container_width=True,
+    )
+    st.divider()
+    st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
+    st.stop()
 col_map, col_info = st.columns([3, 1])
 
 with col_map:
     plot_placeholder = st.empty()
     slider_placeholder = st.empty()
-    movement_slider_placeholder = st.empty()
     graph_placeholder = st.empty()
 
     timestamps_relativos = []
-    timestamps_amostrados = []
     tempo_visualizacao = selected_time
 
     if campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
-        timestamps_relativos = sorted(df_fase["time_evento_s"].dropna().unique().tolist())
-        timestamps_amostrados = timestamps_relativos[::10] if timestamps_relativos else []
-        if timestamps_relativos and timestamps_relativos[-1] not in timestamps_amostrados:
-            timestamps_amostrados.append(timestamps_relativos[-1])
-
-        if timestamps_amostrados:
-            tempo_relativo = st.session_state.get("mov_rel_slider", timestamps_amostrados[0])
-            if tempo_relativo not in timestamps_amostrados:
-                tempo_relativo = timestamps_amostrados[0]
-            tempo_visualizacao = tempo_relativo
+        timestamps_relativos = timestamps
+        tempo_relativo = selected_time
+        tempo_visualizacao = tempo_relativo
 
     snapshot = build_snapshot(df_fase, tempo_visualizacao)
     pitch, fig, ax = draw_pitch(snapshot)
@@ -461,32 +772,12 @@ with col_map:
 
     plot_placeholder.pyplot(fig)
 
-    if campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
-        time_ctrl1, time_ctrl2, time_ctrl3 = slider_placeholder.columns([0.9, 0.9, 4.2])
-        current_idx = timestamps.index(selected_time) if selected_time in timestamps else 0
-        if time_ctrl1.button("◀", key="tempo_prev", use_container_width=True) and current_idx > 0:
-            st.session_state["selected_time_jogo"] = timestamps[current_idx - 1]
-            st.rerun()
-        if time_ctrl2.button("▶", key="tempo_next", use_container_width=True) and current_idx < len(timestamps) - 1:
-            st.session_state["selected_time_jogo"] = timestamps[current_idx + 1]
-            st.rerun()
-
     slider_placeholder.select_slider(
         "Momento do Jogo",
         options=timestamps,
-        value=selected_time if selected_time in timestamps else timestamps[0],
         format_func=converter_para_relogio_fpf,
         key="selected_time_jogo",
     )
-
-    if campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and timestamps_amostrados:
-        tempo_relativo = movement_slider_placeholder.select_slider(
-            "Momento do Movimento (1 em 1 segundo)",
-            options=timestamps_amostrados,
-            value=tempo_relativo if tempo_relativo in timestamps_amostrados else timestamps_amostrados[0],
-            format_func=converter_para_relogio_fpf,
-            key="mov_rel_slider",
-        )
 
     if campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and not serie_distancias_rel.empty:
         fig_dist, ax_dist = plt.subplots(figsize=(10, 3.2))
@@ -520,7 +811,6 @@ with col_map:
 with col_info:
     st.subheader("Resumo do Frame")
     st.metric("Tempo Selecionado", converter_para_relogio_fpf(selected_time))
-    st.metric("Jogo ou Treino", jogo_ou_treino or "N/A")
 
     if campo == "Distancia entre Jogadores":
         if distancias_pares:
