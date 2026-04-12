@@ -14,12 +14,14 @@ from fpf_modules.selections import load_selection_options
 
 SELECTION_OPTIONS = load_selection_options()
 PHASE_OPTIONS = ["1P", "2P"]
+VELOCIDADE_SENSACIONAL_KM_H = 25.0
 FIELD_VIEW_OPTIONS = [
     "Movimento dos Jogadores",
     "Convex Hull",
     "Distancia entre Jogadores",
     "Movimento Relativo de Jogadores ao Longo do Tempo",
     "Aceleração / Desaceleração",
+    "Velocidade",
 ]
 
 
@@ -160,6 +162,7 @@ def calcular_aceleracao_desaceleracao(tracking_df: pd.DataFrame) -> pd.DataFrame
     df["velocidade_m_s_suave"] = grouped["velocidade_m_s"].transform(
         lambda serie: serie.rolling(window=3, min_periods=1).mean()
     )
+    df["velocidade_km_h"] = df["velocidade_m_s_suave"] * 3.6
     df["aceleracao_m_s2"] = grouped["velocidade_m_s_suave"].diff() / df["delta_t"]
     df["aceleracao_m_s2"] = df["aceleracao_m_s2"].replace([np.inf, -np.inf], np.nan).fillna(0)
     df["aceleracao_pos_m_s2"] = df["aceleracao_m_s2"].clip(lower=0)
@@ -175,6 +178,7 @@ def draw_animated_tracking(
     movimento_relativo_jogadores: tuple[str, str] | None = None,
     janela_segundos: int = 1,
     show_aceleracao: bool = False,
+    show_velocidade: bool = False,
 ) -> go.Figure:
     if df_intervalo.empty or not timestamps_intervalo:
         return go.Figure()
@@ -195,6 +199,19 @@ def draw_animated_tracking(
                     f"Atleta {row['atleta_id']}<br>"
                     f"Aceleração: +{float(row.get('aceleracao_pos_m_s2', 0)):.2f} m/s²<br>"
                     f"Desaceleração: {float(row.get('desaceleracao_m_s2', 0)):.2f} m/s²"
+                ),
+                axis=1,
+            )
+            marker_size = 30
+            trace_text = frame_df["atleta_id"].astype(str)
+            marker_color = "rgba(227, 6, 19, 0.15)"
+            marker_line_color = "rgba(255, 255, 255, 0.85)"
+        elif show_velocidade:
+            hover_text = frame_df.apply(
+                lambda row: (
+                    f"Atleta {row['atleta_id']}<br>"
+                    f"Velocidade: {float(row.get('velocidade_m_s_suave', 0)):.2f} m/s<br>"
+                    f"Velocidade: {float(row.get('velocidade_km_h', 0)):.1f} km/h"
                 ),
                 axis=1,
             )
@@ -240,6 +257,31 @@ def draw_animated_tracking(
                         mode="text",
                         text=frame_df["desaceleracao_m_s2"].map(lambda valor: f"{float(valor):.2f}"),
                         textfont={"color": "#FF1744", "size": 13},
+                        hoverinfo="skip",
+                    ),
+                ]
+            )
+
+        if show_velocidade:
+            velocidade_viva = frame_df["velocidade_km_h"].fillna(0) >= VELOCIDADE_SENSACIONAL_KM_H
+            velocidade_ms_color = velocidade_viva.map(lambda acima_limiar: "#FF1744" if acima_limiar else "#00E5FF")
+            velocidade_kmh_color = velocidade_viva.map(lambda acima_limiar: "#FF1744" if acima_limiar else "#FFA500")
+            traces.extend(
+                [
+                    go.Scatter(
+                        x=frame_df["x_tr"],
+                        y=frame_df["y_tr"] - 3,
+                        mode="text",
+                        text=frame_df["velocidade_m_s_suave"].fillna(0).map(lambda valor: f"{float(valor):.2f} m/s"),
+                        textfont={"color": velocidade_ms_color, "size": 13},
+                        hoverinfo="skip",
+                    ),
+                    go.Scatter(
+                        x=frame_df["x_tr"],
+                        y=frame_df["y_tr"] + 3,
+                        mode="text",
+                        text=frame_df["velocidade_km_h"].fillna(0).map(lambda valor: f"{float(valor):.1f} km/h"),
+                        textfont={"color": velocidade_kmh_color, "size": 13},
                         hoverinfo="skip",
                     ),
                 ]
@@ -693,6 +735,18 @@ elif campo == "Aceleração / Desaceleração":
     st.caption("Valores em m/s². Aceleração acima do atleta e desaceleração abaixo.")
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo_acc.shape[0]}")
+    st.stop()
+elif campo == "Velocidade":
+    df_intervalo_vel = calcular_aceleracao_desaceleracao(df_intervalo)
+    st.plotly_chart(
+        draw_animated_tracking(df_intervalo_vel, timestamps, show_velocidade=True),
+        use_container_width=True,
+    )
+    st.caption(
+        f"Velocidade em m/s por cima e km/h por baixo. Valores >= {VELOCIDADE_SENSACIONAL_KM_H:.0f} km/h aparecem a vermelho."
+    )
+    st.divider()
+    st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo_vel.shape[0]}")
     st.stop()
 col_map, col_info = st.columns([3, 1])
 
