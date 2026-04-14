@@ -483,7 +483,7 @@ def draw_animated_tracking(
                 "showactive": True,
                 "buttons": [
                     {
-                        "label": "▶ Play",
+                        "label": "▶ Play / Ⅱ Pause",
                         "method": "animate",
                         "args": [
                             None,
@@ -493,11 +493,7 @@ def draw_animated_tracking(
                                 "transition": {"duration": 0},
                             },
                         ],
-                    },
-                    {
-                        "label": "Ⅱ Pause",
-                        "method": "animate",
-                        "args": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}],
+                        "args2": [[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}],
                     },
                 ],
             }
