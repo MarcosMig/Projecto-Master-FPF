@@ -10,6 +10,7 @@ from scipy.spatial import ConvexHull, QhullError
 
 from fpf_modules.selections import load_selection_options
 from fpf_modules.supabase_manager import get_supabase_client, initialize_schema, read_table
+from fpf_modules.metrics import calcular_linhas
 
 
 SELECTION_OPTIONS = load_selection_options()
@@ -18,8 +19,8 @@ VELOCIDADE_SENSACIONAL_KM_H = 25.0
 FIELD_VIEW_OPTIONS = [
     "Movimento dos Jogadores",
     "Convex Hull",
+    "Distancia entre Linhas",
     "Distancia entre Jogadores",
-    "Movimento Relativo de Jogadores ao Longo do Tempo",
     "Aceleração / Desaceleração",
     "Velocidade",
 ]
@@ -434,6 +435,7 @@ def draw_animated_tracking(
     timestamps_intervalo: list[float],
     pares_selecionados: list[str] | None = None,
     show_convex_hull: bool = False,
+    show_lines: bool = False,
     movimento_relativo_jogadores: tuple[str, str] | None = None,
     janela_segundos: int = 1,
     show_aceleracao: bool = False,
@@ -566,6 +568,37 @@ def draw_animated_tracking(
                     )
                 except QhullError:
                     pass
+
+        if show_lines and len(frame_df) >= 3:
+            try:
+                linhas_frame = calcular_linhas(frame_df, 120, pitch_x=120, linhas_pitch=True)
+                for linha_plot, linha_m, color, name in [
+                    ("linha_def_sb", "linha_def", "#E30613", "DEF"),
+                    ("linha_med_sb", "linha_med", "#FFC857", "MED"),
+                    ("linha_ata_sb", "linha_ata", "#06D6A0", "ATA"),
+                ]:
+                    x_pos = float(linhas_frame[linha_plot])
+                    traces.append(
+                        go.Scatter(
+                            x=[x_pos, x_pos],
+                            y=[0, 80],
+                            mode="lines",
+                            line={"color": color, "width": 2.5, "dash": "dash"},
+                            hoverinfo="skip",
+                        )
+                    )
+                    traces.append(
+                        go.Scatter(
+                            x=[x_pos],
+                            y=[4],
+                            mode="text",
+                            text=[f"{name}: {linhas_frame[linha_m]:.1f} m"],
+                            textfont={"color": "white", "size": 10, "family": "Arial"},
+                            hoverinfo="skip",
+                        )
+                    )
+            except Exception:
+                pass
 
         if movimento_relativo_jogadores:
             jogador_1_id, jogador_2_id = movimento_relativo_jogadores
@@ -935,6 +968,7 @@ jogadores_disponiveis = sorted(df_intervalo["atleta_id"].dropna().astype(str).un
 jogadores_selecionados = []
 pares_selecionados = []
 distancias_pares = []
+linhas_frame = {}
 jogador_rel_1 = None
 jogador_rel_2 = None
 tempo_relativo = None
@@ -992,44 +1026,6 @@ elif campo == "Convex Hull":
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
     st.stop()
-elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogadores_disponiveis) >= 2:
-    control_col1, control_col2, control_col3 = st.columns(3)
-    jogador_rel_1 = control_col1.selectbox(
-        "Jogador 1",
-        options=jogadores_disponiveis,
-        index=0,
-        key="mov_rel_jogador_1",
-    )
-    jogador_rel_2 = control_col2.selectbox(
-        "Jogador 2",
-        options=jogadores_disponiveis,
-        index=1 if len(jogadores_disponiveis) > 1 else 0,
-        key="mov_rel_jogador_2",
-    )
-    janela_segundos = control_col3.selectbox(
-        "Janela Temporal",
-        options=[1, 2, 3, 5, 10],
-        index=0,
-        key="mov_rel_janela_segundos",
-        format_func=lambda valor: f"{valor}s",
-    )
-    if jogador_rel_1 == jogador_rel_2:
-        st.warning("Seleciona dois jogadores diferentes para visualizar o movimento relativo.")
-        st.stop()
-
-    st.plotly_chart(
-        draw_animated_tracking(
-            df_intervalo,
-            timestamps,
-            movimento_relativo_jogadores=(str(jogador_rel_1), str(jogador_rel_2)),
-            janela_segundos=int(janela_segundos),
-        ),
-        use_container_width=True,
-    )
-    render_positional_footer(df_fase, timestamps_intervalo=timestamps)
-    st.divider()
-    st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
-    st.stop()
 elif campo == "Aceleração / Desaceleração":
     df_intervalo_acc = calcular_aceleracao_desaceleracao(df_intervalo)
     st.plotly_chart(
@@ -1054,231 +1050,95 @@ elif campo == "Velocidade":
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo_vel.shape[0]}")
     st.stop()
-col_map, col_info = st.columns([3, 1])
+col_map = st.columns([1])[0]
 
 with col_map:
     plot_placeholder = st.empty()
     slider_placeholder = st.empty()
-    graph_placeholder = st.empty()
 
     timestamps_relativos = []
     tempo_visualizacao = selected_time
 
-    if campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
-        timestamps_relativos = timestamps
-        tempo_relativo = selected_time
-        tempo_visualizacao = tempo_relativo
-
     snapshot = build_snapshot(df_fase, tempo_visualizacao)
-    pitch, fig, ax = draw_pitch(snapshot)
-    convex_hull, area = get_convex_hull(snapshot)
 
-    if campo == "Convex Hull" and convex_hull is not None:
-        pitch.polygon(convex_hull, ax=ax, edgecolor="#E30613", color="#E30613", alpha=0.3)
-
-    elif campo == "Distancia entre Jogadores" and len(jogadores_selecionados) >= 2:
-        coords_jogadores = {}
-        for jogador_id in jogadores_selecionados:
-            jogador_data = snapshot[snapshot["atleta_id"].astype(str) == str(jogador_id)]
-            if not jogador_data.empty:
-                coords_jogadores[str(jogador_id)] = tuple(jogador_data[["x_tr", "y_tr"]].iloc[0])
-
-        if coords_jogadores:
-            xs_sel = [coords_jogadores[jogador_id][0] for jogador_id in coords_jogadores]
-            ys_sel = [coords_jogadores[jogador_id][1] for jogador_id in coords_jogadores]
-            pitch.scatter(
-                xs_sel,
-                ys_sel,
-                s=500,
-                c="#2ECC71",
-                edgecolors="black",
-                linewidth=1.5,
-                ax=ax,
-                zorder=3,
+    if campo == "Distancia entre Linhas":
+        if len(snapshot) < 3:
+            st.warning(
+                "É preciso pelo menos 3 jogadores com coordenadas válidas para calcular as linhas de jogo."
             )
+        else:
+            try:
+                linhas_frame = calcular_linhas(snapshot, 120, pitch_x=120, linhas_pitch=True)
+            except Exception as exc:
+                st.warning(f"Não foi possível calcular as linhas: {exc}")
 
-        for idx, par in enumerate(pares_selecionados):
-            jogador_1_id, jogador_2_id = par.split(" - ")
-            if jogador_1_id not in coords_jogadores or jogador_2_id not in coords_jogadores:
-                continue
-            x1, y1 = coords_jogadores[jogador_1_id]
-            x2, y2 = coords_jogadores[jogador_2_id]
-            distancia_par = float(np.hypot(x2 - x1, y2 - y1))
-            x_mid = (x1 + x2) / 2
-            y_mid = (y1 + y2) / 2
-            nome_cor, cor_par = cores_pares[idx % len(cores_pares)]
-            distancias_pares.append({"Par": par, "Cor": nome_cor, "Distancia": round(distancia_par, 2)})
-            ax.plot([x1, x2], [y1, y2], color=cor_par, linewidth=2.5, alpha=0.95)
-            ax.text(
-                x_mid,
-                y_mid,
-                f"{distancia_par:.2f} m",
-                color="black",
-                fontsize=10,
-                fontweight="bold",
-                ha="center",
-                va="center",
-                bbox=dict(boxstyle="round,pad=0.25", facecolor=cor_par, edgecolor="black", alpha=0.95),
+            plot_placeholder.plotly_chart(
+                draw_animated_tracking(df_intervalo, timestamps, show_lines=True),
+                use_container_width=True,
             )
+    else:
+        pitch, fig, ax = draw_pitch(snapshot)
+        convex_hull, area = get_convex_hull(snapshot)
 
-    elif (
-        campo == "Movimento Relativo de Jogadores ao Longo do Tempo"
-        and jogador_rel_1
-        and jogador_rel_2
-        and jogador_rel_1 != jogador_rel_2
-        and tempo_relativo is not None
-    ):
-        idx_tempo = timestamps_relativos.index(tempo_relativo) if tempo_relativo in timestamps_relativos else len(timestamps_relativos) - 1
-        janela_frames = max(1, int(janela_segundos) * 10)
-        janela_timestamps = timestamps_relativos[max(0, idx_tempo - janela_frames + 1): idx_tempo + 1]
-        trilho_df = df_fase.loc[
-            df_fase["time_evento_s"].isin(janela_timestamps)
-            & df_fase["atleta_id"].astype(str).isin([str(jogador_rel_1), str(jogador_rel_2)])
-            & df_fase["x_tr"].notna()
-            & df_fase["y_tr"].notna()
-        ].copy()
+        if campo == "Convex Hull" and convex_hull is not None:
+            pitch.polygon(convex_hull, ax=ax, edgecolor="#E30613", color="#E30613", alpha=0.3)
 
-        jogador_1_trilho = trilho_df[trilho_df["atleta_id"].astype(str) == str(jogador_rel_1)]
-        jogador_2_trilho = trilho_df[trilho_df["atleta_id"].astype(str) == str(jogador_rel_2)]
+        elif campo == "Distancia entre Jogadores" and len(jogadores_selecionados) >= 2:
+            coords_jogadores = {}
+            for jogador_id in jogadores_selecionados:
+                jogador_data = snapshot[snapshot["atleta_id"].astype(str) == str(jogador_id)]
+                if not jogador_data.empty:
+                    coords_jogadores[str(jogador_id)] = tuple(jogador_data[["x_tr", "y_tr"]].iloc[0])
 
-        if not jogador_1_trilho.empty:
-            ax.plot(jogador_1_trilho["x_tr"], jogador_1_trilho["y_tr"], color="#2ECC71", linewidth=2.2, alpha=0.95)
-        if not jogador_2_trilho.empty:
-            ax.plot(jogador_2_trilho["x_tr"], jogador_2_trilho["y_tr"], color="#F2F2F2", linewidth=2.2, alpha=0.95)
+            if coords_jogadores:
+                xs_sel = [coords_jogadores[jogador_id][0] for jogador_id in coords_jogadores]
+                ys_sel = [coords_jogadores[jogador_id][1] for jogador_id in coords_jogadores]
+                pitch.scatter(
+                    xs_sel,
+                    ys_sel,
+                    s=500,
+                    c="#2ECC71",
+                    edgecolors="black",
+                    linewidth=1.5,
+                    ax=ax,
+                    zorder=3,
+                )
 
-        jogador_1_serie = (
-            jogador_1_trilho[["time_evento_s", "x_tr", "y_tr"]]
-            .drop_duplicates("time_evento_s")
-            .rename(columns={"x_tr": "x_1", "y_tr": "y_1"})
-        )
-        jogador_2_serie = (
-            jogador_2_trilho[["time_evento_s", "x_tr", "y_tr"]]
-            .drop_duplicates("time_evento_s")
-            .rename(columns={"x_tr": "x_2", "y_tr": "y_2"})
-        )
-        serie_distancias_rel = pd.merge(
-            jogador_1_serie,
-            jogador_2_serie,
-            on="time_evento_s",
-            how="inner",
-        ).sort_values("time_evento_s")
+            for idx, par in enumerate(pares_selecionados):
+                jogador_1_id, jogador_2_id = par.split(" - ")
+                if jogador_1_id not in coords_jogadores or jogador_2_id not in coords_jogadores:
+                    continue
+                x1, y1 = coords_jogadores[jogador_1_id]
+                x2, y2 = coords_jogadores[jogador_2_id]
+                distancia_par = float(np.hypot(x2 - x1, y2 - y1))
+                x_mid = (x1 + x2) / 2
+                y_mid = (y1 + y2) / 2
+                nome_cor, cor_par = cores_pares[idx % len(cores_pares)]
+                distancias_pares.append({"Par": par, "Cor": nome_cor, "Distancia": round(distancia_par, 2)})
+                ax.plot([x1, x2], [y1, y2], color=cor_par, linewidth=2.5, alpha=0.95)
+                ax.text(
+                    x_mid,
+                    y_mid,
+                    f"{distancia_par:.2f} m",
+                    color="black",
+                    fontsize=10,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    bbox=dict(boxstyle="round,pad=0.25", facecolor=cor_par, edgecolor="black", alpha=0.95),
+                )
 
-        if not serie_distancias_rel.empty:
-            serie_distancias_rel["distancia_m"] = np.hypot(
-                serie_distancias_rel["x_2"] - serie_distancias_rel["x_1"],
-                serie_distancias_rel["y_2"] - serie_distancias_rel["y_1"],
-            )
-            serie_distancias_rel["tempo_label"] = serie_distancias_rel["time_evento_s"].map(converter_para_relogio_fpf)
-            distancia_media_rel = float(serie_distancias_rel["distancia_m"].mean())
-            distancia_min_rel = float(serie_distancias_rel["distancia_m"].min())
-            distancia_max_rel = float(serie_distancias_rel["distancia_m"].max())
-            distancia_inicial = float(serie_distancias_rel["distancia_m"].iloc[0])
-            distancia_final = float(serie_distancias_rel["distancia_m"].iloc[-1])
-            delta_distancia_rel = distancia_final - distancia_inicial
+        plot_placeholder.pyplot(fig)
 
-            if delta_distancia_rel <= -0.25:
-                tendencia_rel = "Aproximacao"
-            elif delta_distancia_rel >= 0.25:
-                tendencia_rel = "Afastamento"
-            else:
-                tendencia_rel = "Estavel"
-
-        snapshot_rel = trilho_df.loc[trilho_df["time_evento_s"] == tempo_relativo].copy()
-        jogador_1_frame = snapshot_rel[snapshot_rel["atleta_id"].astype(str) == str(jogador_rel_1)]
-        jogador_2_frame = snapshot_rel[snapshot_rel["atleta_id"].astype(str) == str(jogador_rel_2)]
-        if not jogador_1_frame.empty and not jogador_2_frame.empty:
-            x1, y1 = jogador_1_frame[["x_tr", "y_tr"]].iloc[0]
-            x2, y2 = jogador_2_frame[["x_tr", "y_tr"]].iloc[0]
-            distancia_rel = float(np.hypot(x2 - x1, y2 - y1))
-            x_mid = (x1 + x2) / 2
-            y_mid = (y1 + y2) / 2
-            pitch.scatter([x1], [y1], s=520, c="#2ECC71", edgecolors="white", linewidth=1.5, ax=ax, zorder=4)
-            pitch.scatter([x2], [y2], s=520, c="#F2F2F2", edgecolors="black", linewidth=1.5, ax=ax, zorder=4)
-            ax.plot([x1, x2], [y1, y2], color="#FFC857", linewidth=2.5, alpha=0.95)
-            ax.text(
-                x_mid,
-                y_mid,
-                f"{distancia_rel:.2f} m",
-                color="black",
-                fontsize=10,
-                fontweight="bold",
-                ha="center",
-                va="center",
-                bbox=dict(boxstyle="round,pad=0.25", facecolor="#FFC857", edgecolor="black", alpha=0.95),
-            )
-
-    plot_placeholder.pyplot(fig)
     render_positional_footer(df_fase, momento=tempo_visualizacao, timestamps_intervalo=timestamps)
 
-    slider_placeholder.select_slider(
-        "Momento do Jogo",
-        options=timestamps,
-        format_func=converter_para_relogio_fpf,
-        key="selected_time_jogo",
-    )
-
-    if campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and not serie_distancias_rel.empty:
-        fig_dist, ax_dist = plt.subplots(figsize=(10, 3.2))
-        ax_dist.plot(serie_distancias_rel["time_evento_s"], serie_distancias_rel["distancia_m"], color="#E30613", linewidth=2.2)
-        ax_dist.scatter(
-            serie_distancias_rel["time_evento_s"].iloc[-1],
-            serie_distancias_rel["distancia_m"].iloc[-1],
-            color="#FFC857",
-            edgecolors="black",
-            s=70,
-            zorder=3,
+    if campo != "Distancia entre Linhas":
+        slider_placeholder.select_slider(
+            "Momento do Jogo",
+            options=timestamps,
+            format_func=converter_para_relogio_fpf,
+            key="selected_time_jogo",
         )
-        ax_dist.axhline(serie_distancias_rel["distancia_m"].mean(), color="#F2F2F2", linewidth=1.3, linestyle="--")
-        ax_dist.set_facecolor("#1e1e1e")
-        fig_dist.patch.set_facecolor("#1e1e1e")
-        ax_dist.tick_params(colors="white", labelsize=9)
-        ax_dist.set_ylabel("Distancia (m)", color="white")
-        ax_dist.set_xlabel("Tempo", color="white")
-        tick_positions = serie_distancias_rel["time_evento_s"].tolist()
-        tick_labels = serie_distancias_rel["tempo_label"].tolist()
-        step_ticks = max(1, len(tick_positions) // 5)
-        ax_dist.set_xticks(tick_positions[::step_ticks])
-        ax_dist.set_xticklabels(tick_labels[::step_ticks], rotation=0)
-        for spine in ax_dist.spines.values():
-            spine.set_color("#666666")
-        ax_dist.grid(axis="y", color="#444444", linestyle=":", linewidth=0.7, alpha=0.8)
-        ax_dist.set_title("Distancia entre jogadores ao longo da janela", color="white", fontsize=11)
-        fig_dist.tight_layout()
-        graph_placeholder.pyplot(fig_dist)
-
-with col_info:
-    st.subheader("Resumo do Frame")
-    st.metric("Tempo Selecionado", converter_para_relogio_fpf(selected_time))
-
-    if campo == "Distancia entre Jogadores":
-        if distancias_pares:
-            if len(distancias_pares) == 1:
-                st.metric("Distancia entre Jogadores", f"{distancias_pares[0]['Distancia']:.2f} m")
-            else:
-                df_distancias = pd.DataFrame(distancias_pares)
-                df_distancias["Distancia"] = df_distancias["Distancia"].map(lambda valor: f"{valor:.2f} m")
-                st.dataframe(df_distancias, use_container_width=True, hide_index=True)
-        else:
-            st.info("Seleciona pelo menos 2 jogadores e 1 par.")
-    elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo":
-        st.metric("Tempo do Movimento", converter_para_relogio_fpf(tempo_relativo) if tempo_relativo is not None else "N/A")
-        st.metric("Distancia Atual", f"{distancia_rel:.2f} m" if distancia_rel is not None else "N/A")
-        st.metric("Distancia Media", f"{distancia_media_rel:.2f} m" if distancia_media_rel is not None else "N/A")
-        st.metric("Distancia Minima", f"{distancia_min_rel:.2f} m" if distancia_min_rel is not None else "N/A")
-        st.metric("Distancia Maxima", f"{distancia_max_rel:.2f} m" if distancia_max_rel is not None else "N/A")
-        st.metric(
-            f"Variacao em {janela_segundos}s",
-            f"{delta_distancia_rel:+.2f} m" if delta_distancia_rel is not None else "N/A",
-            delta=tendencia_rel,
-        )
-    else:
-        if not compactacao_frame.empty:
-            st.metric("Compactacao Vertical", f"{float(compactacao_frame['comp_vertical'].iloc[0]):.2f}")
-            st.metric("Compactacao Horizontal", f"{float(compactacao_frame['comp_horizontal'].iloc[0]):.2f}")
-        else:
-            st.metric("Compactacao Vertical", "N/A")
-            st.metric("Compactacao Horizontal", "N/A")
-        st.metric("Area", f"{float(area):.2f}" if area is not None else "N/A")
 
 st.divider()
 st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas: {df_fase.shape[0]}")
