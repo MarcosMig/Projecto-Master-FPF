@@ -21,6 +21,7 @@ FIELD_VIEW_OPTIONS = [
     "Convex Hull",
     "Distancia entre Linhas",
     "Distancia entre Jogadores",
+    "Movimento Relativo de Jogadores ao Longo do Tempo",
     "Aceleração / Desaceleração",
     "Velocidade",
 ]
@@ -1017,6 +1018,40 @@ if campo == "Distancia entre Jogadores" and len(jogadores_disponiveis) >= 2:
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
     st.stop()
+elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogadores_disponiveis) >= 2:
+    control_col1, control_col2 = st.columns(2)
+    jogador_rel_1 = control_col1.selectbox(
+        "Jogador 1",
+        options=jogadores_disponiveis,
+        index=0,
+        key="mov_rel_jogador_1",
+    )
+    jogador_rel_2 = control_col2.selectbox(
+        "Jogador 2",
+        options=jogadores_disponiveis,
+        index=1 if len(jogadores_disponiveis) > 1 else 0,
+        key="mov_rel_jogador_2",
+    )
+    janela_segundos = st.selectbox(
+        "Janela Temporal (segundos)",
+        options=[1, 2, 3, 5, 10],
+        index=0,
+        key="mov_rel_janela_segundos",
+    )
+    if jogador_rel_1 == jogador_rel_2:
+        st.warning("Seleciona dois jogadores diferentes para comparar.")
+    else:
+        fig_rel = draw_animated_tracking(
+            df_intervalo,
+            timestamps,
+            movimento_relativo_jogadores=(jogador_rel_1, jogador_rel_2),
+            janela_segundos=janela_segundos,
+        )
+        st.plotly_chart(fig_rel, use_container_width=True)
+        render_positional_footer(df_fase, timestamps_intervalo=timestamps)
+        st.divider()
+        st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
+        st.stop()
 elif campo == "Convex Hull":
     st.plotly_chart(
         draw_animated_tracking(df_intervalo, timestamps, show_convex_hull=True),
