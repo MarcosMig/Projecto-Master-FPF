@@ -604,8 +604,7 @@ def draw_animated_tracking(
         if movimento_relativo_jogadores:
             jogador_1_id, jogador_2_id = movimento_relativo_jogadores
             idx_tempo = timestamps_intervalo.index(momento)
-            janela_frames = max(1, int(janela_segundos) * 10)
-            janela_timestamps = timestamps_intervalo[max(0, idx_tempo - janela_frames + 1): idx_tempo + 1]
+            janela_timestamps = timestamps_intervalo[: idx_tempo + 1]
             trilho_df = df_intervalo.loc[
                 df_intervalo["time_evento_s"].isin(janela_timestamps)
                 & df_intervalo["atleta_id"].astype(str).isin([str(jogador_1_id), str(jogador_2_id)])
@@ -1032,12 +1031,6 @@ elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogado
         index=1 if len(jogadores_disponiveis) > 1 else 0,
         key="mov_rel_jogador_2",
     )
-    janela_segundos = st.selectbox(
-        "Janela Temporal (segundos)",
-        options=[1, 2, 3, 5, 10],
-        index=0,
-        key="mov_rel_janela_segundos",
-    )
     if jogador_rel_1 == jogador_rel_2:
         st.warning("Seleciona dois jogadores diferentes para comparar.")
     else:
@@ -1045,7 +1038,6 @@ elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogado
             df_intervalo,
             timestamps,
             movimento_relativo_jogadores=(jogador_rel_1, jogador_rel_2),
-            janela_segundos=janela_segundos,
         )
         st.plotly_chart(fig_rel, use_container_width=True)
         render_positional_footer(df_fase, timestamps_intervalo=timestamps)
