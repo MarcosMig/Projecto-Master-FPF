@@ -14,6 +14,68 @@ import numpy as np
 import pandas as pd
 
 
+def scale_field_coordinates_to_pitch(
+    df: pd.DataFrame,
+    *,
+    source_x: str,
+    source_y: str,
+    target_x: str,
+    target_y: str,
+    dist_x: float,
+    dist_y: float,
+    pitch_x: float = 120.0,
+    pitch_y: float = 80.0,
+    clip: bool = True,
+    long_axis_to_x: bool = True,
+) -> pd.DataFrame:
+    """Scale local field metre coordinates to the canonical 120x80 pitch.
+
+    The input coordinates must already use the field calibration reference:
+    origin at BL, X on BL->BR, Y on BL->TL. Do not rebase by sample minima here,
+    because a single GPS outlier can shift the whole session. When the calibrated
+    long side is on local Y, map that axis to canonical X so the pitch is always
+    horizontal in StatsBomb coordinates.
+    """
+    if df is None or df.empty:
+        return df
+
+    out = df.copy()
+    x = pd.to_numeric(out.get(source_x), errors="coerce")
+    y = pd.to_numeric(out.get(source_y), errors="coerce")
+
+    dist_x = float(dist_x) if pd.notna(dist_x) and float(dist_x) > 0 else np.nan
+    dist_y = float(dist_y) if pd.notna(dist_y) and float(dist_y) > 0 else np.nan
+
+    use_swapped_axes = bool(
+        long_axis_to_x
+        and np.isfinite(dist_x)
+        and np.isfinite(dist_y)
+        and float(dist_y) > float(dist_x)
+    )
+    if use_swapped_axes:
+        canonical_x, canonical_y = y, x
+        canonical_dist_x, canonical_dist_y = dist_y, dist_x
+    else:
+        canonical_x, canonical_y = x, y
+        canonical_dist_x, canonical_dist_y = dist_x, dist_y
+
+    if np.isfinite(canonical_dist_x):
+        out[target_x] = canonical_x / canonical_dist_x * float(pitch_x)
+        if clip:
+            out[target_x] = out[target_x].clip(lower=0.0, upper=float(pitch_x))
+    else:
+        out[target_x] = np.nan
+
+    if np.isfinite(canonical_dist_y):
+        out[target_y] = canonical_y / canonical_dist_y * float(pitch_y)
+        if clip:
+            out[target_y] = out[target_y].clip(lower=0.0, upper=float(pitch_y))
+    else:
+        out[target_y] = np.nan
+
+    return out
+
+
 def normalize_pitch_xy(
     df: pd.DataFrame,
     dist_x: float,

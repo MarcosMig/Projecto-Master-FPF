@@ -335,6 +335,11 @@ def initialize_schema(force: bool = False) -> None:
         phase_id INTEGER,
         PRIMARY KEY (session_sk, athlete_sk, phase_id, time)
     );
+    ALTER TABLE samples ADD COLUMN IF NOT EXISTS x_norm DOUBLE PRECISION;
+    ALTER TABLE samples ADD COLUMN IF NOT EXISTS y_norm DOUBLE PRECISION;
+    ALTER TABLE samples ADD COLUMN IF NOT EXISTS speed_mps DOUBLE PRECISION;
+    ALTER TABLE samples ADD COLUMN IF NOT EXISTS acc_mps2 DOUBLE PRECISION;
+    CREATE INDEX IF NOT EXISTS idx_samples_session_phase_time ON samples(session_sk, phase_id, time_evento_s);
 
     -- Athlete session participation
     CREATE TABLE IF NOT EXISTS athlete_session (
@@ -528,6 +533,62 @@ def _table_has_session_rows(table_name: str, session_sk: int) -> bool:
     return df is not None and not df.empty
 
 
+def _get_session_athlete_sks(session_sk: int) -> List[int]:
+    """Collect athlete_sks linked to a session from lightweight fact tables."""
+    athlete_sks = set()
+    for table_name in ["athlete_session", "performance_metrics", "quality_metrics"]:
+        df = read_table(table_name, {"session_sk": session_sk}, columns="athlete_sk")
+        if df is None or df.empty or "athlete_sk" not in df.columns:
+            continue
+        athlete_sks.update(
+            pd.to_numeric(df["athlete_sk"], errors="coerce")
+            .dropna()
+            .astype(int)
+            .tolist()
+        )
+    return sorted(athlete_sks)
+
+
+def _delete_samples_for_session(session_sk: int) -> Dict:
+    """Delete samples in small indexed slices to avoid Supabase timeouts."""
+    stats = {"deleted": 0, "success": True, "error": None}
+    athlete_sks = _get_session_athlete_sks(session_sk)
+    phase_ids = [0, 1, 2]
+
+    try:
+        if athlete_sks:
+            for athlete_sk in athlete_sks:
+                for phase_id in phase_ids:
+                    result = delete_table_rows(
+                        "samples",
+                        {
+                            "session_sk": session_sk,
+                            "athlete_sk": athlete_sk,
+                            "phase_id": phase_id,
+                        },
+                    )
+                    stats["deleted"] += int(result.get("deleted", 0) or 0)
+                    if not result.get("success", False):
+                        stats["success"] = False
+                        stats["error"] = result.get("error")
+        else:
+            # Fallback for partial/orphan uploads where athlete_session was not written.
+            for phase_id in phase_ids:
+                result = delete_table_rows(
+                    "samples",
+                    {"session_sk": session_sk, "phase_id": phase_id},
+                )
+                stats["deleted"] += int(result.get("deleted", 0) or 0)
+                if not result.get("success", False):
+                    stats["success"] = False
+                    stats["error"] = result.get("error")
+    except Exception as exc:
+        stats["success"] = False
+        stats["error"] = str(exc)
+
+    return stats
+
+
 def cleanup_session_upload(session_sk: int, delete_session_row: bool = True) -> Dict:
     """Best-effort cleanup for a partially uploaded session."""
     stats = {"success": True, "deleted": {}, "errors": {}}
@@ -537,12 +598,17 @@ def cleanup_session_upload(session_sk: int, delete_session_row: bool = True) -> 
 
     table_order = [
         "session_reports",
-        "samples",
         "quality_metrics",
         "collective_performance_metrics",
         "performance_metrics",
         "athlete_session",
     ]
+
+    samples_result = _delete_samples_for_session(session_sk)
+    stats["deleted"]["samples"] = samples_result.get("deleted", 0)
+    if not samples_result.get("success", False):
+        stats["success"] = False
+        stats["errors"]["samples"] = samples_result.get("error")
 
     for table_name in table_order:
         result = delete_table_rows(table_name, {"session_sk": session_sk})
@@ -552,7 +618,10 @@ def cleanup_session_upload(session_sk: int, delete_session_row: bool = True) -> 
             stats["errors"][table_name] = result.get("error")
 
     if delete_session_row:
-        remaining_refs = any(_table_has_session_rows(table_name, session_sk) for table_name in table_order)
+        remaining_refs = any(
+            _table_has_session_rows(table_name, session_sk)
+            for table_name in ["samples", *table_order]
+        )
         if not remaining_refs:
             result = delete_table_rows("sessions", {"session_sk": session_sk})
             stats["deleted"]["sessions"] = result.get("deleted", 0)
@@ -693,22 +762,32 @@ def read_table(table_name: str, filters: Dict = None, columns: str = "*", limit:
     """
     client = get_supabase_client()
     
-    try:
+    def _build_query():
         query = client.table(table_name).select(columns)
-        
         if filters:
             for col, val in filters.items():
                 query = query.eq(col, val)
+        return query
 
+    try:
         if limit is not None and limit > 0:
-            query = query.limit(limit)
-        
-        response = query.execute()
-        
-        if response.data:
-            return pd.DataFrame(response.data)
-        else:
-            return pd.DataFrame()
+            response = _build_query().limit(limit).execute()
+            return pd.DataFrame(response.data) if response.data else pd.DataFrame()
+
+        page_size = 1000
+        offset = 0
+        rows = []
+        while True:
+            response = _build_query().range(offset, offset + page_size - 1).execute()
+            batch = response.data or []
+            if not batch:
+                break
+            rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
     
     except Exception as e:
         st.error(f"Error reading from {table_name}: {str(e)}")
@@ -1406,7 +1485,15 @@ def resolve_session_sk(session_fingerprint, session_payload, base_dir=CLEANDATA_
         or session_payload.get("data")
         or session_payload.get("data_sessao")
     )
+    sessions_df = read_table("sessions", columns="session_sk")
+    if sessions_df is not None and not sessions_df.empty and "session_sk" in sessions_df.columns:
+        existing_session_sks = pd.to_numeric(sessions_df["session_sk"], errors="coerce").dropna()
+        next_session_sk = int(existing_session_sks.max()) + 1 if not existing_session_sks.empty else 1
+    else:
+        next_session_sk = 1
+
     payload = pd.DataFrame([{
+        "session_sk": next_session_sk,
         "session_fingerprint": session_fingerprint,
         "started_at": pd.to_datetime(started_at, errors="coerce"),
         "device": session_payload.get("device"),

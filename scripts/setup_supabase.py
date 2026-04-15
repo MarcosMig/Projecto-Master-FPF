@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS samples (
     phase_id INTEGER,
     PRIMARY KEY (session_sk, athlete_sk, phase_id, time)
 );
+CREATE INDEX IF NOT EXISTS idx_samples_session_phase_time ON samples(session_sk, phase_id, time_evento_s);
 
 -- Athlete session participation
 CREATE TABLE IF NOT EXISTS athlete_session (

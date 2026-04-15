@@ -8,8 +8,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from scipy.spatial import ConvexHull, QhullError
 
-from fpf_modules.constants import CLEANDATA_DIR
 from fpf_modules.selections import load_selection_options
+from fpf_modules.supabase_manager import get_supabase_client, initialize_schema, read_table
 
 
 SELECTION_OPTIONS = load_selection_options()
@@ -28,25 +28,196 @@ FIELD_VIEW_OPTIONS = [
 st.set_page_config(page_title="FPF | Analise Posicional", layout="wide")
 
 
-@st.cache_data
-def load_and_merge_data():
-    tracking = pd.read_parquet(
-        f"{CLEANDATA_DIR}/tracking.parquet",
-        columns=["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"],
+@st.cache_data(ttl=120)
+def load_sessions_data():
+    initialize_schema()
+    frames = []
+
+    reports = read_table(
+        "session_reports",
+        columns="session_sk,data,selecao,genero,contexto,jogo,session_fingerprint",
     )
-    sessions = pd.read_parquet(
-        f"{CLEANDATA_DIR}/sessions.parquet",
-        columns=["session_sk", "data", "selecao", "contexto", "jogo"],
+    if reports is not None and not reports.empty:
+        frames.append(reports)
+
+    perf = read_table(
+        "performance_metrics",
+        columns="session_sk,data,selecao,genero,contexto,jogo",
+    )
+    if perf is not None and not perf.empty:
+        frames.append(perf)
+
+    if not frames:
+        return pd.DataFrame(columns=["session_sk", "data", "selecao", "genero", "contexto", "jogo"])
+
+    sessions = pd.concat(frames, ignore_index=True, sort=False)
+    for col in ["selecao", "genero", "contexto", "jogo"]:
+        if col not in sessions.columns:
+            sessions[col] = ""
+        sessions[col] = sessions[col].fillna("").astype(str).str.strip()
+
+    sessions["session_sk"] = pd.to_numeric(sessions.get("session_sk"), errors="coerce")
+    sessions = sessions[sessions["session_sk"].notna()].copy()
+    sessions["session_sk"] = sessions["session_sk"].astype(int)
+    sessions["data"] = pd.to_datetime(sessions.get("data"), errors="coerce")
+    return (
+        sessions.drop_duplicates("session_sk", keep="last")
+        .sort_values(["data", "session_sk"], ascending=[False, False], na_position="last")
+        .reset_index(drop=True)
     )
 
-    session_cols = ["session_sk", "data", "selecao", "contexto", "jogo"]
-    merged = pd.merge(
-        tracking,
-        sessions[session_cols].drop_duplicates("session_sk"),
-        how="left",
-        on="session_sk",
+
+def _phase_filter(fase: str) -> tuple[str, int | str]:
+    phase_id = {"Warm-Up": 0, "1P": 1, "2P": 2}.get(str(fase), None)
+    if phase_id is not None:
+        return "phase_id", phase_id
+    return "fase", str(fase)
+
+
+@st.cache_data(ttl=120)
+def load_phase_time_bounds(session_sk: int, fase: str) -> tuple[float | None, float | None]:
+    initialize_schema()
+    phase_id = {"Warm-Up": 0, "1P": 1, "2P": 2}.get(str(fase), None)
+    filters = {"session_sk": int(session_sk)}
+    if phase_id is not None:
+        filters["phase_id"] = phase_id
+    else:
+        filters["fase"] = str(fase)
+
+    try:
+        metrics = read_table(
+            "performance_metrics",
+            filters=filters,
+            columns="session_sk,phase_id,fase,duracao_min",
+        )
+        if metrics is None or metrics.empty or "duracao_min" not in metrics.columns:
+            return None, None
+        durations = pd.to_numeric(metrics["duracao_min"], errors="coerce").dropna()
+        durations = durations[durations > 0]
+        if durations.empty:
+            return None, None
+        return 0.0, float(durations.max() * 60.0)
+    except Exception as exc:
+        st.error(f"Error reading phase duration from performance_metrics: {exc}")
+        return None, None
+
+
+@st.cache_data(ttl=120)
+def load_tracking_for_session_phase(
+    session_sk: int,
+    fase: str,
+    start_s: float,
+    end_s: float,
+    page_size: int = 1000,
+):
+    initialize_schema()
+    client = get_supabase_client()
+    filter_col, filter_value = _phase_filter(fase)
+    columns = "session_sk,atleta_id,fase,phase_id,time_evento_s,x_utm,y_utm,x_norm,y_norm"
+    rows = []
+    try:
+        athlete_response = (
+            client.table("athlete_session")
+            .select("athlete_sk")
+            .eq("session_sk", int(session_sk))
+            .execute()
+        )
+        athlete_sks = sorted(
+            {
+                int(value)
+                for value in pd.to_numeric(
+                    pd.Series([row.get("athlete_sk") for row in (athlete_response.data or [])]),
+                    errors="coerce",
+                ).dropna().tolist()
+            }
+        )
+        if not athlete_sks:
+            return pd.DataFrame(columns=["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"])
+
+        for athlete_sk in athlete_sks:
+            offset = 0
+            while True:
+                query = (
+                    client.table("samples")
+                    .select(columns)
+                    .eq("session_sk", int(session_sk))
+                    .eq("athlete_sk", int(athlete_sk))
+                    .eq(filter_col, filter_value)
+                    .gte("time_evento_s", float(start_s))
+                    .lte("time_evento_s", float(end_s))
+                    .order("time_evento_s")
+                    .range(offset, offset + page_size - 1)
+                )
+                response = query.execute()
+                batch = response.data or []
+                if not batch:
+                    break
+                rows.extend(batch)
+                if len(batch) < page_size:
+                    break
+                offset += page_size
+    except Exception as exc:
+        st.error(f"Error reading from samples: {exc}")
+        return pd.DataFrame(columns=["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"])
+
+    if not rows:
+        try:
+            offset = 0
+            while True:
+                response = (
+                    client.table("samples")
+                    .select(columns)
+                    .eq("session_sk", int(session_sk))
+                    .eq(filter_col, filter_value)
+                    .gte("time_evento_s", float(start_s))
+                    .lte("time_evento_s", float(end_s))
+                    .order("time_evento_s")
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                )
+                batch = response.data or []
+                if not batch:
+                    break
+                rows.extend(batch)
+                if len(batch) < page_size:
+                    break
+                offset += page_size
+        except Exception as exc:
+            st.error(f"Error reading from samples: {exc}")
+            return pd.DataFrame(columns=["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"])
+
+    samples = pd.DataFrame(rows)
+    if samples is None or samples.empty:
+        return pd.DataFrame(columns=["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"])
+
+    samples["session_sk"] = pd.to_numeric(samples.get("session_sk"), errors="coerce").astype("Int64")
+    samples["time_evento_s"] = pd.to_numeric(samples.get("time_evento_s"), errors="coerce")
+    samples["atleta_id"] = samples.get("atleta_id", "").astype(str)
+    samples["fase"] = samples.get("fase", "").astype(str)
+
+    for col in ["x_utm", "y_utm", "x_norm", "y_norm"]:
+        if col not in samples.columns:
+            samples[col] = np.nan
+        samples[col] = pd.to_numeric(samples[col], errors="coerce")
+
+    norm_valid = (
+        samples["x_norm"].notna()
+        & samples["y_norm"].notna()
+        & samples["x_norm"].between(0, 120)
+        & samples["y_norm"].between(0, 80)
     )
-    return merged, sessions
+    x_norm_unique = samples.loc[norm_valid, "x_norm"].round(2).nunique()
+    y_norm_unique = samples.loc[norm_valid, "y_norm"].round(2).nunique()
+    if norm_valid.any() and (x_norm_unique <= 3 or y_norm_unique <= 3):
+        st.error(
+            "Coordenadas normalizadas sem variacao suficiente. "
+            "A sessao deve ser republicada para recalcular x_norm/y_norm a partir de x_utm/y_utm."
+        )
+
+    samples["x_tr"] = samples["x_norm"]
+    samples["y_tr"] = samples["y_norm"]
+
+    return samples[["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"]].copy()
 
 
 @st.cache_data
@@ -93,6 +264,94 @@ def build_snapshot(df_fase: pd.DataFrame, momento: float) -> pd.DataFrame:
         & df_fase["x_tr"].notna()
         & df_fase["y_tr"].notna()
     ].copy()
+
+
+def first_collective_timestamp(df_fase: pd.DataFrame, min_players: int = 10):
+    if df_fase.empty or "time_evento_s" not in df_fase.columns:
+        return None
+    valid_df = df_fase[df_fase["x_tr"].notna() & df_fase["y_tr"].notna()].copy()
+    if valid_df.empty:
+        return None
+    counts = valid_df.groupby("time_evento_s")["atleta_id"].nunique().sort_index()
+    enough = counts[counts >= int(min_players)]
+    return enough.index[0] if not enough.empty else counts.idxmax()
+
+
+def _frame_player_count(df_fase: pd.DataFrame, momento: float) -> int:
+    if df_fase.empty or momento is None:
+        return 0
+    return int(
+        df_fase.loc[
+            (df_fase["time_evento_s"] == momento)
+            & df_fase["x_tr"].notna()
+            & df_fase["y_tr"].notna(),
+            "atleta_id",
+        ].nunique()
+    )
+
+
+def _frame_status_text(n_players: int, expected_players: int = 10) -> tuple[str, str]:
+    if n_players == expected_players:
+        return "OK", f"{n_players}/{expected_players} jogadores de campo visiveis."
+    if n_players > expected_players:
+        return "POSSIVEL_SUBSTITUICAO", (
+            f"{n_players}/{expected_players} jogadores visiveis. "
+            "Possivel substituicao ou overlap GPS neste frame."
+        )
+    return "FRAME_INCOMPLETO", (
+        f"{n_players}/{expected_players} jogadores visiveis. "
+        "Frame incompleto: falha GPS, arranque desalinhado ou atleta sem coordenada valida."
+    )
+
+
+def render_positional_footer(
+    df_fase: pd.DataFrame,
+    *,
+    momento: float | None = None,
+    timestamps_intervalo: list[float] | None = None,
+    expected_players: int = 10,
+) -> None:
+    st.markdown("---")
+    footer_cols = st.columns([1.2, 2.8])
+
+    with footer_cols[0]:
+        if momento is not None:
+            n_players = _frame_player_count(df_fase, momento)
+            status, message = _frame_status_text(n_players, expected_players)
+            st.markdown("**Rodape do frame**")
+            st.caption(f"Momento: {converter_para_relogio_fpf(float(momento))}")
+            if status == "OK":
+                st.success(message)
+            elif status == "POSSIVEL_SUBSTITUICAO":
+                st.warning(message)
+            else:
+                st.error(message)
+        else:
+            st.markdown("**Rodape do intervalo**")
+            st.caption("O grafico animado usa a timeline interna do Plotly.")
+
+    with footer_cols[1]:
+        valid_df = df_fase[df_fase["x_tr"].notna() & df_fase["y_tr"].notna()].copy()
+        if timestamps_intervalo:
+            valid_df = valid_df[valid_df["time_evento_s"].isin(timestamps_intervalo)].copy()
+
+        if valid_df.empty:
+            st.error("Sem frames com coordenadas validas neste intervalo.")
+            return
+
+        counts = valid_df.groupby("time_evento_s")["atleta_id"].nunique()
+        total_frames = int(len(counts))
+        ok_frames = int((counts == expected_players).sum())
+        substitution_frames = int((counts > expected_players).sum())
+        incomplete_frames = int((counts < expected_players).sum())
+
+        st.markdown("**Resumo da fase/intervalo**")
+        st.caption(
+            f"Frames analisados: {total_frames} | "
+            f"OK: {ok_frames} ({ok_frames / max(total_frames, 1) * 100:.1f}%) | "
+            f"Possivel substituicao: {substitution_frames} ({substitution_frames / max(total_frames, 1) * 100:.1f}%) | "
+            f"Incompletos: {incomplete_frames} ({incomplete_frames / max(total_frames, 1) * 100:.1f}%)"
+        )
 
 
 def draw_pitch(snapshot: pd.DataFrame):
@@ -511,7 +770,7 @@ def draw_animated_tracking(
 
 
 try:
-    tracking_df, sessions_df = load_and_merge_data()
+    sessions_df = load_sessions_data()
 except Exception as exc:
     st.error(f"Erro ao processar dados: {exc}")
     st.stop()
@@ -573,46 +832,92 @@ fase_selected = nav_col2.radio(
     horizontal=True,
 )
 
-df_fase = tracking_df.loc[
-    (tracking_df["selecao"] == selecao)
-    & (tracking_df["contexto"] == contexto)
-    & (tracking_df["fase"] == fase_selected)
-    & (tracking_df["session_sk"] == selected_session_sk)
-].copy()
-
-timestamps = sorted(df_fase["time_evento_s"].dropna().unique().tolist()) if not df_fase.empty else []
-if not timestamps:
+min_time_s, max_time_s = load_phase_time_bounds(int(selected_session_sk), fase_selected)
+if min_time_s is None or max_time_s is None or max_time_s <= min_time_s:
     st.info("A sessao selecionada nao tem dados de tracking para esta fase.")
     st.stop()
 
 timeline_context = f"{selected_session_sk}|{fase_selected}"
-default_interval_end = timestamps[min(len(timestamps) - 1, 600)]
-default_interval = (timestamps[0], default_interval_end)
-
 if st.session_state.get("timeline_context") != timeline_context:
     st.session_state["timeline_context"] = timeline_context
-    st.session_state["selected_time_jogo"] = timestamps[0]
+    st.session_state["selected_time_jogo"] = float(min_time_s)
 
+default_end_s = min(float(max_time_s), float(min_time_s) + 60.0)
+time_options = [float(value) for value in range(int(np.floor(min_time_s)), int(np.ceil(max_time_s)) + 1)]
+default_interval = (
+    float(int(np.floor(min_time_s))),
+    float(int(np.floor(default_end_s))),
+)
 interval_start, interval_end = st.select_slider(
-    "Intervalo de tempo",
-    options=timestamps,
+    "Intervalo de análise",
+    options=time_options,
     value=default_interval,
     format_func=converter_para_relogio_fpf,
     key=f"tempo_intervalo_jogo_{timeline_context}",
+    help="Relógio da fase selecionada. Ex.: 02:40 significa 2 minutos e 40 segundos da 1P/2P.",
 )
-timestamps = [tempo for tempo in timestamps if interval_start <= tempo <= interval_end]
+interval_start = float(interval_start)
+interval_end = float(interval_end)
+if interval_end <= interval_start:
+    st.warning("Escolhe um fim de intervalo superior ao inicio.")
+    st.stop()
+
+max_window_s = 300.0
+if interval_end - interval_start > max_window_s:
+    st.warning(
+        "Para evitar timeout, escolhe uma janela ate 5 minutos. "
+        "Depois podes mover o intervalo ao longo da fase."
+    )
+    st.stop()
+
 st.caption(
-    f"Intervalo selecionado: {converter_para_relogio_fpf(interval_start)} - {converter_para_relogio_fpf(interval_end)}"
+    "Fase disponivel: "
+    f"{converter_para_relogio_fpf(min_time_s)} - {converter_para_relogio_fpf(max_time_s)}"
 )
+st.caption(
+    "Intervalo selecionado: "
+    f"{converter_para_relogio_fpf(interval_start)} - {converter_para_relogio_fpf(interval_end)}"
+)
+
+with st.spinner("A carregar tracking apenas para o intervalo selecionado..."):
+    df_fase = load_tracking_for_session_phase(
+        int(selected_session_sk),
+        fase_selected,
+        interval_start,
+        interval_end,
+    )
+
+timestamps = sorted(df_fase["time_evento_s"].dropna().unique().tolist()) if not df_fase.empty else []
+if not timestamps:
+    st.info("A sessao selecionada nao tem dados de tracking neste intervalo.")
+    st.stop()
+
+first_valid_time = first_collective_timestamp(df_fase, min_players=10)
+default_start = first_valid_time if first_valid_time in timestamps else timestamps[0]
 
 selected_time = st.session_state.get("selected_time_jogo", timestamps[0])
 if selected_time not in timestamps:
-    selected_time = timestamps[0]
+    selected_time = default_start
 st.session_state["selected_time_jogo"] = selected_time
+
+expected_players = int(df_fase["atleta_id"].nunique()) if "atleta_id" in df_fase.columns else 0
+frame_players = int(
+    df_fase.loc[
+        (df_fase["time_evento_s"] == selected_time)
+        & df_fase["x_tr"].notna()
+        & df_fase["y_tr"].notna(),
+        "atleta_id",
+    ].nunique()
+)
+st.caption(
+    f"Atletas com dados na fase: {expected_players} | "
+    f"Atletas com coordenadas validas neste momento: {frame_players}"
+)
 
 if campo == "Movimento dos Jogadores":
     df_intervalo = df_fase.loc[df_fase["time_evento_s"].isin(timestamps)].copy()
     st.plotly_chart(draw_animated_tracking(df_intervalo, timestamps), use_container_width=True)
+    render_positional_footer(df_fase, timestamps_intervalo=timestamps)
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
     st.stop()
@@ -674,6 +979,7 @@ if campo == "Distancia entre Jogadores" and len(jogadores_disponiveis) >= 2:
         draw_animated_tracking(df_intervalo, timestamps, pares_selecionados=pares_selecionados),
         use_container_width=True,
     )
+    render_positional_footer(df_fase, timestamps_intervalo=timestamps)
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
     st.stop()
@@ -682,6 +988,7 @@ elif campo == "Convex Hull":
         draw_animated_tracking(df_intervalo, timestamps, show_convex_hull=True),
         use_container_width=True,
     )
+    render_positional_footer(df_fase, timestamps_intervalo=timestamps)
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
     st.stop()
@@ -719,6 +1026,7 @@ elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogado
         ),
         use_container_width=True,
     )
+    render_positional_footer(df_fase, timestamps_intervalo=timestamps)
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo.shape[0]}")
     st.stop()
@@ -729,6 +1037,7 @@ elif campo == "Aceleração / Desaceleração":
         use_container_width=True,
     )
     st.caption("Valores em m/s². Aceleração acima do atleta e desaceleração abaixo.")
+    render_positional_footer(df_fase, timestamps_intervalo=timestamps)
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo_acc.shape[0]}")
     st.stop()
@@ -741,6 +1050,7 @@ elif campo == "Velocidade":
     st.caption(
         f"Velocidade em m/s por cima e km/h por baixo. Valores >= {VELOCIDADE_SENSACIONAL_KM_H:.0f} km/h aparecem a vermelho."
     )
+    render_positional_footer(df_fase, timestamps_intervalo=timestamps)
     st.divider()
     st.caption(f"FPF UTM Engine v16 | Tracking rows carregadas no intervalo: {df_intervalo_vel.shape[0]}")
     st.stop()
@@ -898,6 +1208,7 @@ with col_map:
             )
 
     plot_placeholder.pyplot(fig)
+    render_positional_footer(df_fase, momento=tempo_visualizacao, timestamps_intervalo=timestamps)
 
     slider_placeholder.select_slider(
         "Momento do Jogo",

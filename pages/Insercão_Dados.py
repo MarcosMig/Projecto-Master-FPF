@@ -80,6 +80,7 @@ from fpf_modules.pipeline import (
 )
 
 from fpf_modules.supabase_manager import (
+    cleanup_session_upload,
     initialize_schema,
     insert_or_update_table,
     read_table,
@@ -92,7 +93,8 @@ from fpf_modules.supabase_manager import (
 from fpf_modules.auth_manager import authenticate_user, get_secrets_auth
 
 from fpf_modules.normalize import (
-    normalize_tracking_data
+    normalize_tracking_data,
+    scale_field_coordinates_to_pitch,
 )
 GEOD = Geod(ellps="WGS84")  # WGS84 geodesic distance (metros reais)
 
@@ -368,6 +370,28 @@ def _find_potential_duplicate_sessions(
     return df_existing[keep_cols].drop_duplicates().sort_values(
         [c for c in ["data", "session_sk", "atleta_id"] if c in keep_cols]
     )
+
+
+def _session_sks_to_overwrite(session_payload: dict, duplicate_sessions_df: pd.DataFrame) -> list[int]:
+    """Find existing published sessions that should be replaced by this draft."""
+    session_sks: set[int] = set()
+
+    if duplicate_sessions_df is not None and not duplicate_sessions_df.empty and "session_sk" in duplicate_sessions_df.columns:
+        values = pd.to_numeric(duplicate_sessions_df["session_sk"], errors="coerce").dropna()
+        session_sks.update(values.astype(int).tolist())
+
+    session_fingerprint = str(session_payload.get("session_fingerprint") or "").strip()
+    if session_fingerprint:
+        existing_df = read_table(
+            "sessions",
+            filters={"session_fingerprint": session_fingerprint},
+            columns="session_sk,session_fingerprint",
+        )
+        if existing_df is not None and not existing_df.empty and "session_sk" in existing_df.columns:
+            values = pd.to_numeric(existing_df["session_sk"], errors="coerce").dropna()
+            session_sks.update(values.astype(int).tolist())
+
+    return sorted(session_sks)
 
 
 def _detect_hr_col(df: pd.DataFrame):
@@ -1176,6 +1200,69 @@ def _build_samples_export(out_files, session_fingerprint: str, athlete_map: dict
     return df_samples, df_athlete_session
 
 
+def _enrich_samples_tracking_columns(
+    df_samples: pd.DataFrame,
+    dist_x: float,
+    dist_y: float,
+    pitch_x: float = 120.0,
+    pitch_y: float = 80.0,
+) -> pd.DataFrame:
+    """Add publishable pitch coordinates and kinematics to sample rows.
+
+    x_utm/y_utm are the rotated local field coordinates in real metres. The
+    x_norm/y_norm columns are the same positions scaled to the 120x80 pitch used
+    by the analysis views.
+    """
+    if df_samples is None or df_samples.empty:
+        return df_samples
+
+    out = df_samples.copy()
+    for col in ["x_utm", "y_utm"]:
+        if col not in out.columns:
+            out[col] = np.nan
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    out = scale_field_coordinates_to_pitch(
+        out,
+        source_x="x_utm",
+        source_y="y_utm",
+        target_x="x_norm",
+        target_y="y_norm",
+        dist_x=dist_x,
+        dist_y=dist_y,
+        pitch_x=pitch_x,
+        pitch_y=pitch_y,
+        clip=True,
+    )
+
+    time_col = "time_evento_s" if "time_evento_s" in out.columns else "time"
+    out["_sort_time_s"] = (
+        pd.to_numeric(out[time_col], errors="coerce")
+        if time_col == "time_evento_s"
+        else time_to_seconds(out[time_col])
+    )
+    out["speed_mps"] = np.nan
+    out["acc_mps2"] = np.nan
+
+    group_cols = [col for col in ["atleta_id", "fase"] if col in out.columns]
+    grouped = out.groupby(group_cols, dropna=False, sort=False) if group_cols else [(None, out)]
+    for _, group in grouped:
+        idx = group.sort_values("_sort_time_s").index
+        if len(idx) < 2:
+            continue
+        t = pd.to_numeric(out.loc[idx, "_sort_time_s"], errors="coerce")
+        x = pd.to_numeric(out.loc[idx, "x_utm"], errors="coerce")
+        y = pd.to_numeric(out.loc[idx, "y_utm"], errors="coerce")
+        dt = t.diff()
+        step = np.hypot(x.diff(), y.diff())
+        speed = (step / dt).where(dt > 0)
+        acc = (speed.diff() / dt).where(dt > 0)
+        out.loc[idx, "speed_mps"] = speed
+        out.loc[idx, "acc_mps2"] = acc
+
+    return out.drop(columns=["_sort_time_s"], errors="ignore")
+
+
 def _build_draft_exports(df_metrics: pd.DataFrame, out_files, session_payload: dict, field_data: pd.DataFrame):
     df_metrics_draft = df_metrics.copy()
     df_metrics_draft["session_fingerprint"] = session_payload["session_fingerprint"]
@@ -1222,6 +1309,11 @@ def _build_draft_exports(df_metrics: pd.DataFrame, out_files, session_payload: d
         session_payload["session_fingerprint"],
     )
     if not df_samples.empty:
+        df_samples = _enrich_samples_tracking_columns(
+            df_samples,
+            dist_x=field_data["dist_x"][0],
+            dist_y=field_data["dist_y"][0],
+        )
         df_samples = df_samples.drop_duplicates(
             subset=["session_fingerprint", "atleta_id", "phase_id", "time"],
             keep="last",
@@ -1368,10 +1460,14 @@ def _prepare_publish_payloads(
             "n_jumps_gt15m", "n_gaps_gt2s_qc",
         ]
     ].copy()
+    for col in ["x_norm", "y_norm", "speed_mps", "acc_mps2"]:
+        if col not in df_samples_publish.columns:
+            df_samples_publish[col] = np.nan
     df_samples_publish = df_samples_publish[
         [
             "session_sk", "athlete_sk", "atleta_id", "fase", "time", "time_evento_s", "time_evento",
-            "periodo_jogo", "minuto_jogo", "lat", "lon", "x_utm", "y_utm", "hr_bpm", "phase_id",
+            "periodo_jogo", "minuto_jogo", "lat", "lon", "x_utm", "y_utm", "x_norm", "y_norm",
+            "speed_mps", "acc_mps2", "hr_bpm", "phase_id",
         ]
     ].copy()
     if not df_samples_publish.empty:
@@ -3023,9 +3119,9 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
             st.caption("Sessões potencialmente coincidentes já gravadas:")
             st.dataframe(duplicate_sessions_df, use_container_width=True, hide_index=True)
             allow_duplicate_publish = st.checkbox(
-                "Permitir gravação mesmo assim",
+                "Substituir a sessão existente",
                 key="allow_duplicate_publish",
-                help="Usa esta opção apenas se quiseres substituir ou atualizar uma sessão já publicada.",
+                help="Apaga primeiro os dados publicados desta sessão e grava o processamento atual por cima.",
             )
 
         if publish_clicked:
@@ -3046,6 +3142,33 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
             try:
                 publish_payload = st.session_state.get("draft_session_payload") or {}
                 publish_context = st.session_state.get("draft_context") or {}
+                overwritten_session_sks: list[int] = []
+                session_sk_value = pd.NA
+                if not duplicate_sessions_df.empty and allow_duplicate_publish:
+                    overwritten_session_sks = _session_sks_to_overwrite(publish_payload, duplicate_sessions_df)
+                    if not overwritten_session_sks:
+                        raise RuntimeError(
+                            "Não foi possível identificar a sessão existente a substituir."
+                        )
+                    progress_bar.progress(0.05, text="A substituir sessão existente...")
+                    progress_text.caption(
+                        "A limpar dados antigos da sessão: "
+                        + ", ".join(str(sk) for sk in overwritten_session_sks)
+                    )
+                    cleanup_errors = {}
+                    for session_sk_existing in overwritten_session_sks:
+                        cleanup_stats = cleanup_session_upload(
+                            int(session_sk_existing),
+                            delete_session_row=True,
+                        )
+                        if not cleanup_stats.get("success", False):
+                            cleanup_errors[session_sk_existing] = cleanup_stats.get("errors") or cleanup_stats.get("error")
+                    if cleanup_errors:
+                        raise RuntimeError(
+                            "Falha ao limpar a sessão existente antes do overwrite: "
+                            f"{cleanup_errors}"
+                        )
+
                 df_perf_publish, df_collective_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish = _prepare_publish_payloads(
                     df_perf_draft=st.session_state.df_perf,
                     df_collective_perf_draft=st.session_state.df_collective_perf,
@@ -3058,6 +3181,15 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                     athlete_registry_df=athlete_registry_df,
                     base_dir=CLEANDATA_DIR,
                 )
+                for candidate_df in [df_perf_publish, df_collective_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish]:
+                    if candidate_df is not None and not candidate_df.empty and "session_sk" in candidate_df.columns:
+                        candidate_series = pd.to_numeric(candidate_df["session_sk"], errors="coerce").dropna()
+                        if not candidate_series.empty:
+                            session_sk_value = int(candidate_series.iloc[0])
+                            break
+                if pd.isna(session_sk_value):
+                    raise RuntimeError("Não foi possível identificar a session_sk preparada para publicação.")
+
                 progress_bar.progress(0.2, text="Dados preparados. A iniciar transferência...")
                 progress_text.caption("Passo de preparação concluído.")
 
@@ -3069,15 +3201,7 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                     df_athlete_session_publish,
                     progress_callback=_on_db_progress,
                 )
-                session_sk_value = pd.NA
-                for candidate_df in [df_perf_publish, df_collective_perf_publish, df_qc_publish, df_samples_publish, df_athlete_session_publish]:
-                    if candidate_df is not None and not candidate_df.empty and "session_sk" in candidate_df.columns:
-                        candidate_series = pd.to_numeric(candidate_df["session_sk"], errors="coerce").dropna()
-                        if not candidate_series.empty:
-                            session_sk_value = int(candidate_series.iloc[0])
-                            break
 
-                report_registry_error = None
                 try:
                     save_session_report(
                         {
@@ -3093,7 +3217,10 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                         }
                     )
                 except Exception as report_exc:
-                    report_registry_error = str(report_exc)
+                    raise RuntimeError(
+                        "A sessão foi gravada parcialmente, mas o registo do relatório técnico falhou. "
+                        f"Detalhe: {report_exc}"
+                    ) from report_exc
                 progress_bar.progress(1.0, text="Transferência concluída.")
                 progress_text.caption("Passo finalizado: todos os envios terminaram.")
 
@@ -3105,10 +3232,10 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
                         stats_msg += f"• **{table}**: {inserted} inseridos, {updated} atualizados\n"
 
                 st.success("✅ Dados gravados com sucesso no Supabase.")
-                if report_registry_error:
-                    st.warning(
-                        "Os dados da sessão foram publicados, mas o registo do relatório técnico não foi guardado. "
-                        f"Detalhe: {report_registry_error}"
+                if overwritten_session_sks:
+                    st.info(
+                        "Sessão substituída antes da gravação: "
+                        + ", ".join(str(sk) for sk in overwritten_session_sks)
                     )
                 st.markdown(stats_msg)
                 st.session_state.publish_success = True
@@ -3116,6 +3243,43 @@ def _render_database_integration_section(f_atleta, genero, selecao, data_sessao,
             except Exception as e:
                 progress_bar.progress(1.0, text="Transferência interrompida.")
                 progress_text.caption("A transferência foi interrompida por um erro.")
+                cleanup_targets: list[int] = []
+                if "session_sk_value" in locals() and pd.notna(session_sk_value):
+                    cleanup_targets.append(int(session_sk_value))
+                elif "publish_payload" in locals():
+                    session_fingerprint = str(publish_payload.get("session_fingerprint") or "").strip()
+                    if session_fingerprint:
+                        try:
+                            existing_df = read_table(
+                                "sessions",
+                                filters={"session_fingerprint": session_fingerprint},
+                                columns="session_sk,session_fingerprint",
+                            )
+                            if existing_df is not None and not existing_df.empty and "session_sk" in existing_df.columns:
+                                values = pd.to_numeric(existing_df["session_sk"], errors="coerce").dropna()
+                                cleanup_targets.extend(values.astype(int).tolist())
+                        except Exception:
+                            pass
+                cleanup_targets = sorted(set(cleanup_targets))
+                if cleanup_targets:
+                    cleanup_errors = {}
+                    for session_sk_partial in cleanup_targets:
+                        cleanup_stats = cleanup_session_upload(
+                            int(session_sk_partial),
+                            delete_session_row=True,
+                        )
+                        if not cleanup_stats.get("success", False):
+                            cleanup_errors[session_sk_partial] = cleanup_stats.get("errors") or cleanup_stats.get("error")
+                    if cleanup_errors:
+                        st.warning(
+                            "A publicação falhou e a limpeza automática também teve erros: "
+                            f"{cleanup_errors}"
+                        )
+                    else:
+                        st.info(
+                            "A publicação falhou. A sessão parcial foi eliminada da BD: "
+                            + ", ".join(str(sk) for sk in cleanup_targets)
+                        )
                 st.error(f"❌ Erro ao gravar: {str(e)}")
     else:
         st.empty()

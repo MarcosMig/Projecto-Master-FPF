@@ -12,3 +12,4 @@ scikit-learn
 plotly
 matplotlib
 pyarrow
+psycopg[binary]

@@ -20,6 +20,8 @@ from .supabase_manager import (
 
 HR_CANDIDATE_COLS = ["HR_bpm", "HR", "HeartRate", "Heart Rate", "Heart_Rate", "BPM", "Pulse"]
 EXPECTED_HZ = 10.0
+MICRO_GAP_MAX_S = 0.3
+MICRO_GAP_MAX_SAMPLES = max(1, int(round(EXPECTED_HZ * MICRO_GAP_MAX_S)))
 
 
 def _detect_hr_col(df: pd.DataFrame):
@@ -85,7 +87,7 @@ def _build_event_clock(fases_dict_s: dict) -> dict:
 
 def _fill_temporal_sample_gaps(
     df_sync: pd.DataFrame,
-    max_gap_samples: int = 1,
+    max_gap_samples: int = MICRO_GAP_MAX_SAMPLES,
 ) -> tuple[pd.DataFrame, int]:
     """Preenche gaps curtos de amostragem no SYNC por fase.
 
@@ -210,8 +212,8 @@ def processar_atletas_para_temp(
                 df["Y_UTM"] = p_loc[:, 1]
 
                 nan_before = int(df["X_UTM"].isna().sum() + df["Y_UTM"].isna().sum())
-                df["X_UTM"] = df["X_UTM"].interpolate(limit=1, limit_direction="both")
-                df["Y_UTM"] = df["Y_UTM"].interpolate(limit=1, limit_direction="both")
+                df["X_UTM"] = df["X_UTM"].interpolate(limit=MICRO_GAP_MAX_SAMPLES, limit_direction="both")
+                df["Y_UTM"] = df["Y_UTM"].interpolate(limit=MICRO_GAP_MAX_SAMPLES, limit_direction="both")
                 nan_after = int(df["X_UTM"].isna().sum() + df["Y_UTM"].isna().sum())
                 df["_micro_gaps_corrigidos"] = max(0, nan_before - nan_after)
 
@@ -340,7 +342,7 @@ def sincronizar(temp_files, out_dir: Path):
         df_sync["Minuto_Jogo"] = np.floor(df_sync["Time_Evento_s"] / 60.0)
         df_sync.loc[df_sync["Time_Evento_s"].isna(), "Minuto_Jogo"] = np.nan
         df_sync["Minuto_Jogo"] = df_sync["Minuto_Jogo"].astype("Int64")
-        df_sync, sample_gaps_corrigidos = _fill_temporal_sample_gaps(df_sync, max_gap_samples=1)
+        df_sync, sample_gaps_corrigidos = _fill_temporal_sample_gaps(df_sync, max_gap_samples=MICRO_GAP_MAX_SAMPLES)
         df_sync["_sample_gaps_corrigidos"] = sample_gaps_corrigidos
         df_sync = df_sync.drop(columns=["__time_s"])
 
