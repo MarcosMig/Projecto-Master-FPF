@@ -116,12 +116,62 @@ def normaliza_direcao_ataque(df, largura_campo_x = 120, comprimento_campo_y =80)
 
     return df
 
+
+def _interpolate_short_tracking_gaps(
+    tracking: pd.DataFrame,
+    max_gap_s: float,
+    sample_hz: float,
+) -> pd.DataFrame:
+    """Interpolate short in-window gaps without bridging substitutions.
+
+    Assumes the synchronized export already contains the full per-player time grid.
+    Interpolation is restricted to NaNs between the first and last valid sample of
+    each player/phase, so pre-entry and post-exit intervals remain missing.
+    """
+    if tracking is None or tracking.empty:
+        return tracking
+
+    required_cols = {"atleta_id", "fase", "x_utm", "y_utm"}
+    if not required_cols.issubset(tracking.columns):
+        return tracking
+
+    limit_frames = max(1, int(round(float(max_gap_s) * float(sample_hz))))
+    out = tracking.copy()
+
+    sort_cols = [col for col in ["atleta_id", "fase", "time_evento_s", "time"] if col in out.columns]
+    if sort_cols:
+        out = out.sort_values(sort_cols).copy()
+
+    for _, group_idx in out.groupby(["atleta_id", "fase"], sort=False).groups.items():
+        idx = list(group_idx)
+        group = out.loc[idx, ["x_utm", "y_utm"]].copy()
+
+        for coord_col in ["x_utm", "y_utm"]:
+            series = pd.to_numeric(group[coord_col], errors="coerce")
+            if series.notna().sum() < 2:
+                continue
+
+            group[coord_col] = series.interpolate(
+                method="linear",
+                limit=limit_frames,
+                limit_direction="both",
+                limit_area="inside",
+            )
+
+        out.loc[idx, ["x_utm", "y_utm"]] = group[["x_utm", "y_utm"]].to_numpy()
+
+    return out
+
 def normalize_tracking_data(
     df,
     dist_x,
     dist_y,
     pitch_x = 120,
-    pitch_y = 80
+    pitch_y = 80,
+    clip_tolerance_m=0.5,
+    raw_tolerance_m=5.0,
+    short_gap_max_s=0.5,
+    sample_hz=10.0,
 ):
     """Takes normalized meters and converts them to the target coordinate system.
     By default uses Statsbomb coordinates:
@@ -144,12 +194,59 @@ def normalize_tracking_data(
     """
     tracking = df.copy()
 
-    # Scale data using
-    tracking['x_tr'] = (tracking['x_utm'] / dist_x) * pitch_x
-    tracking['y_tr'] = (tracking['y_utm'] / dist_y) * pitch_y
+    x_utm_raw = pd.to_numeric(tracking['x_utm'], errors='coerce')
+    y_utm_raw = pd.to_numeric(tracking['y_utm'], errors='coerce')
+
+    x_under = (0.0 - x_utm_raw).clip(lower=0.0)
+    x_over = (x_utm_raw - float(dist_x)).clip(lower=0.0)
+    y_under = (0.0 - y_utm_raw).clip(lower=0.0)
+    y_over = (y_utm_raw - float(dist_y)).clip(lower=0.0)
+    max_oob_m = pd.concat([x_under, x_over, y_under, y_over], axis=1).max(axis=1)
+
+    small_oob = (max_oob_m > 0.0) & (max_oob_m <= float(clip_tolerance_m))
+    large_oob = (max_oob_m > float(clip_tolerance_m)) & (max_oob_m <= float(raw_tolerance_m))
+    gross_oob = max_oob_m > float(raw_tolerance_m)
+
+    tracking['flag_oob_small_clip'] = small_oob.fillna(False)
+    tracking['flag_oob_drop'] = (large_oob | gross_oob).fillna(False)
+    tracking['flag_interpolated_short_gap'] = False
+    tracking['oob_distance_m'] = pd.to_numeric(max_oob_m, errors='coerce').fillna(0.0)
+
+    x_utm = x_utm_raw.copy()
+    y_utm = y_utm_raw.copy()
+
+    # Large out-of-bounds points are treated as missing instead of being glued to the line.
+    drop_mask = (large_oob | gross_oob).fillna(False)
+    if drop_mask.any():
+        x_utm = x_utm.mask(drop_mask)
+        y_utm = y_utm.mask(drop_mask)
+
+    # Minor GPS overshoot around the touchlines is clipped back into the field.
+    x_utm = x_utm.clip(lower=0.0, upper=float(dist_x))
+    y_utm = y_utm.clip(lower=0.0, upper=float(dist_y))
+
+    pre_interp_missing = x_utm.isna() | y_utm.isna()
+
+    tracking['x_utm'] = x_utm
+    tracking['y_utm'] = y_utm
+    tracking = _interpolate_short_tracking_gaps(
+        tracking,
+        max_gap_s=float(short_gap_max_s),
+        sample_hz=float(sample_hz),
+    )
+    x_utm = pd.to_numeric(tracking['x_utm'], errors='coerce')
+    y_utm = pd.to_numeric(tracking['y_utm'], errors='coerce')
+    post_interp_filled = pre_interp_missing & x_utm.notna() & y_utm.notna()
+    tracking['flag_interpolated_short_gap'] = post_interp_filled.fillna(False)
+
+    tracking['x_tr'] = (x_utm / float(dist_x)) * float(pitch_x)
+    tracking['y_tr'] = (y_utm / float(dist_y)) * float(pitch_y)
 
     # Obter Direção de Ataque e Normalizar de forma a que ataquem sempre L -> R
     tracking = obter_direcao_ataque(tracking, pitch_x)
     tracking = normaliza_direcao_ataque(tracking, pitch_x, pitch_y)
+
+    tracking['x_tr'] = pd.to_numeric(tracking['x_tr'], errors='coerce').clip(lower=0.0, upper=float(pitch_x))
+    tracking['y_tr'] = pd.to_numeric(tracking['y_tr'], errors='coerce').clip(lower=0.0, upper=float(pitch_y))
 
     return tracking

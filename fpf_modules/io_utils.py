@@ -44,6 +44,7 @@ def hash_session(
     genero,
     contexto,
     estadio,
+    adversario,
     f_campo_files,
     f_atleta_files
     ) -> str:
@@ -55,6 +56,7 @@ def hash_session(
     h.update(str(genero).encode("utf-8"))
     h.update(str(contexto).encode("utf-8"))
     h.update(str(estadio).encode("utf-8"))
+    h.update(str(adversario).encode("utf-8"))
 
     def _feed_files(files):
         for uf in sorted(files, key=lambda x: x.name):
