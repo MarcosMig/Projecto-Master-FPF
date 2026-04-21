@@ -67,6 +67,108 @@ def get_secrets_auth() -> tuple[str | None, str | None]:
         return None, None
 
 
+def ensure_auth_state() -> None:
+    defaults = {
+        "auth": False,
+        "login_user": "",
+        "login_role": "",
+        "login_source": "",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def login_user(user: dict) -> None:
+    st.session_state.auth = True
+    st.session_state.login_user = str(user.get("username", ""))
+    st.session_state.login_role = str(user.get("role", "viewer"))
+    st.session_state.login_source = str(user.get("source", ""))
+
+
+def logout_user() -> None:
+    for key in ("auth", "login_user", "login_role", "login_source", "admin_auth", "admin_user"):
+        st.session_state.pop(key, None)
+    ensure_auth_state()
+
+
+def render_login_page() -> None:
+    ensure_auth_state()
+    st.markdown(
+        """
+        <style>
+          .stApp { background-color: #0e1117; }
+          header, footer {visibility: hidden;}
+          [data-testid="stSidebar"] {display: none;}
+          .main .block-container {
+            background: transparent !important;
+            box-shadow: none !important;
+            border: none !important;
+            padding-top: 10vh !important;
+            max-width: 430px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+          }
+          [data-testid="stVerticalBlock"] {
+            gap: 0.85rem;
+          }
+          .login-title{
+            text-align: center;
+            color: #ffffff;
+            font-size: 1.8rem;
+            font-weight: 800;
+            margin: 0 0 1rem 0;
+            letter-spacing: 0;
+          }
+          .stTextInput input{
+            background: #0e1117 !important;
+            border: 1px solid #30363d !important;
+            border-radius: 10px !important;
+            height: 2.75rem;
+          }
+          .stButton > button{
+            width: 100%;
+            background: #E30613 !important;
+            color: #fff !important;
+            font-weight: 800;
+            border: 0;
+            height: 2.8rem;
+            border-radius: 10px;
+            margin-top: 0.35rem;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    left, center, right = st.columns([1, 1.35, 1])
+    with center:
+        st.markdown('<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
+
+        username = st.text_input("Utilizador", key="global_login_user")
+        password = st.text_input("Password", type="password", key="global_login_password")
+
+        if st.button("Entrar", type="primary"):
+            auth_result = authenticate_user(username, password)
+            if auth_result.get("success"):
+                login_user(auth_result.get("user", {}))
+                st.rerun()
+            st.error("Credenciais invalidas.")
+
+
+def require_login() -> None:
+    ensure_auth_state()
+    if not st.session_state.auth:
+        render_login_page()
+        st.stop()
+
+
+def require_admin() -> None:
+    require_login()
+    if st.session_state.get("login_role") != "admin":
+        st.error("Acesso reservado a administradores.")
+        st.stop()
+
+
 def list_users() -> pd.DataFrame:
     users = _load_users()
     rows = []

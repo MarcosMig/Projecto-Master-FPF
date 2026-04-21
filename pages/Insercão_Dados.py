@@ -182,6 +182,7 @@ def _create_inline_athlete(
     nome = _clean_text_value(nome)
     sobrenome = _clean_text_value(sobrenome)
     genero = _genero_label_to_code(genero_label)
+    selecao_value = _clean_text_value(selecao_value)
     atleta_id = _generate_internal_atleta_id(athletes_df)
 
     if not nome:
@@ -190,6 +191,8 @@ def _create_inline_athlete(
         raise RuntimeError("O campo Sobrenome e obrigatorio.")
     if not genero:
         raise RuntimeError("O campo Genero e obrigatorio.")
+    if not selecao_value:
+        raise RuntimeError("Seleciona a Seleção da sessão antes de criar atletas.")
 
     available_columns = set(athletes_df.columns.astype(str).tolist()) if not athletes_df.empty else set()
     payload = {
@@ -202,7 +205,7 @@ def _create_inline_athlete(
     }
     optional_payload = {
         "foto_url": "",
-        "selecao": _clean_text_value(selecao_value),
+        "selecao": selecao_value,
         "hr_max_bpm": None,
         "hr_rest_bpm": None,
     }
@@ -496,6 +499,7 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
     state_selection_key = "athlete_registry_editor_selection"
     selection_filter_key = "athlete_registry_selection_filter"
     existing = st.session_state.get(state_key)
+    session_selection_code = str(selecao_default or "").strip()
 
     selection_options = ["Masculino", "Feminino"]
     genero_code = str(genero_default or "").strip().upper()
@@ -511,7 +515,7 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
         key=selection_filter_key,
     )
 
-    db_athletes = load_active_athletes_by_selection(selected_selection)
+    db_athletes = load_active_athletes_by_selection(session_selection_code or selected_selection)
     athlete_options = db_athletes["atleta_id"].astype(str).tolist() if not db_athletes.empty else []
     db_profiles = (
         db_athletes.set_index("atleta_id").to_dict(orient="index")
@@ -560,7 +564,7 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
         "pe_preferencial": "",
         "altura_cm": np.nan,
         "peso_kg": np.nan,
-        "selecao": selected_selection or "",
+        "selecao": session_selection_code or selected_selection or "",
     }
     for col, default in defaults.items():
         if col not in editor_df.columns:
@@ -575,81 +579,95 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
             continue
         for col in defaults:
             if col == "selecao":
-                editor_df.at[idx, col] = selected_selection or ""
+                editor_df.at[idx, col] = session_selection_code or selected_selection or ""
                 continue
             current_value = editor_df.at[idx, col]
             if pd.isna(current_value) or current_value == "":
                 editor_df.at[idx, col] = profile.get(col, current_value)
 
-    editor_df["selecao"] = selected_selection or ""
+    editor_df["selecao"] = session_selection_code or selected_selection or ""
 
-    if selected_selection:
+    if session_selection_code:
+        st.caption(f"Atletas ativos na base de dados para {session_selection_code}: {len(db_athletes)}")
+    elif selected_selection:
         st.caption(f"Atletas ativos na base de dados para {selected_selection}: {len(db_athletes)}")
     if selected_selection and not athlete_options:
-        st.warning(f"Sem atletas ativos registados para {selected_selection}.")
+        st.warning(f"Sem atletas ativos registados para {session_selection_code or selected_selection}.")
 
-    header_left, header_right = st.columns([1, 1.25], gap="medium")
-    header_left.markdown("**ID no ficheiro**")
-    header_right.markdown("**Atleta da base de dados**")
-
-    selected_ids = set()
-    resolved_rows = []
     display_labels = list(display_to_athlete_id.keys())
+    all_available_labels = list(dict.fromkeys([""] + [label for label in display_labels if label]))
+    resolved_rows = []
+    relationship_submitted = False
 
-    for idx, row in editor_df.reset_index(drop=True).iterrows():
-        row_left, row_right = st.columns([1, 1.25], gap="medium")
-        atleta_ficheiro = str(row.get("atleta_id_ficheiro", "")).strip()
-        current_athlete_id = str(row.get("atleta_id", "")).strip()
-        if current_athlete_id and current_athlete_id in selected_ids:
-            current_athlete_id = ""
-        current_label = athlete_display_map.get(current_athlete_id, "")
+    with st.form(f"athlete_registry_relation_form_{selected_selection}"):
+        header_left, header_right = st.columns([1, 1.25], gap="medium")
+        header_left.markdown("**ID no ficheiro**")
+        header_right.markdown("**Atleta da base de dados**")
 
-        row_left.text(atleta_ficheiro)
+        for idx, row in editor_df.reset_index(drop=True).iterrows():
+            row_left, row_right = st.columns([1, 1.25], gap="medium")
+            atleta_ficheiro = str(row.get("atleta_id_ficheiro", "")).strip()
+            current_athlete_id = str(row.get("atleta_id", "")).strip()
+            current_label = athlete_display_map.get(current_athlete_id, "")
+            available_labels = all_available_labels.copy()
+            if current_label and current_label not in available_labels:
+                available_labels.append(current_label)
 
-        available_labels = [""]
-        for label in display_labels:
-            athlete_id = display_to_athlete_id.get(label, "")
-            if not athlete_id:
-                continue
-            if athlete_id == current_athlete_id or athlete_id not in selected_ids:
-                available_labels.append(label)
+            row_left.text(atleta_ficheiro)
+            selected_label = row_right.selectbox(
+                "Atleta da base de dados",
+                options=available_labels,
+                index=available_labels.index(current_label) if current_label in available_labels else 0,
+                key=f"athlete_registry_row_{selected_selection}_{idx}",
+                label_visibility="collapsed",
+            )
 
-        available_labels = list(dict.fromkeys(available_labels))
-        if current_label and current_label not in available_labels:
-            available_labels.append(current_label)
+            row_data = row.to_dict()
+            row_data["atleta_id"] = display_to_athlete_id.get(selected_label, "")
+            resolved_rows.append(row_data)
 
-        selected_label = row_right.selectbox(
-            "Atleta da base de dados",
-            options=available_labels,
-            index=available_labels.index(current_label) if current_label in available_labels else 0,
-            key=f"athlete_registry_row_{selected_selection}_{idx}",
-            label_visibility="collapsed",
-        )
-
-        selected_athlete_id = display_to_athlete_id.get(selected_label, "")
-        if selected_athlete_id:
-            selected_ids.add(selected_athlete_id)
-
-        row_data = row.to_dict()
-        row_data["atleta_id"] = selected_athlete_id
-        resolved_rows.append(row_data)
+        relationship_submitted = st.form_submit_button("Relacionar", type="primary")
 
     resolved_df = pd.DataFrame(resolved_rows)
-    for col in defaults:
-        if col not in resolved_df.columns:
-            resolved_df[col] = pd.NA
+    duplicate_ids = (
+        resolved_df["atleta_id"].astype(str).str.strip()
+        if "atleta_id" in resolved_df.columns and not resolved_df.empty
+        else pd.Series(dtype=str)
+    )
+    duplicate_ids = duplicate_ids[duplicate_ids.ne("")]
+    duplicate_ids = duplicate_ids[duplicate_ids.duplicated(keep=False)].unique().tolist()
 
-    for idx in resolved_df.index:
-        selected_athlete_id = str(resolved_df.at[idx, "atleta_id"]).strip()
-        profile = db_profiles.get(selected_athlete_id, {})
-        for col in defaults:
-            if col == "selecao":
-                resolved_df.at[idx, col] = selected_selection or ""
-            elif (pd.isna(resolved_df.at[idx, col]) or resolved_df.at[idx, col] == "") and profile:
-                resolved_df.at[idx, col] = profile.get(col, pd.NA)
+    if relationship_submitted:
+        if duplicate_ids:
+            st.error("Cada atleta da base de dados só pode ser relacionado uma vez.")
+        else:
+            for col in defaults:
+                if col not in resolved_df.columns:
+                    resolved_df[col] = pd.NA
 
-    st.session_state[state_key] = resolved_df.copy()
-    st.session_state[state_selection_key] = selected_selection
+            for idx in resolved_df.index:
+                selected_athlete_id = str(resolved_df.at[idx, "atleta_id"]).strip()
+                profile = db_profiles.get(selected_athlete_id, {})
+                for col in defaults:
+                    if col == "selecao":
+                        resolved_df.at[idx, col] = session_selection_code or selected_selection or ""
+                    elif (pd.isna(resolved_df.at[idx, col]) or resolved_df.at[idx, col] == "") and profile:
+                        resolved_df.at[idx, col] = profile.get(col, pd.NA)
+
+            st.session_state[state_key] = resolved_df.copy()
+            st.session_state[state_selection_key] = selected_selection
+            st.session_state.athlete_registry_expanded = False
+            st.session_state.open_report_section_after_relation = True
+            st.success("Atletas relacionados com sucesso.")
+            st.rerun()
+
+    stored_df = st.session_state.get(state_key)
+    if (
+        not isinstance(stored_df, pd.DataFrame)
+        or stored_df.empty
+        or st.session_state.get(state_selection_key) != selected_selection
+    ):
+        stored_df = resolved_df.copy()
 
     add_mode_key = "athlete_registry_add_mode"
     add_col1, add_col2 = st.columns([0.9, 1.6], gap="medium")
@@ -682,7 +700,7 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
                         data_nascimento=data_nascimento,
                         genero_label=genero_label,
                         posicao=posicao,
-                        selecao_value=selected_selection,
+                        selecao_value=session_selection_code,
                     )
                 except RuntimeError as exc:
                     st.error(str(exc))
@@ -691,7 +709,15 @@ def _build_athlete_registry_editor(f_atleta_files, genero_default: str, selecao_
                     st.success("Novo atleta criado com sucesso.")
                     st.rerun()
 
-    return _normalize_athlete_registry_df(resolved_df, genero_default, selected_selection)
+    normalized_df, normalize_error = _normalize_athlete_registry_df(stored_df, genero_default, selected_selection)
+    if normalize_error:
+        return normalized_df, normalize_error
+
+    missing_relation = normalized_df["atleta_id"].astype(str).str.strip().eq("")
+    if missing_relation.any():
+        return normalized_df, "Relaciona todos os atletas e clica em 'Relacionar' para confirmar."
+
+    return normalized_df, None
 
 
 def _parse_report_sections(report_txt: str):
@@ -3933,10 +3959,14 @@ if show_field_save_block:
                 st.session_state.field_save_flash_msg = "Campo guardado com sucesso na referencia de campos."
             st.rerun()
 
+open_report_section = bool(st.session_state.process_done) or bool(
+    st.session_state.pop("open_report_section_after_relation", False)
+)
 _render_phase_marker(bool(st.session_state.process_done))
-with st.expander(_phase_title("6. Relatório de Jogo | Treino", bool(st.session_state.process_done)), expanded=bool(st.session_state.process_done)):
+with st.expander(_phase_title("6. Relatório de Jogo | Treino", bool(st.session_state.process_done)), expanded=open_report_section):
     btn = st.button("⚙️ Processar e Gerar Relatório", type="primary", key="btn_process_report")
-    phase6_content = st.container()
+
+phase6_content = st.container()
 
 # outputs (para UI) — manter em session_state para sobreviver a reruns
 df_metrics = st.session_state.df_metrics
@@ -4482,6 +4512,8 @@ report_txt = st.session_state.report_txt
 
 if st.session_state.process_done and df_metrics is not None and isinstance(df_metrics, pd.DataFrame) and not df_metrics.empty:
     with phase6_content:
+        st.subheader("Resultados do Processamento")
+
         # 1️⃣ Identificar coluna atleta
         col_inicio = None
         for possible in ["atleta_id", "ID_atleta", "Atleta_ID", "atleta"]:

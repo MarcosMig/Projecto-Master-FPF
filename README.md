@@ -1,65 +1,78 @@
 # Projecto-Master-FPF
 
-Este repositório contém o código do projeto **FPF Analytics**. Os dados (arquivos grandes) **não estão versionados** no Git e devem ser mantidos localmente fora do controle de versão.
+Este repositorio contem o codigo do projeto **FPF Analytics**. Os dados grandes nao estao versionados no Git e devem ser mantidos localmente fora do controlo de versao.
 
 ---
 
-## 🚀 Como configurar o ambiente (local)
+## Como Arrancar O Hub
 
-1. Crie/ative um venv (recomendado):
+Use sempre o launcher do projeto. No Windows, o comando mais simples e:
+
+```powershell
+.\start.bat
+```
+
+Tambem pode usar o alias:
+
+```powershell
+.\hub.bat
+```
+
+Ambos chamam o launcher principal:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\Start-Hub.ps1
+```
+
+Este comando usa um ambiente Python isolado em `%LOCALAPPDATA%\FPF-Hub\.venv`, fora da pasta sincronizada pelo OneDrive. Antes de abrir o Hub, valida dependencias criticas como `streamlit`, `scikit-learn` e `joblib`. Se detetar uma instalacao incompleta, repara o ambiente automaticamente usando `requirements-lock.txt`.
+
+Para forcar uma reinstalacao limpa das dependencias:
+
+```powershell
+.\start.bat -Reinstall
+```
+
+Evite arrancar com `streamlit run Home.py` diretamente. Esse comando usa o primeiro `streamlit` encontrado no `PATH`, que pode pertencer a outro Python.
+
+---
+
+## Ambiente Manual
+
+Se precisar de configurar um ambiente manualmente:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+pip install -r requirements-lock.txt
 ```
 
-2. Instale dependências:
+Use `requirements.txt` apenas para desenvolvimento flexivel. Para o Hub em uso normal, `requirements-lock.txt` mantem as versoes consistentes.
+
+Para correr manualmente com esse ambiente:
 
 ```powershell
-pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run Home.py
 ```
 
 ---
 
-## 📁 Onde colocar os dados (não versionados)
+## Onde Colocar Os Dados
 
-O código espera que os dados existam em:
+O codigo espera que os dados existam em:
 
-- `Data/raw_data/` (dados brutos)
-- `Data/clean_data/` (dados processados)
+- `Data/raw_data/` para dados brutos
+- `Data/clean_data/` para dados processados
 
-Essas pastas **não são rastreadas pelo Git** (elas estão em `.gitignore`).
-
-> ✅ Se precisar, crie seus dados nessa pasta manualmente ou escreva um script para baixá-los / gerá-los.
+Essas pastas nao sao rastreadas pelo Git.
 
 ---
 
-## 🛠️ Criar as pastas necessárias (se ainda não existirem)
+## Criar Pastas Necessarias
 
-Você pode criar as pastas necessárias executando:
+Se ainda nao existirem, pode criar as pastas necessarias com:
 
 ```powershell
 python fpf_modules/constants.py
 ```
 
-Isso irá criar `Data/`, `Data/campos/`, `Data/raw_data/` e `Data/clean_data/` se ainda não existirem.
-
----
-
-## 📌 Nota sobre o histórico do Git
-
-Os arquivos grandes que estavam em `Data/clean_data/` foram removidos do histórico para que este repositório possa ser enviado ao GitHub sem atingir os limites de tamanho.
-
-Se você clonar este repositório em outra máquina, basta colocar seus arquivos grandes em `Data/clean_data/` localmente, e eles não serão incluídos no Git.
-
----
-
-## 🧪 Como rodar
-
-Dependendo do que você quiser testar, execute:
-
-```powershell
-streamlit run Home.py
-```
-
-ou qualquer outro script que você esteja usando como ponto de entrada.
+Isto cria `Data/`, `Data/campos/`, `Data/raw_data/` e `Data/clean_data/`.

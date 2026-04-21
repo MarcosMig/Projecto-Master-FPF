@@ -345,6 +345,8 @@ def initialize_schema(force: bool = False) -> None:
     ALTER TABLE samples ADD COLUMN IF NOT EXISTS speed_mps DOUBLE PRECISION;
     ALTER TABLE samples ADD COLUMN IF NOT EXISTS acc_mps2 DOUBLE PRECISION;
     CREATE INDEX IF NOT EXISTS idx_samples_session_phase_time ON samples(session_sk, phase_id, time_evento_s);
+    CREATE INDEX IF NOT EXISTS idx_samples_session_athlete_phase_timeevento
+        ON samples(session_sk, athlete_sk, phase_id, time_evento_s);
 
     -- Athlete session participation
     CREATE TABLE IF NOT EXISTS athlete_session (

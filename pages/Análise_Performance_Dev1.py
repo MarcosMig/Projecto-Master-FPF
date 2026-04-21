@@ -30,10 +30,22 @@ FIELD_VIEW_OPTIONS = [
 st.set_page_config(page_title="FPF | Analise Posicional", layout="wide")
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=30)
 def load_sessions_data():
     initialize_schema()
     frames = []
+    active_links = read_table("athlete_session", columns="session_sk")
+    if active_links is None or active_links.empty or "session_sk" not in active_links.columns:
+        return pd.DataFrame(columns=["session_sk", "data", "selecao", "genero", "contexto", "jogo"])
+
+    active_session_sks = set(
+        pd.to_numeric(active_links["session_sk"], errors="coerce")
+        .dropna()
+        .astype(int)
+        .tolist()
+    )
+    if not active_session_sks:
+        return pd.DataFrame(columns=["session_sk", "data", "selecao", "genero", "contexto", "jogo"])
 
     reports = read_table(
         "session_reports",
@@ -61,6 +73,7 @@ def load_sessions_data():
     sessions["session_sk"] = pd.to_numeric(sessions.get("session_sk"), errors="coerce")
     sessions = sessions[sessions["session_sk"].notna()].copy()
     sessions["session_sk"] = sessions["session_sk"].astype(int)
+    sessions = sessions[sessions["session_sk"].isin(active_session_sks)].copy()
     sessions["data"] = pd.to_datetime(sessions.get("data"), errors="coerce")
     return (
         sessions.drop_duplicates("session_sk", keep="last")
@@ -74,6 +87,10 @@ def _phase_filter(fase: str) -> tuple[str, int | str]:
     if phase_id is not None:
         return "phase_id", phase_id
     return "fase", str(fase)
+
+
+def _phase_event_time_offset(fase: str) -> float:
+    return {"Warm-Up": 0.0, "1P": 0.0, "2P": 45.0 * 60.0}.get(str(fase), 0.0)
 
 
 @st.cache_data(ttl=120)
@@ -115,8 +132,12 @@ def load_tracking_for_session_phase(
     initialize_schema()
     client = get_supabase_client()
     filter_col, filter_value = _phase_filter(fase)
+    event_time_offset = _phase_event_time_offset(fase)
+    query_start_s = float(start_s) + event_time_offset
+    query_end_s = float(end_s) + event_time_offset
     columns = "session_sk,atleta_id,fase,phase_id,time_evento_s,x_utm,y_utm,x_norm,y_norm"
     rows = []
+
     try:
         athlete_response = (
             client.table("athlete_session")
@@ -145,8 +166,8 @@ def load_tracking_for_session_phase(
                     .eq("session_sk", int(session_sk))
                     .eq("athlete_sk", int(athlete_sk))
                     .eq(filter_col, filter_value)
-                    .gte("time_evento_s", float(start_s))
-                    .lte("time_evento_s", float(end_s))
+                    .gte("time_evento_s", float(query_start_s))
+                    .lte("time_evento_s", float(query_end_s))
                     .order("time_evento_s")
                     .range(offset, offset + page_size - 1)
                 )
@@ -162,40 +183,16 @@ def load_tracking_for_session_phase(
         st.error(f"Error reading from samples: {exc}")
         return pd.DataFrame(columns=["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"])
 
-    if not rows:
-        try:
-            offset = 0
-            while True:
-                response = (
-                    client.table("samples")
-                    .select(columns)
-                    .eq("session_sk", int(session_sk))
-                    .eq(filter_col, filter_value)
-                    .gte("time_evento_s", float(start_s))
-                    .lte("time_evento_s", float(end_s))
-                    .order("time_evento_s")
-                    .range(offset, offset + page_size - 1)
-                    .execute()
-                )
-                batch = response.data or []
-                if not batch:
-                    break
-                rows.extend(batch)
-                if len(batch) < page_size:
-                    break
-                offset += page_size
-        except Exception as exc:
-            st.error(f"Error reading from samples: {exc}")
-            return pd.DataFrame(columns=["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"])
-
     samples = pd.DataFrame(rows)
     if samples is None or samples.empty:
         return pd.DataFrame(columns=["session_sk", "fase", "time_evento_s", "x_tr", "y_tr", "atleta_id"])
 
     samples["session_sk"] = pd.to_numeric(samples.get("session_sk"), errors="coerce").astype("Int64")
     samples["time_evento_s"] = pd.to_numeric(samples.get("time_evento_s"), errors="coerce")
+    samples["time_evento_s"] = samples["time_evento_s"] - float(event_time_offset)
     samples["atleta_id"] = samples.get("atleta_id", "").astype(str)
     samples["fase"] = samples.get("fase", "").astype(str)
+    samples = samples.sort_values(["time_evento_s", "atleta_id"], na_position="last").reset_index(drop=True)
 
     for col in ["x_utm", "y_utm", "x_norm", "y_norm"]:
         if col not in samples.columns:
