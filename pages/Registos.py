@@ -509,6 +509,7 @@ def _render_delete_controls(row: pd.Series, selection_code: str, *, trigger_labe
         cleanup_stats = cleanup_session_upload(int(session_sk), delete_session_row=True)
         _clear_session_pdf_cache(session_fingerprint)
         if cleanup_stats.get("success", False):
+            st.cache_data.clear()
             st.success("Sessao eliminada com sucesso.")
             for key in [delete_state_key, confirm_key_1, confirm_key_2]:
                 st.session_state.pop(key, None)

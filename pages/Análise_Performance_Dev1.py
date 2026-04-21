@@ -34,7 +34,7 @@ st.set_page_config(page_title="FPF | Analise Posicional", layout="wide")
 def load_sessions_data():
     initialize_schema()
     frames = []
-    active_links = read_table("athlete_session", columns="session_sk")
+    active_links = read_table("samples", columns="session_sk")
     if active_links is None or active_links.empty or "session_sk" not in active_links.columns:
         return pd.DataFrame(columns=["session_sk", "data", "selecao", "genero", "contexto", "jogo"])
 
