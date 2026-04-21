@@ -26,9 +26,11 @@ except ImportError:
 try:
     from supabase import create_client, Client
     SUPABASE_AVAILABLE = True
-except ImportError:
+    SUPABASE_IMPORT_ERROR = None
+except ImportError as exc:
     SUPABASE_AVAILABLE = False
     Client = None
+    SUPABASE_IMPORT_ERROR = exc
 
 
 _SCHEMA_INITIALIZED = False
@@ -37,8 +39,11 @@ _SCHEMA_INITIALIZED = False
 def get_supabase_client() -> Client:
     """Get or create a Supabase client using credentials from Streamlit secrets."""
     if not SUPABASE_AVAILABLE:
+        details = f" Import error: {SUPABASE_IMPORT_ERROR}" if SUPABASE_IMPORT_ERROR else ""
         raise ImportError(
-            "Supabase is not installed. Install it with: pip install supabase"
+            "Supabase could not be imported. Install or repair it with: "
+            "pip install --force-reinstall supabase cryptography"
+            f"{details}"
         )
     
     # Get credentials from Streamlit secrets

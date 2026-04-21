@@ -540,9 +540,13 @@ def _render_athlete_ficha(row: pd.Series, history_df: pd.DataFrame) -> None:
 st.title("Atletas")
 st.caption("Consulta e cria fichas base de atleta para enriquecer a base analitica.")
 
-athletes_df = _load_athletes()
-athlete_history_df = _load_athlete_history()
-selection_options = load_selection_reference(active_only=True)
+try:
+    athletes_df = _load_athletes()
+    athlete_history_df = _load_athlete_history()
+    selection_options = load_selection_reference(active_only=True)
+except Exception as exc:
+    st.error(f"Nao foi possivel carregar os atletas: {exc}")
+    st.stop()
 tab_view, tab_insert = st.tabs(["Visualizar", "Inserir"])
 
 with tab_view:

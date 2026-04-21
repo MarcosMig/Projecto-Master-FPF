@@ -8,6 +8,7 @@ scipy
 geopy
 mplsoccer
 supabase
+cryptography
 scikit-learn
 plotly
 matplotlib

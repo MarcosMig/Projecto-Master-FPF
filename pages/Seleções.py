@@ -119,7 +119,8 @@ def _load_athletes() -> pd.DataFrame:
     try:
         initialize_schema()
         df = read_table("athletes")
-    except Exception:
+    except Exception as exc:
+        st.warning(f"Nao foi possivel carregar os atletas: {exc}")
         return pd.DataFrame(columns=ATHLETE_COLUMNS)
 
     if df is None or df.empty:
