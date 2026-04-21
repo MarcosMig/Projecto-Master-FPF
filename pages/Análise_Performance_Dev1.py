@@ -34,18 +34,6 @@ st.set_page_config(page_title="FPF | Analise Posicional", layout="wide")
 def load_sessions_data():
     initialize_schema()
     frames = []
-    active_links = read_table("samples", columns="session_sk")
-    if active_links is None or active_links.empty or "session_sk" not in active_links.columns:
-        return pd.DataFrame(columns=["session_sk", "data", "selecao", "genero", "contexto", "jogo"])
-
-    active_session_sks = set(
-        pd.to_numeric(active_links["session_sk"], errors="coerce")
-        .dropna()
-        .astype(int)
-        .tolist()
-    )
-    if not active_session_sks:
-        return pd.DataFrame(columns=["session_sk", "data", "selecao", "genero", "contexto", "jogo"])
 
     reports = read_table(
         "session_reports",
@@ -73,6 +61,7 @@ def load_sessions_data():
     sessions["session_sk"] = pd.to_numeric(sessions.get("session_sk"), errors="coerce")
     sessions = sessions[sessions["session_sk"].notna()].copy()
     sessions["session_sk"] = sessions["session_sk"].astype(int)
+    active_session_sks = session_sks_with_samples(tuple(sorted(sessions["session_sk"].unique().tolist())))
     sessions = sessions[sessions["session_sk"].isin(active_session_sks)].copy()
     sessions["data"] = pd.to_datetime(sessions.get("data"), errors="coerce")
     return (
@@ -80,6 +69,29 @@ def load_sessions_data():
         .sort_values(["data", "session_sk"], ascending=[False, False], na_position="last")
         .reset_index(drop=True)
     )
+
+
+@st.cache_data(ttl=30)
+def session_sks_with_samples(session_sks: tuple[int, ...]) -> set[int]:
+    if not session_sks:
+        return set()
+
+    client = get_supabase_client()
+    active_session_sks = set()
+    for session_sk in session_sks:
+        try:
+            response = (
+                client.table("samples")
+                .select("session_sk")
+                .eq("session_sk", int(session_sk))
+                .limit(1)
+                .execute()
+            )
+            if response.data:
+                active_session_sks.add(int(session_sk))
+        except Exception as exc:
+            st.error(f"Error checking samples for session {session_sk}: {exc}")
+    return active_session_sks
 
 
 def _phase_filter(fase: str) -> tuple[str, int | str]:
@@ -255,6 +267,56 @@ def format_session_label(row: pd.Series) -> str:
     return f"{data_label} | {contexto}"
 
 
+@st.cache_data(ttl=300)
+def load_athlete_name_map(athlete_ids: tuple[str, ...]) -> dict[str, str]:
+    athlete_ids = tuple(sorted({str(value or "").strip() for value in athlete_ids if str(value or "").strip()}))
+    if not athlete_ids:
+        return {}
+
+    initialize_schema()
+    try:
+        response = (
+            get_supabase_client()
+            .table("athletes")
+            .select("atleta_id,nome")
+            .in_("atleta_id", list(athlete_ids))
+            .execute()
+        )
+        athletes = pd.DataFrame(response.data or [])
+    except Exception as exc:
+        st.error(f"Error reading athlete names: {exc}")
+        return {}
+
+    if athletes is None or athletes.empty or not {"atleta_id", "nome"}.issubset(athletes.columns):
+        return {}
+
+    athletes = athletes[["atleta_id", "nome"]].copy()
+    athletes["atleta_id"] = athletes["atleta_id"].fillna("").astype(str).str.strip()
+    athletes["nome"] = athletes["nome"].fillna("").astype(str).str.strip()
+    athletes = athletes[(athletes["atleta_id"] != "") & (athletes["nome"] != "")]
+    return dict(zip(athletes["atleta_id"], athletes["nome"]))
+
+
+def athlete_label(athlete_id: object, athlete_names: dict[str, str] | None = None) -> str:
+    athlete_key = str(athlete_id or "").strip()
+    if not athlete_key:
+        return ""
+    return (athlete_names or {}).get(athlete_key, athlete_key)
+
+
+def add_athlete_labels(df: pd.DataFrame, athlete_names: dict[str, str]) -> pd.DataFrame:
+    if df.empty or "atleta_id" not in df.columns:
+        return df
+    labelled = df.copy()
+    labelled["atleta_label"] = labelled["atleta_id"].map(lambda value: athlete_label(value, athlete_names))
+    return labelled
+
+
+def format_pair_label(pair_value: str, athlete_names: dict[str, str]) -> str:
+    jogador_1_id, jogador_2_id = str(pair_value).split(" - ", 1)
+    return f"{athlete_label(jogador_1_id, athlete_names)} - {athlete_label(jogador_2_id, athlete_names)}"
+
+
 def build_snapshot(df_fase: pd.DataFrame, momento: float) -> pd.DataFrame:
     if momento is None or df_fase.empty:
         return pd.DataFrame()
@@ -376,11 +438,11 @@ def draw_pitch(snapshot: pd.DataFrame):
 
     for _, row in snapshot.iterrows():
         pitch.annotate(
-            str(row["atleta_id"]),
+            str(row.get("atleta_label") or row["atleta_id"]),
             (row["x_tr"], row["y_tr"]),
             ax=ax,
             color="white",
-            fontsize=10,
+            fontsize=8,
             fontweight="bold",
             va="center",
             ha="center",
@@ -452,36 +514,49 @@ def draw_animated_tracking(
             & df_intervalo["x_tr"].notna()
             & df_intervalo["y_tr"].notna()
         ].copy()
+        if "atleta_label" not in frame_df.columns:
+            frame_df["atleta_label"] = frame_df["atleta_id"].astype(str)
+        frame_df["atleta_label"] = frame_df["atleta_label"].fillna(frame_df["atleta_id"].astype(str)).astype(str)
+
+        def frame_athlete_label(jogador_id: object) -> str:
+            jogador = frame_df.loc[frame_df["atleta_id"].astype(str) == str(jogador_id)]
+            if jogador.empty:
+                return str(jogador_id)
+            return str(jogador["atleta_label"].iloc[0])
+
         if show_aceleracao:
             hover_text = frame_df.apply(
                 lambda row: (
-                    f"Atleta {row['atleta_id']}<br>"
+                    f"{row['atleta_label']}<br>"
                     f"Aceleração: +{float(row.get('aceleracao_pos_m_s2', 0)):.2f} m/s²<br>"
                     f"Desaceleração: {float(row.get('desaceleracao_m_s2', 0)):.2f} m/s²"
                 ),
                 axis=1,
             )
             marker_size = 30
-            trace_text = frame_df["atleta_id"].astype(str)
+            trace_text = frame_df["atleta_label"].astype(str)
             marker_color = "rgba(227, 6, 19, 0.15)"
             marker_line_color = "rgba(255, 255, 255, 0.85)"
         elif show_velocidade:
             hover_text = frame_df.apply(
                 lambda row: (
-                    f"Atleta {row['atleta_id']}<br>"
+                    f"{row['atleta_label']}<br>"
                     f"Velocidade: {float(row.get('velocidade_m_s_suave', 0)):.2f} m/s<br>"
                     f"Velocidade: {float(row.get('velocidade_km_h', 0)):.1f} km/h"
                 ),
                 axis=1,
             )
             marker_size = 30
-            trace_text = frame_df["atleta_id"].astype(str)
+            trace_text = frame_df["atleta_label"].astype(str)
             marker_color = "rgba(227, 6, 19, 0.15)"
             marker_line_color = "rgba(255, 255, 255, 0.85)"
         else:
-            hover_text = frame_df.apply(lambda row: f"Atleta {row['atleta_id']}<br>x={row['x_tr']:.1f}<br>y={row['y_tr']:.1f}", axis=1)
+            hover_text = frame_df.apply(
+                lambda row: f"{row['atleta_label']}<br>x={row['x_tr']:.1f}<br>y={row['y_tr']:.1f}",
+                axis=1,
+            )
             marker_size = 24
-            trace_text = frame_df["atleta_id"].astype(str)
+            trace_text = frame_df["atleta_label"].astype(str)
             marker_color = "#E30613"
             marker_line_color = "white"
 
@@ -652,8 +727,8 @@ def draw_animated_tracking(
                             y=[y1, y2],
                             mode="markers",
                             marker={"size": 30, "color": ["#2ECC71", "#F2F2F2"], "line": {"color": "black", "width": 2}},
-                            text=[jogador_1_id, jogador_2_id],
-                            hovertemplate="Atleta %{text}<extra></extra>",
+                            text=[frame_athlete_label(jogador_1_id), frame_athlete_label(jogador_2_id)],
+                            hovertemplate="%{text}<extra></extra>",
                         ),
                         go.Scatter(
                             x=[(x1 + x2) / 2],
@@ -690,8 +765,8 @@ def draw_animated_tracking(
                         y=[y1, y2],
                         mode="markers",
                         marker={"size": 28, "color": "#2ECC71", "line": {"color": "black", "width": 2}},
-                        hovertemplate="Atleta %{text}<extra></extra>",
-                        text=[jogador_1_id, jogador_2_id],
+                        hovertemplate="%{text}<extra></extra>",
+                        text=[frame_athlete_label(jogador_1_id), frame_athlete_label(jogador_2_id)],
                     ),
                     go.Scatter(
                         x=[(x1 + x2) / 2],
@@ -916,6 +991,13 @@ with st.spinner("A carregar tracking apenas para o intervalo selecionado..."):
         interval_start,
         interval_end,
     )
+athlete_ids_in_interval = (
+    tuple(sorted(df_fase["atleta_id"].dropna().astype(str).str.strip().unique().tolist()))
+    if not df_fase.empty and "atleta_id" in df_fase.columns
+    else tuple()
+)
+athlete_names = load_athlete_name_map(athlete_ids_in_interval)
+df_fase = add_athlete_labels(df_fase, athlete_names)
 
 timestamps = sorted(df_fase["time_evento_s"].dropna().unique().tolist()) if not df_fase.empty else []
 if not timestamps:
@@ -985,6 +1067,8 @@ cores_pares = [
     ("Laranja", "#F77F00"),
     ("Verde Lima", "#90BE6D"),
 ]
+format_jogador = lambda jogador_id: athlete_label(jogador_id, athlete_names)
+format_par = lambda par: format_pair_label(par, athlete_names)
 
 if campo == "Distancia entre Jogadores" and len(jogadores_disponiveis) >= 2:
     control_col1, control_col2 = st.columns(2)
@@ -994,6 +1078,7 @@ if campo == "Distancia entre Jogadores" and len(jogadores_disponiveis) >= 2:
         options=jogadores_disponiveis,
         default=jogadores_default,
         max_selections=4,
+        format_func=format_jogador,
         key="dist_jogadores_selecionados",
     )
     pares_opcoes = [
@@ -1004,6 +1089,7 @@ if campo == "Distancia entre Jogadores" and len(jogadores_disponiveis) >= 2:
         "Pares",
         options=pares_opcoes,
         default=pares_opcoes[:1],
+        format_func=format_par,
         key="dist_pares_selecionados",
     )
     st.plotly_chart(
@@ -1020,12 +1106,14 @@ elif campo == "Movimento Relativo de Jogadores ao Longo do Tempo" and len(jogado
         "Jogador 1",
         options=jogadores_disponiveis,
         index=0,
+        format_func=format_jogador,
         key="mov_rel_jogador_1",
     )
     jogador_rel_2 = control_col2.selectbox(
         "Jogador 2",
         options=jogadores_disponiveis,
         index=1 if len(jogadores_disponiveis) > 1 else 0,
+        format_func=format_jogador,
         key="mov_rel_jogador_2",
     )
     if jogador_rel_1 == jogador_rel_2:
@@ -1138,7 +1226,9 @@ with col_map:
                 x_mid = (x1 + x2) / 2
                 y_mid = (y1 + y2) / 2
                 nome_cor, cor_par = cores_pares[idx % len(cores_pares)]
-                distancias_pares.append({"Par": par, "Cor": nome_cor, "Distancia": round(distancia_par, 2)})
+                distancias_pares.append(
+                    {"Par": format_pair_label(par, athlete_names), "Cor": nome_cor, "Distancia": round(distancia_par, 2)}
+                )
                 ax.plot([x1, x2], [y1, y2], color=cor_par, linewidth=2.5, alpha=0.95)
                 ax.text(
                     x_mid,
