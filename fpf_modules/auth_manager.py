@@ -87,7 +87,15 @@ def login_user(user: dict) -> None:
 
 
 def logout_user() -> None:
-    for key in ("auth", "login_user", "login_role", "login_source", "admin_auth", "admin_user"):
+    for key in (
+        "auth",
+        "login_user",
+        "login_role",
+        "login_source",
+        "admin_auth",
+        "admin_user",
+        "selected_modality",
+    ):
         st.session_state.pop(key, None)
     ensure_auth_state()
 
