@@ -95,32 +95,134 @@ def initialize_schema(force: bool = False) -> None:
         atleta_id TEXT UNIQUE NOT NULL,
         nome TEXT,
         data_nascimento DATE,
+        modalidade TEXT,
         posicao TEXT,
         pe_preferencial TEXT,
         altura_cm DOUBLE PRECISION,
         peso_kg DOUBLE PRECISION,
+        envergadura_cm DOUBLE PRECISION,
+        comprimento_perna_cm DOUBLE PRECISION,
+        massa_gorda_pct DOUBLE PRECISION,
+        massa_magra_kg DOUBLE PRECISION,
         numero_camisola INTEGER,
         escalao TEXT,
         selecao TEXT,
+        clube TEXT,
+        observacoes TEXT,
         genero TEXT,
         hr_max_bpm DOUBLE PRECISION,
         hr_rest_bpm DOUBLE PRECISION,
+        velocidade_10m_s DOUBLE PRECISION,
+        velocidade_20m_s DOUBLE PRECISION,
+        agilidade_t_s DOUBLE PRECISION,
+        yo_yo_ir1_m DOUBLE PRECISION,
+        salto_cm DOUBLE PRECISION,
+        sprint_10m_s DOUBLE PRECISION,
+        sprint_20m_s DOUBLE PRECISION,
+        sprint_10m_estimado_s DOUBLE PRECISION,
+        teste_505_esq_s DOUBLE PRECISION,
+        teste_505_dir_s DOUBLE PRECISION,
+        sj_data DATE,
+        sj_altura_cm DOUBLE PRECISION,
+        cmj_data DATE,
+        cmj_altura_cm DOUBLE PRECISION,
+        elasticity_index_pct DOUBLE PRECISION,
+        cmj_corrigido_cm DOUBLE PRECISION,
+        ei_corrigido_pct DOUBLE PRECISION,
+        dj_data DATE,
+        dj_caixa_m DOUBLE PRECISION,
+        dj_altura_cm DOUBLE PRECISION,
+        dj_rsi DOUBLE PRECISION,
+        dj_rsi_mod_mps DOUBLE PRECISION,
+        dj_contacto_ms DOUBLE PRECISION,
+        j10_data DATE,
+        j10_disponivel TEXT,
+        j10_rsi_10_5 DOUBLE PRECISION,
+        j10_cmj_cm DOUBLE PRECISION,
+        j10_media_saltos_cm DOUBLE PRECISION,
+        j10_maximo_cm DOUBLE PRECISION,
+        j10_minimo_cm DOUBLE PRECISION,
+        j10_n_saltos INTEGER,
+        indice_fadiga_10j_pct DOUBLE PRECISION,
+        n_registos_saltos INTEGER,
+        n_registos_10j INTEGER,
+        passe_score DOUBLE PRECISION,
+        remate_score DOUBLE PRECISION,
+        drible_score DOUBLE PRECISION,
+        controlo_bola_score DOUBLE PRECISION,
+        decisao_score DOUBLE PRECISION,
+        concentracao_score DOUBLE PRECISION,
+        lideranca_score DOUBLE PRECISION,
+        resiliencia_score DOUBLE PRECISION,
+        competitividade_score DOUBLE PRECISION,
+        ultima_avaliacao DATE,
         ativo BOOLEAN DEFAULT true,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
     );
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS nome TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS data_nascimento DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS modalidade TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS posicao TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS pe_preferencial TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS altura_cm DOUBLE PRECISION;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS peso_kg DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS envergadura_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS comprimento_perna_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS massa_gorda_pct DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS massa_magra_kg DOUBLE PRECISION;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS numero_camisola INTEGER;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS escalao TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS selecao TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS clube TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS foto_url TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS observacoes TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS hr_max_bpm DOUBLE PRECISION;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS hr_rest_bpm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS velocidade_10m_s DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS velocidade_20m_s DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS agilidade_t_s DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS yo_yo_ir1_m DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS salto_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sprint_10m_s DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sprint_20m_s DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sprint_10m_estimado_s DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS teste_505_esq_s DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS teste_505_dir_s DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sj_data DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sj_altura_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS cmj_data DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS cmj_altura_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS elasticity_index_pct DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS cmj_corrigido_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS ei_corrigido_pct DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_data DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_caixa_m DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_altura_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_rsi DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_rsi_mod_mps DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_contacto_ms DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_data DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_disponivel TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_rsi_10_5 DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_cmj_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_media_saltos_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_maximo_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_minimo_cm DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_n_saltos INTEGER;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS indice_fadiga_10j_pct DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS n_registos_saltos INTEGER;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS n_registos_10j INTEGER;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS passe_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS remate_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS drible_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS controlo_bola_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS decisao_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS concentracao_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS lideranca_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS resiliencia_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS competitividade_score DOUBLE PRECISION;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS ultima_avaliacao DATE;
 
     -- Fields dimension
     CREATE TABLE IF NOT EXISTS fields (

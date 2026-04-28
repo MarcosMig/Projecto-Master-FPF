@@ -58,5 +58,15 @@ if st.session_state.selected_modality == "futebol":
 
     navigation = st.navigation(pages)
     navigation.run()
+elif st.session_state.selected_modality == "futsal":
+    pages = {
+        "Futsal Hub": [
+            st.Page("pages/Futsal_Inicio.py", title="Inicio", default=True, url_path="futsal-inicio"),
+            st.Page("pages/Futsal_Atletas.py", title="Atletas", url_path="futsal-atletas"),
+        ],
+    }
+
+    navigation = st.navigation(pages)
+    navigation.run()
 else:
     render_preview_modality()

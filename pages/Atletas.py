@@ -16,6 +16,7 @@ from fpf_modules.supabase_manager import (
 ATHLETE_COLUMNS = [
     "athlete_sk",
     "atleta_id",
+    "modalidade",
     "nome",
     "foto_url",
     "data_nascimento",
@@ -26,6 +27,7 @@ ATHLETE_COLUMNS = [
 ]
 ATHLETE_UPLOAD_COLUMNS = [
     "atleta_id",
+    "modalidade",
     "nome",
     "foto_url",
     "data_nascimento",
@@ -111,10 +113,11 @@ def _load_athletes() -> pd.DataFrame:
 
     df = df[ATHLETE_COLUMNS].copy()
     if not df.empty:
-        for col in ["atleta_id", "nome", "posicao", "selecao", "genero", "foto_url"]:
+        for col in ["atleta_id", "modalidade", "nome", "posicao", "selecao", "genero", "foto_url"]:
             df[col] = df[col].map(_clean_text_value)
         df["data_nascimento"] = pd.to_datetime(df["data_nascimento"], errors="coerce").dt.date
         df["ativo"] = df["ativo"].fillna(True).astype(bool)
+        df = df[df["modalidade"].isin(["", "futebol"])].copy()
 
     return df.sort_values(["ativo", "nome", "atleta_id"], ascending=[False, True, True], na_position="last")
 
@@ -224,6 +227,9 @@ def _load_athlete_history() -> pd.DataFrame:
 def _save_athletes(df: pd.DataFrame) -> None:
     initialize_schema()
     save_df = df.copy()
+    if "modalidade" not in save_df.columns:
+        save_df["modalidade"] = "futebol"
+    save_df["modalidade"] = save_df["modalidade"].map(_clean_text_value).replace("", "futebol")
     for col in ["atleta_id", "nome", "posicao", "selecao", "genero", "foto_url"]:
         save_df[col] = save_df[col].map(_clean_text_value)
     save_df = save_df[save_df["atleta_id"].ne("")].drop_duplicates(subset=["atleta_id"], keep="last")
@@ -273,6 +279,7 @@ def _save_athlete_photo(row: pd.Series, foto) -> None:
     updated_row = pd.DataFrame(
         [{
             "atleta_id": atleta_id,
+            "modalidade": "futebol",
             "nome": _clean_text_value(row.get("nome")),
             "foto_url": foto_url,
             "data_nascimento": row.get("data_nascimento"),
@@ -315,6 +322,7 @@ def _save_athlete_details(
     updated_row = pd.DataFrame(
         [{
             "atleta_id": atleta_id,
+            "modalidade": "futebol",
             "nome": _compose_full_name(nome, sobrenome),
             "foto_url": _clean_text_value(row.get("foto_url")),
             "data_nascimento": data_nascimento,
@@ -654,6 +662,7 @@ with tab_insert:
                 new_row = pd.DataFrame(
                     [{
                         "atleta_id": atleta_id,
+                        "modalidade": "futebol",
                         "nome": _compose_full_name(nome, sobrenome),
                         "foto_url": foto_url,
                         "data_nascimento": data_nascimento,

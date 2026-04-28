@@ -11,8 +11,8 @@ MODALITIES = {
     "futsal": {
         "label": "Futsal",
         "title": "Futsal Performance Hub",
-        "description": "Area reservada para testes e futura configuracao.",
-        "status": "preview",
+        "description": "Base de dados de atletas e avaliacao integrada da modalidade.",
+        "status": "active",
     },
 }
 
@@ -47,17 +47,6 @@ def current_modality_label() -> str:
 
 def render_modality_selector() -> None:
     ensure_modality_state()
-    requested_modality = st.query_params.get("modalidade", "")
-    if isinstance(requested_modality, list):
-        requested_modality = requested_modality[0] if requested_modality else ""
-    requested_modality = str(requested_modality or "").strip()
-    if requested_modality in MODALITIES:
-        select_modality(requested_modality)
-        try:
-            st.query_params.clear()
-        except Exception:
-            pass
-        st.rerun()
 
     st.markdown(
         """
@@ -83,15 +72,10 @@ def render_modality_selector() -> None:
             margin-bottom: 2rem;
           }
           .modality-grid {
-            display: flex;
-            justify-content: center;
-            align-items: stretch;
-            gap: 1rem;
-            width: 100%;
             margin-top: 2.5rem;
           }
           .modality-card {
-            width: 260px;
+            width: 100%;
             min-height: 12.5rem;
             border-radius: 12px;
             border: 1px solid #30363d;
@@ -103,14 +87,24 @@ def render_modality_selector() -> None:
             align-items: center;
             justify-content: center;
             text-align: center;
-            text-decoration: none;
             padding: 1.25rem;
           }
-          .modality-card:hover {
+          .modality-card-active {
             border-color: #E30613;
-            color: #ffffff;
             background: #1f2732;
-            text-decoration: none;
+          }
+          .modality-button .stButton > button {
+            width: 100%;
+            min-height: 12.5rem;
+            border-radius: 12px;
+            border: 1px solid #30363d;
+            background: transparent !important;
+            color: transparent !important;
+            box-shadow: none !important;
+          }
+          .modality-button .stButton > button:hover {
+            border-color: #E30613 !important;
+            background: rgba(227, 6, 19, 0.06) !important;
           }
           .modality-card-title {
             font-size: 1.35rem;
@@ -131,19 +125,25 @@ def render_modality_selector() -> None:
         '<div class="modality-subtitle">Seleciona o contexto de trabalho para abrir o Hub correto.</div>',
         unsafe_allow_html=True,
     )
+    left_col, right_col = st.columns(2, gap="large")
+    columns = [left_col, right_col]
 
-    cards_html = ['<div class="modality-grid">']
-    for key, modality in MODALITIES.items():
-        cards_html.append(
-            f"""
-            <a class="modality-card" href="?modalidade={key}" target="_self">
-              <div class="modality-card-title">{modality["label"]}</div>
-              <div class="modality-card-description">{modality["description"]}</div>
-            </a>
-            """
-        )
-    cards_html.append("</div>")
-    st.html("".join(cards_html))
+    for index, (key, modality) in enumerate(MODALITIES.items()):
+        with columns[index % len(columns)]:
+            st.markdown('<div class="modality-button">', unsafe_allow_html=True)
+            st.markdown(
+                f"""
+                <div class="modality-card">
+                  <div class="modality-card-title">{modality["label"]}</div>
+                  <div class="modality-card-description">{modality["description"]}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button(f"Abrir {modality['label']}", key=f"select_modality_{key}", type="primary"):
+                select_modality(key)
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_preview_modality() -> None:

@@ -90,7 +90,7 @@ from fpf_modules.supabase_manager import (
     resolve_session_sk,
     write_session_data,
 )
-from fpf_modules.auth_manager import authenticate_user, get_secrets_auth
+from fpf_modules.auth_manager import require_login
 
 from fpf_modules.normalize import (
     normalize_tracking_data,
@@ -1566,20 +1566,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-if "auth" not in st.session_state:
-    st.session_state.auth = False
-if "login_user" not in st.session_state:
-    st.session_state.login_user = ""
-if "login_role" not in st.session_state:
-    st.session_state.login_role = ""
-
-if not st.session_state.auth:
-    st.markdown("""
-    <style>
-      [data-testid="stSidebar"] {display: none !important;}
-      header, footer {visibility: hidden;}
-    </style>
-    """, unsafe_allow_html=True)
+require_login()
 
 # --- Persistência de outputs (evita desaparecer após zoom/scroll no mapa) ---
 ensure_draft_session_state()
@@ -1607,9 +1594,6 @@ if "phase3_complete" not in st.session_state:
 if "publish_success" not in st.session_state:
     st.session_state.publish_success = False
 
-# --- LOGIN (CENTRADO + st.secrets) ---
-
-
 def _render_phase_marker(is_complete: bool):
     marker_class = "phase-marker phase-complete" if is_complete else "phase-marker"
     st.markdown(f"<div class='{marker_class}' style='display:none;'></div>", unsafe_allow_html=True)
@@ -1617,93 +1601,6 @@ def _render_phase_marker(is_complete: bool):
 
 def _phase_title(label: str, is_complete: bool) -> str:
     return f"{label}\u200b" if is_complete else label
-
-
-def _apply_login_style():
-    css = """
-<style>
-  .stApp { background-color: #0e1117; }
-  header, footer {visibility: hidden;}
-  [data-testid="stSidebar"] {display: none;}
-
-  /* Container geral transparente */
-  .main .block-container {
-    background: transparent !important;
-    box-shadow: none !important;
-    border: none !important;
-    padding-top: 2rem !important;
-  }
-
-  .login-card{
-    background: #1a1c23;
-    border: 1px solid #30363d;
-    border-radius: 14px;
-    padding: 34px 34px 26px 34px;
-    box-shadow: 0px 10px 28px rgba(0,0,0,0.55);
-  }
-
-  .login-title{
-    text-align: center;
-    color: #ffffff;
-    font-size: 2rem;
-    font-weight: 800;
-    margin: 0 0 1.25rem 0;
-  }
-
-  .login-card .stTextInput input{
-    background: #0e1117 !important;
-    border: 1px solid #30363d !important;
-    border-radius: 10px !important;
-  }
-
-  .login-card .stButton > button{
-    width: 100%;
-    background: #E30613 !important;
-    color: #fff !important;
-    font-weight: 800;
-    border: 0;
-    height: 3.1em;
-    border-radius: 10px;
-  }
-
-  .login-card .stButton > button:hover{
-    filter: brightness(0.95);
-  }
-</style>
-"""
-    st.markdown(css, unsafe_allow_html=True)
-
-
-if not st.session_state.auth:
-    _apply_login_style()
-
-    left, mid, right = st.columns([1, 1.2, 1])
-    with mid:
-        st.markdown(
-            '<div class="login-title">FPF Performance Hub</div>', unsafe_allow_html=True)
-
-        u = st.text_input("Utilizador", key="user_val")
-        p = st.text_input("Password", type="password", key="pass_val")
-
-        secrets_user, secrets_pass = get_secrets_auth()
-        if not secrets_user:
-            st.caption("Sem credenciais base em st.secrets. Podes entrar com um utilizador criado em Administracao.")
-
-        if st.button("Entrar"):
-            auth_result = authenticate_user(u, p)
-            user = auth_result.get("user", {})
-            if auth_result.get("success"):
-                st.session_state.login_user = user.get("username", u)
-                st.session_state.login_role = user.get("role", "")
-                st.session_state.auth = True
-                st.rerun()
-            else:
-                st.error("Credenciais invalidas")
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.stop()
-
 
 # --- INTERFACE SINGLE PAGE ---
 st.markdown(

@@ -131,27 +131,129 @@ def initialize_schema(con) -> None:
         atleta_id    TEXT UNIQUE,
         nome         TEXT,
         data_nascimento DATE,
+        modalidade   TEXT,
         posicao      TEXT,
         numero_camisola INTEGER,
         pe_preferencial TEXT,
         altura_cm    DOUBLE,
         peso_kg      DOUBLE,
+        envergadura_cm DOUBLE,
+        comprimento_perna_cm DOUBLE,
+        massa_gorda_pct DOUBLE,
+        massa_magra_kg DOUBLE,
         escalao      TEXT,
         selecao      TEXT,
+        clube        TEXT,
+        observacoes  TEXT,
         genero       TEXT,
+        velocidade_10m_s DOUBLE,
+        velocidade_20m_s DOUBLE,
+        agilidade_t_s DOUBLE,
+        yo_yo_ir1_m DOUBLE,
+        salto_cm DOUBLE,
+        sprint_10m_s DOUBLE,
+        sprint_20m_s DOUBLE,
+        sprint_10m_estimado_s DOUBLE,
+        teste_505_esq_s DOUBLE,
+        teste_505_dir_s DOUBLE,
+        sj_data DATE,
+        sj_altura_cm DOUBLE,
+        cmj_data DATE,
+        cmj_altura_cm DOUBLE,
+        elasticity_index_pct DOUBLE,
+        cmj_corrigido_cm DOUBLE,
+        ei_corrigido_pct DOUBLE,
+        dj_data DATE,
+        dj_caixa_m DOUBLE,
+        dj_altura_cm DOUBLE,
+        dj_rsi DOUBLE,
+        dj_rsi_mod_mps DOUBLE,
+        dj_contacto_ms DOUBLE,
+        j10_data DATE,
+        j10_disponivel TEXT,
+        j10_rsi_10_5 DOUBLE,
+        j10_cmj_cm DOUBLE,
+        j10_media_saltos_cm DOUBLE,
+        j10_maximo_cm DOUBLE,
+        j10_minimo_cm DOUBLE,
+        j10_n_saltos INTEGER,
+        indice_fadiga_10j_pct DOUBLE,
+        n_registos_saltos INTEGER,
+        n_registos_10j INTEGER,
+        passe_score DOUBLE,
+        remate_score DOUBLE,
+        drible_score DOUBLE,
+        controlo_bola_score DOUBLE,
+        decisao_score DOUBLE,
+        concentracao_score DOUBLE,
+        lideranca_score DOUBLE,
+        resiliencia_score DOUBLE,
+        competitividade_score DOUBLE,
+        ultima_avaliacao DATE,
         ativo        BOOLEAN,
         created_at   TIMESTAMP,
         updated_at   TIMESTAMP
     );
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS nome TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS data_nascimento DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS modalidade TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS posicao TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS numero_camisola INTEGER;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS pe_preferencial TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS altura_cm DOUBLE;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS peso_kg DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS envergadura_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS comprimento_perna_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS massa_gorda_pct DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS massa_magra_kg DOUBLE;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS escalao TEXT;
     ALTER TABLE athletes ADD COLUMN IF NOT EXISTS selecao TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS clube TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS observacoes TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS velocidade_10m_s DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS velocidade_20m_s DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS agilidade_t_s DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS yo_yo_ir1_m DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS salto_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sprint_10m_s DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sprint_20m_s DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sprint_10m_estimado_s DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS teste_505_esq_s DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS teste_505_dir_s DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sj_data DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS sj_altura_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS cmj_data DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS cmj_altura_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS elasticity_index_pct DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS cmj_corrigido_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS ei_corrigido_pct DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_data DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_caixa_m DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_altura_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_rsi DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_rsi_mod_mps DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS dj_contacto_ms DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_data DATE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_disponivel TEXT;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_rsi_10_5 DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_cmj_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_media_saltos_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_maximo_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_minimo_cm DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS j10_n_saltos INTEGER;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS indice_fadiga_10j_pct DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS n_registos_saltos INTEGER;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS n_registos_10j INTEGER;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS passe_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS remate_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS drible_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS controlo_bola_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS decisao_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS concentracao_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS lideranca_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS resiliencia_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS competitividade_score DOUBLE;
+    ALTER TABLE athletes ADD COLUMN IF NOT EXISTS ultima_avaliacao DATE;
 
     CREATE TABLE IF NOT EXISTS sessions (
         session_sk          INTEGER PRIMARY KEY,
