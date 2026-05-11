@@ -641,6 +641,14 @@ def _toggle_state(key: str) -> None:
     st.session_state[key] = not st.session_state.get(key, False)
 
 
+def _open_athlete_editor(atleta_id: str) -> None:
+    st.session_state["open_athlete_editor_id"] = str(atleta_id)
+
+
+def _close_athlete_editor() -> None:
+    st.session_state["open_athlete_editor_id"] = ""
+
+
 def _render_athlete_registry(athletes_df: pd.DataFrame, physical_df: pd.DataFrame, technical_df: pd.DataFrame) -> None:
     st.subheader("Atletas registados")
     registry_df = _athletes_with_latest(athletes_df, physical_df, technical_df)
@@ -675,7 +683,6 @@ def _render_athlete_registry(athletes_df: pd.DataFrame, physical_df: pd.DataFram
     for _, row in view_df.sort_values(["ativo", "nome"], ascending=[False, True], na_position="last").iterrows():
         label = _clean_text_value(row.get("nome")) or _clean_text_value(row.get("atleta_id"))
         with st.expander(label, expanded=False):
-            edit_state_key = f"edit_athlete_{row['atleta_id']}"
             head_col1, head_col2 = st.columns([0.8, 2.2], gap="large")
             with head_col1:
                 photo_path = _clean_text_value(row.get("foto_path"))
@@ -748,7 +755,7 @@ def _render_athlete_registry(athletes_df: pd.DataFrame, physical_df: pd.DataFram
 
             action_col1, action_col2, action_col3 = st.columns(3)
             if action_col1.button("Editar atleta", key=f"open_edit_athlete_{row['atleta_id']}"):
-                st.session_state[edit_state_key] = not st.session_state.get(edit_state_key, False)
+                _open_athlete_editor(_clean_text_value(row.get("atleta_id")))
                 st.rerun()
             if action_col2.button("Eliminar atleta e historico", key=f"delete_athlete_{row['atleta_id']}"):
                 delete_photo(_clean_text_value(row.get("foto_path")))
@@ -763,9 +770,13 @@ def _render_athlete_registry(athletes_df: pd.DataFrame, physical_df: pd.DataFram
                 st.success("Estado do atleta atualizado.")
                 st.rerun()
 
-            if st.session_state.get(edit_state_key, False):
+            if st.session_state.get("open_athlete_editor_id", "") == _clean_text_value(row.get("atleta_id")):
                 st.divider()
-                st.markdown("**Editar atleta**")
+                title_col1, title_col2 = st.columns([3, 1])
+                title_col1.markdown("**Editar atleta**")
+                if title_col2.button("Fechar editor", key=f"close_edit_athlete_{row['atleta_id']}"):
+                    _close_athlete_editor()
+                    st.rerun()
                 with st.form(f"edit_athlete_form_{row['atleta_id']}"):
                     edit_top_left, edit_top_right = st.columns([0.8, 2.2], gap="large")
                     with edit_top_left:
@@ -816,7 +827,7 @@ def _render_athlete_registry(athletes_df: pd.DataFrame, physical_df: pd.DataFram
                                 "created_at": row.get("created_at"),
                             }
                         )
-                        st.session_state[edit_state_key] = False
+                        _close_athlete_editor()
                         st.success("Atleta atualizada com sucesso.")
                         st.rerun()
 
