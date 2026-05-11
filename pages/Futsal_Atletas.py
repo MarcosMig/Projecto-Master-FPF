@@ -22,6 +22,7 @@ from fpf_modules.futsal_parquet_store import (
     read_physical_records,
     read_technical_records,
     save_photo,
+    update_record,
     upsert_athlete,
 )
 
@@ -30,7 +31,7 @@ ATHLETE_BIRTHDATE_MIN = date(1980, 1, 1)
 ATHLETE_BIRTHDATE_MAX = date.today()
 GENDER_OPTIONS = ["Masculino", "Feminino"]
 POSITION_OPTIONS = ["", "GR", "Fixo", "Ala", "Pivot", "Universal"]
-SELECTION_OPTIONS = ["", "Sub-15", "Sub-17", "Sub-19", "Sub-21", "AA"]
+SELECTION_OPTIONS = ["", "S12", "S13", "S14", "S15", "S16", "S17"]
 
 MYJUMPLAB_IMPORT_COLUMNS = [
     "Date",
@@ -69,6 +70,9 @@ PHYSICAL_UPLOAD_COLUMNS = [
     "altura_cm",
     "envergadura_cm",
     "comprimento_perna_cm",
+    "altura_sentada_cm",
+    "salto_maturacional",
+    "estado_maturacional",
     "sprint_10m_s",
     "sprint_20m_s",
     "teste_505_esq_s",
@@ -128,6 +132,9 @@ REPORT_PHYSICAL_COLUMN_MAP = {
     "Altura (cm)": "altura_cm",
     "Envergadura (cm)": "envergadura_cm",
     "Comprimento Perna (cm)": "comprimento_perna_cm",
+    "Altura sentada (cm)": "altura_sentada_cm",
+    "Salto maturacional": "salto_maturacional",
+    "Estado maturacional": "estado_maturacional",
     "Sprint 10m(s)": "sprint_10m_s",
     "Sprint 20m (s)": "sprint_20m_s",
     "Teste 5-0-5 (esq)": "teste_505_esq_s",
@@ -232,6 +239,65 @@ def _derive_escalao_from_age(age: int | None) -> str:
     if age <= 23:
         return "Sub-23"
     return "Seniores"
+
+
+def _calculate_decimal_age(birth_date, reference_date) -> float | None:
+    birth = _clean_date(birth_date)
+    ref = _clean_date(reference_date)
+    if not birth or not ref:
+        return None
+    return (ref - birth).days / 365.25
+
+
+def _calculate_maturity_offset(genero, birth_date, reference_date, peso_kg, altura_cm, altura_sentada_cm) -> float | None:
+    age = _calculate_decimal_age(birth_date, reference_date)
+    weight = _clean_number(peso_kg)
+    stature = _clean_number(altura_cm)
+    sitting_height = _clean_number(altura_sentada_cm)
+    sex = _clean_text_value(genero).lower()
+    if age is None or weight is None or stature is None or sitting_height is None:
+        return None
+    if stature <= 0 or sitting_height <= 0 or weight <= 0 or sitting_height >= stature:
+        return None
+
+    leg_length = stature - sitting_height
+    weight_height_ratio = (weight / stature) * 100
+
+    if sex == "feminino":
+        return (
+            -9.376
+            + (0.0001882 * (leg_length * sitting_height))
+            + (0.0022 * (age * leg_length))
+            + (0.005841 * (age * sitting_height))
+            - (0.002658 * (age * weight))
+            + (0.07693 * weight_height_ratio)
+        )
+
+    return (
+        -9.236
+        + (0.0002708 * (leg_length * sitting_height))
+        - (0.001663 * (age * leg_length))
+        + (0.007216 * (age * sitting_height))
+        + (0.02292 * weight_height_ratio)
+    )
+
+
+def _classify_maturity_offset(maturity_offset: float | None) -> str:
+    value = _clean_number(maturity_offset)
+    if value is None:
+        return ""
+    if value < -1:
+        return "Pre-PHV"
+    if value <= 1:
+        return "Circa-PHV"
+    return "Post-PHV"
+
+
+def _selected_athlete_row(athletes_df: pd.DataFrame, atleta_id: str) -> pd.Series | None:
+    if athletes_df is None or athletes_df.empty:
+        return None
+    row = athletes_df[athletes_df["atleta_id"].astype(str) == str(atleta_id)].head(1)
+    return None if row.empty else row.iloc[0]
 
 
 def _render_summary_metrics(athletes_df: pd.DataFrame, physical_df: pd.DataFrame, technical_df: pd.DataFrame) -> None:
@@ -522,6 +588,59 @@ def _athletes_with_latest(athletes_df: pd.DataFrame, physical_df: pd.DataFrame, 
     return work_df
 
 
+def _latest_physical_snapshot(physical_df: pd.DataFrame, atleta_id: str) -> dict:
+    if physical_df is None or physical_df.empty:
+        return {}
+    latest_df = latest_records_by_athlete(physical_df)
+    row = latest_df[latest_df["atleta_id"].astype(str) == str(atleta_id)].head(1)
+    return {} if row.empty else row.iloc[0].to_dict()
+
+
+def _build_physical_record(physical_df: pd.DataFrame, atleta_id: str, data_avaliacao, updates: dict) -> pd.DataFrame:
+    base = {col: None for col in ["atleta_id", "data_avaliacao"] + PHYSICAL_COLUMNS}
+    latest_snapshot = _latest_physical_snapshot(physical_df, atleta_id)
+    for col in PHYSICAL_COLUMNS:
+        if col in latest_snapshot:
+            base[col] = latest_snapshot.get(col)
+    base["atleta_id"] = atleta_id
+    base["data_avaliacao"] = _clean_date(data_avaliacao)
+    for key, value in updates.items():
+        base[key] = value
+    return pd.DataFrame([base])
+
+
+def _latest_technical_snapshot(technical_df: pd.DataFrame, atleta_id: str) -> dict:
+    if technical_df is None or technical_df.empty:
+        return {}
+    latest_df = latest_records_by_athlete(technical_df)
+    row = latest_df[latest_df["atleta_id"].astype(str) == str(atleta_id)].head(1)
+    return {} if row.empty else row.iloc[0].to_dict()
+
+
+def _build_technical_record(technical_df: pd.DataFrame, atleta_id: str, data_avaliacao, updates: dict) -> pd.DataFrame:
+    base = {col: None for col in ["atleta_id", "data_avaliacao"] + TECHNICAL_COLUMNS}
+    latest_snapshot = _latest_technical_snapshot(technical_df, atleta_id)
+    for col in TECHNICAL_COLUMNS:
+        if col in latest_snapshot:
+            base[col] = latest_snapshot.get(col)
+    base["atleta_id"] = atleta_id
+    base["data_avaliacao"] = _clean_date(data_avaliacao)
+    for key, value in updates.items():
+        base[key] = value
+    return pd.DataFrame([base])
+
+
+def _record_row_by_id(df: pd.DataFrame, record_id: str) -> pd.Series | None:
+    if df is None or df.empty:
+        return None
+    row = df[df["record_id"].astype(str) == str(record_id)].head(1)
+    return None if row.empty else row.iloc[0]
+
+
+def _toggle_state(key: str) -> None:
+    st.session_state[key] = not st.session_state.get(key, False)
+
+
 def _render_athlete_registry(athletes_df: pd.DataFrame, physical_df: pd.DataFrame, technical_df: pd.DataFrame) -> None:
     st.subheader("Atletas registados")
     registry_df = _athletes_with_latest(athletes_df, physical_df, technical_df)
@@ -556,6 +675,7 @@ def _render_athlete_registry(athletes_df: pd.DataFrame, physical_df: pd.DataFram
     for _, row in view_df.sort_values(["ativo", "nome"], ascending=[False, True], na_position="last").iterrows():
         label = _clean_text_value(row.get("nome")) or _clean_text_value(row.get("atleta_id"))
         with st.expander(label, expanded=False):
+            edit_state_key = f"edit_athlete_{row['atleta_id']}"
             head_col1, head_col2 = st.columns([0.8, 2.2], gap="large")
             with head_col1:
                 photo_path = _clean_text_value(row.get("foto_path"))
@@ -564,39 +684,141 @@ def _render_athlete_registry(athletes_df: pd.DataFrame, physical_df: pd.DataFram
                 else:
                     st.caption("Sem foto registada.")
             with head_col2:
-                st.markdown(f"**ID:** {_clean_text_value(row.get('atleta_id'))}")
-                st.markdown(f"**Nome:** {_clean_text_value(row.get('nome')) or '-'}")
-                st.markdown(f"**Data nascimento:** {_format_date(row.get('data_nascimento'))}")
-                st.markdown(f"**Idade:** {_calculate_age(row.get('data_nascimento')) or '-'}")
-                st.markdown(f"**Genero:** {_clean_text_value(row.get('genero')) or '-'}")
-                st.markdown(f"**Escalao:** {_clean_text_value(row.get('escalao')) or '-'}")
-                st.markdown(f"**Selecao:** {_clean_text_value(row.get('selecao')) or '-'}")
-                st.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
+                info_col1, info_col2 = st.columns(2, gap="large")
+                with info_col1:
+                    st.markdown(f"**ID:** {_clean_text_value(row.get('atleta_id'))}")
+                    st.markdown(f"**Nome:** {_clean_text_value(row.get('nome')) or '-'}")
+                    st.markdown(f"**Data nascimento:** {_format_date(row.get('data_nascimento'))}")
+                    st.markdown(f"**Idade:** {_calculate_age(row.get('data_nascimento')) or '-'}")
+                with info_col2:
+                    st.markdown(f"**Genero:** {_clean_text_value(row.get('genero')) or '-'}")
+                    st.markdown(f"**Escalao:** {_clean_text_value(row.get('escalao')) or '-'}")
+                    st.markdown(f"**Selecao:** {_clean_text_value(row.get('selecao')) or '-'}")
+                    st.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
 
-            st.markdown("**Ultima ficha antropometrica/fisica**")
-            st.caption(
-                f"Data: {_format_date(row.get('fis_data_avaliacao'))} | Peso: {_format_metric(row.get('fis_peso_kg'), ' kg')} | "
-                f"Sprint 10m: {_format_metric(row.get('fis_sprint_10m_s'), ' s', 2)} | CMJ: {_format_metric(row.get('fis_cmj_altura_cm'), ' cm')}"
-            )
-            st.markdown("**Ultima ficha tecnica/psicologica**")
-            st.caption(
-                f"Data: {_format_date(row.get('tec_data_avaliacao'))} | Passe: {_format_metric(row.get('tec_passe_score'), '/10')} | "
-                f"Decisao: {_format_metric(row.get('tec_decisao_score'), '/10')} | Resiliencia: {_format_metric(row.get('tec_resiliencia_score'), '/10')}"
+            tab_anth, tab_phys, tab_tech, tab_psych = st.tabs(
+                ["Ficha Antropometrica", "Testes Fisicos", "Ficha Tecnica", "Ficha Psicologica"]
             )
 
-            action_col1, action_col2 = st.columns(2)
-            if action_col1.button("Eliminar atleta e historico", key=f"delete_athlete_{row['atleta_id']}"):
+            with tab_anth:
+                st.caption(f"Data: {_format_date(row.get('fis_data_avaliacao'))}")
+                a1, a2, a3 = st.columns(3)
+                a1.markdown(f"**Peso:** {_format_metric(row.get('fis_peso_kg'), ' kg')}")
+                a2.markdown(f"**Altura:** {_format_metric(row.get('fis_altura_cm'), ' cm')}")
+                a3.markdown(f"**Envergadura:** {_format_metric(row.get('fis_envergadura_cm'), ' cm')}")
+                a4, a5, a6 = st.columns(3)
+                a4.markdown(f"**Comp. perna:** {_format_metric(row.get('fis_comprimento_perna_cm'), ' cm')}")
+                a5.markdown(f"**Altura sentada:** {_format_metric(row.get('fis_altura_sentada_cm'), ' cm')}")
+                a6.markdown(f"**Salto maturacional:** {_format_metric(row.get('fis_salto_maturacional'), '', 2)}")
+                st.markdown(f"**Estado maturacional:** {_clean_text_value(row.get('fis_estado_maturacional')) or '-'}")
+
+            with tab_phys:
+                st.caption(f"Data: {_format_date(row.get('fis_data_avaliacao'))}")
+                p1, p2, p3, p4 = st.columns(4)
+                p1.markdown(f"**Sprint 10m:** {_format_metric(row.get('fis_sprint_10m_s'), ' s', 2)}")
+                p2.markdown(f"**Sprint 20m:** {_format_metric(row.get('fis_sprint_20m_s'), ' s', 2)}")
+                p3.markdown(f"**505 esq:** {_format_metric(row.get('fis_teste_505_esq_s'), ' s', 2)}")
+                p4.markdown(f"**505 dir:** {_format_metric(row.get('fis_teste_505_dir_s'), ' s', 2)}")
+                p5, p6, p7, p8 = st.columns(4)
+                p5.markdown(f"**SJ:** {_format_metric(row.get('fis_sj_altura_cm'), ' cm')}")
+                p6.markdown(f"**CMJ:** {_format_metric(row.get('fis_cmj_altura_cm'), ' cm')}")
+                p7.markdown(f"**DJ altura:** {_format_metric(row.get('fis_dj_altura_cm'), ' cm')}")
+                p8.markdown(f"**DJ RSI:** {_format_metric(row.get('fis_dj_rsi'), '', 2)}")
+                p9, p10, p11 = st.columns(3)
+                p9.markdown(f"**10J RSI 10-5:** {_format_metric(row.get('fis_j10_rsi_10_5'), '', 2)}")
+                p10.markdown(f"**10J media:** {_format_metric(row.get('fis_j10_media_saltos_cm'), ' cm')}")
+                p11.markdown(f"**Indice fadiga:** {_format_metric(row.get('fis_indice_fadiga_10j_pct'), '%', 2)}")
+
+            with tab_tech:
+                st.caption(f"Data: {_format_date(row.get('tec_data_avaliacao'))}")
+                t1, t2, t3, t4 = st.columns(4)
+                t1.markdown(f"**Passe:** {_format_metric(row.get('tec_passe_score'), '/10')}")
+                t2.markdown(f"**Remate:** {_format_metric(row.get('tec_remate_score'), '/10')}")
+                t3.markdown(f"**Drible:** {_format_metric(row.get('tec_drible_score'), '/10')}")
+                t4.markdown(f"**Controlo bola:** {_format_metric(row.get('tec_controlo_bola_score'), '/10')}")
+
+            with tab_psych:
+                st.caption(f"Data: {_format_date(row.get('tec_data_avaliacao'))}")
+                s1, s2, s3, s4, s5 = st.columns(5)
+                s1.markdown(f"**Decisao:** {_format_metric(row.get('tec_decisao_score'), '/10')}")
+                s2.markdown(f"**Concentracao:** {_format_metric(row.get('tec_concentracao_score'), '/10')}")
+                s3.markdown(f"**Lideranca:** {_format_metric(row.get('tec_lideranca_score'), '/10')}")
+                s4.markdown(f"**Resiliencia:** {_format_metric(row.get('tec_resiliencia_score'), '/10')}")
+                s5.markdown(f"**Competitividade:** {_format_metric(row.get('tec_competitividade_score'), '/10')}")
+
+            action_col1, action_col2, action_col3 = st.columns(3)
+            if action_col1.button("Editar atleta", key=f"open_edit_athlete_{row['atleta_id']}"):
+                st.session_state[edit_state_key] = not st.session_state.get(edit_state_key, False)
+                st.rerun()
+            if action_col2.button("Eliminar atleta e historico", key=f"delete_athlete_{row['atleta_id']}"):
                 delete_photo(_clean_text_value(row.get("foto_path")))
                 delete_athlete(_clean_text_value(row.get("atleta_id")))
                 st.success("Atleta e historico eliminados com sucesso.")
                 st.rerun()
-            if action_col2.button("Inativar/Ativar", key=f"toggle_athlete_{row['atleta_id']}"):
+            if action_col3.button("Inativar/Ativar", key=f"toggle_athlete_{row['atleta_id']}"):
                 updated = athletes_df.copy()
                 updated.loc[updated["atleta_id"].astype(str) == str(row["atleta_id"]), "ativo"] = not bool(row.get("ativo"))
                 for _, athlete_row in updated.iterrows():
                     upsert_athlete(athlete_row.to_dict())
                 st.success("Estado do atleta atualizado.")
                 st.rerun()
+
+            if st.session_state.get(edit_state_key, False):
+                st.divider()
+                st.markdown("**Editar atleta**")
+                with st.form(f"edit_athlete_form_{row['atleta_id']}"):
+                    edit_top_left, edit_top_right = st.columns([0.8, 2.2], gap="large")
+                    with edit_top_left:
+                        st.caption("Nova foto opcional")
+                        nova_foto = st.camera_input("Atualizar foto", key=f"edit_camera_{row['atleta_id']}", label_visibility="collapsed")
+                    with edit_top_right:
+                        e1, e2 = st.columns(2)
+                        nome = e1.text_input("Nome", value=_clean_text_value(row.get("nome")), key=f"edit_nome_{row['atleta_id']}")
+                        data_nascimento = e2.date_input(
+                            "Data de nascimento",
+                            value=_clean_date(row.get("data_nascimento")),
+                            min_value=ATHLETE_BIRTHDATE_MIN,
+                            max_value=ATHLETE_BIRTHDATE_MAX,
+                            format="DD/MM/YYYY",
+                            key=f"edit_birth_{row['atleta_id']}",
+                        )
+                        e3, e4, e5, e6 = st.columns(4)
+                        idade_preview = _calculate_age(data_nascimento)
+                        e3.text_input("Idade", value="" if idade_preview is None else str(idade_preview), disabled=True, key=f"edit_age_{row['atleta_id']}")
+                        genero = e4.selectbox("Genero", options=GENDER_OPTIONS, index=GENDER_OPTIONS.index(_clean_text_value(row.get("genero"))) if _clean_text_value(row.get("genero")) in GENDER_OPTIONS else 0, key=f"edit_genero_{row['atleta_id']}")
+                        escalao_preview = _derive_escalao_from_age(idade_preview)
+                        e5.text_input("Escalao", value=escalao_preview, disabled=True, key=f"edit_scale_{row['atleta_id']}")
+                        selecao = e6.selectbox("Selecao", options=SELECTION_OPTIONS, index=SELECTION_OPTIONS.index(_clean_text_value(row.get("selecao"))) if _clean_text_value(row.get("selecao")) in SELECTION_OPTIONS else 0, key=f"edit_selecao_{row['atleta_id']}")
+                        e7, e8 = st.columns(2)
+                        posicao = e7.selectbox("Posicao", options=POSITION_OPTIONS, index=POSITION_OPTIONS.index(_clean_text_value(row.get("posicao"))) if _clean_text_value(row.get("posicao")) in POSITION_OPTIONS else 0, key=f"edit_posicao_{row['atleta_id']}")
+                        ativo = e8.checkbox("Ativo", value=bool(row.get("ativo")), key=f"edit_ativo_{row['atleta_id']}")
+                    save_edit = st.form_submit_button("Guardar alteracoes", type="primary")
+
+                if save_edit:
+                    if not _clean_text_value(nome):
+                        st.error("O campo Nome e obrigatorio.")
+                    else:
+                        updated_photo_path = _clean_text_value(row.get("foto_path"))
+                        if nova_foto is not None:
+                            if updated_photo_path:
+                                delete_photo(updated_photo_path)
+                            updated_photo_path = save_photo(_clean_text_value(row.get("atleta_id")), nova_foto)
+                        upsert_athlete(
+                            {
+                                "atleta_id": _clean_text_value(row.get("atleta_id")),
+                                "nome": _clean_text_value(nome),
+                                "data_nascimento": _clean_date(data_nascimento),
+                                "genero": _clean_text_value(genero),
+                                "selecao": _clean_text_value(selecao),
+                                "posicao": _clean_text_value(posicao),
+                                "foto_path": updated_photo_path,
+                                "ativo": bool(ativo),
+                                "created_at": row.get("created_at"),
+                            }
+                        )
+                        st.session_state[edit_state_key] = False
+                        st.success("Atleta atualizada com sucesso.")
+                        st.rerun()
 
 
 def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
@@ -674,8 +896,151 @@ def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
             st.rerun()
 
 
-def _render_physical_tab(athletes_df: pd.DataFrame, physical_df: pd.DataFrame) -> None:
-    st.subheader("Ficha Antropometrica e Testes Fisicos")
+def _render_anthropometry_tab(athletes_df: pd.DataFrame, physical_df: pd.DataFrame) -> None:
+    st.subheader("Ficha Antropometrica")
+    athlete_options = athletes_df["atleta_id"].astype(str).tolist() if not athletes_df.empty else []
+    if not athlete_options:
+        st.info("Cria primeiro atletas na ficha mestre.")
+        return
+
+    selected_id = st.selectbox("Atleta ID", options=athlete_options, key="anthropometry_atleta_id")
+    selected_athlete = _selected_athlete_row(athletes_df, selected_id)
+    latest_snapshot = _latest_physical_snapshot(physical_df, selected_id)
+
+    head_col1, head_col2 = st.columns([0.7, 2.3], gap="large")
+    with head_col1:
+        photo_path = _clean_text_value(selected_athlete.get("foto_path")) if selected_athlete is not None else ""
+        if photo_path:
+            st.image(photo_path, width=120)
+        else:
+            st.caption("Sem foto registada.")
+    with head_col2:
+        st.markdown(f"**Nome:** {_clean_text_value(selected_athlete.get('nome')) if selected_athlete is not None else '-'}")
+        st.markdown(f"**Genero:** {_clean_text_value(selected_athlete.get('genero')) if selected_athlete is not None else '-'}")
+        st.markdown(f"**Data nascimento:** {_format_date(selected_athlete.get('data_nascimento')) if selected_athlete is not None else '-'}")
+
+    with st.form("anthropometry_single_record_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        col1.text_input("Atleta selecionada", value=_clean_text_value(selected_athlete.get("nome")) if selected_athlete is not None else "", disabled=True)
+        data_avaliacao = col2.date_input("Data avaliacao", value=date.today(), format="DD/MM/YYYY")
+        a1, a2, a3, a4, a5 = st.columns(5)
+        peso_kg = a1.number_input("Peso corporal (kg)", min_value=0.0, value=float(latest_snapshot.get("peso_kg", 0.0) or 0.0), step=0.1)
+        altura_cm = a2.number_input("Altura (cm)", min_value=0.0, value=float(latest_snapshot.get("altura_cm", 0.0) or 0.0), step=0.1)
+        envergadura_cm = a3.number_input("Envergadura (cm)", min_value=0.0, value=float(latest_snapshot.get("envergadura_cm", 0.0) or 0.0), step=0.1)
+        comprimento_perna_cm = a4.number_input("Comprimento Perna (cm)", min_value=0.0, value=float(latest_snapshot.get("comprimento_perna_cm", 0.0) or 0.0), step=0.1)
+        altura_sentada_cm = a5.number_input("Altura sentada (cm)", min_value=0.0, value=float(latest_snapshot.get("altura_sentada_cm", 0.0) or 0.0), step=0.1)
+        maturity_offset = _calculate_maturity_offset(
+            selected_athlete.get("genero") if selected_athlete is not None else "",
+            selected_athlete.get("data_nascimento") if selected_athlete is not None else None,
+            data_avaliacao,
+            peso_kg,
+            altura_cm,
+            altura_sentada_cm,
+        )
+        maturity_status = _classify_maturity_offset(maturity_offset)
+        b1, b2, b3 = st.columns([1, 1, 2])
+        b1.text_input(
+            "Salto maturacional",
+            value="" if maturity_offset is None else f"{maturity_offset:.2f}",
+            disabled=True,
+        )
+        b2.text_input("Estado maturacional", value=maturity_status, disabled=True)
+        b3.caption("Calculo automatico do maturity offset. Requer data nascimento, genero, peso, altura e altura sentada.")
+        submitted = st.form_submit_button("Guardar ficha antropometrica", type="primary")
+
+    if submitted:
+        new_record = _build_physical_record(physical_df, selected_id, data_avaliacao, {
+            "peso_kg": peso_kg if peso_kg > 0 else None,
+            "altura_cm": altura_cm if altura_cm > 0 else None,
+            "envergadura_cm": envergadura_cm if envergadura_cm > 0 else None,
+            "comprimento_perna_cm": comprimento_perna_cm if comprimento_perna_cm > 0 else None,
+            "altura_sentada_cm": altura_sentada_cm if altura_sentada_cm > 0 else None,
+            "salto_maturacional": maturity_offset,
+            "estado_maturacional": maturity_status,
+        })
+        append_records("physical", new_record, source_type="manual_anthropometry")
+        st.success("Ficha antropometrica guardada com sucesso.")
+        st.rerun()
+
+    st.divider()
+    st.markdown("**Historico antropometrico**")
+    anthropometry_history_df = physical_df[physical_df["source_type"].astype(str).isin(["manual_anthropometry"])].copy() if not physical_df.empty else physical_df
+    if anthropometry_history_df.empty:
+        st.info("Sem historico antropometrico.")
+    else:
+        history_df = anthropometry_history_df.copy()
+        history_df["data_avaliacao"] = pd.to_datetime(history_df["data_avaliacao"], errors="coerce").dt.strftime("%d/%m/%Y")
+        history_df["inserted_at"] = pd.to_datetime(history_df["inserted_at"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M")
+        display_df = history_df[["record_id", "inserted_at", "atleta_id", "data_avaliacao", "peso_kg", "altura_cm", "envergadura_cm", "comprimento_perna_cm", "altura_sentada_cm", "salto_maturacional", "estado_maturacional"]].reset_index(drop=True)
+        selection = st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+        )
+        selected_rows = selection.selection.rows if selection and selection.selection else []
+        selected_record_id = None if not selected_rows else str(display_df.iloc[selected_rows[0]]["record_id"])
+        if not selected_record_id:
+            st.caption("Seleciona uma linha do historico para editar ou eliminar.")
+            return
+
+        edit_state_key = "open_edit_anthropometry_record"
+        action_col1, action_col2 = st.columns(2)
+        if action_col1.button("Editar registo antropometrico", key="open_edit_anthropometry_btn"):
+            _toggle_state(edit_state_key)
+            st.rerun()
+        if action_col2.button("Eliminar registo antropometrico", key="delete_anthropometry_btn"):
+            delete_record("physical", selected_record_id)
+            st.success("Registo antropometrico eliminado com sucesso.")
+            st.rerun()
+        edit_row = _record_row_by_id(anthropometry_history_df, selected_record_id)
+        if st.session_state.get(edit_state_key, False) and edit_row is not None:
+            with st.form("edit_anthropometry_record_form"):
+                e1, e2 = st.columns(2)
+                edit_data_avaliacao = e1.date_input("Data avaliacao", value=_clean_date(edit_row.get("data_avaliacao")), format="DD/MM/YYYY", key="edit_anth_date")
+                edit_peso = e2.number_input("Peso corporal (kg)", min_value=0.0, value=float(edit_row.get("peso_kg", 0.0) or 0.0), step=0.1, key="edit_anth_weight")
+                e3, e4, e5, e6 = st.columns(4)
+                edit_altura = e3.number_input("Altura (cm)", min_value=0.0, value=float(edit_row.get("altura_cm", 0.0) or 0.0), step=0.1, key="edit_anth_height")
+                edit_envergadura = e4.number_input("Envergadura (cm)", min_value=0.0, value=float(edit_row.get("envergadura_cm", 0.0) or 0.0), step=0.1, key="edit_anth_span")
+                edit_perna = e5.number_input("Comprimento Perna (cm)", min_value=0.0, value=float(edit_row.get("comprimento_perna_cm", 0.0) or 0.0), step=0.1, key="edit_anth_leg")
+                edit_sentada = e6.number_input("Altura sentada (cm)", min_value=0.0, value=float(edit_row.get("altura_sentada_cm", 0.0) or 0.0), step=0.1, key="edit_anth_sit")
+                athlete_row = _selected_athlete_row(athletes_df, _clean_text_value(edit_row.get("atleta_id")))
+                edit_offset = _calculate_maturity_offset(
+                    athlete_row.get("genero") if athlete_row is not None else "",
+                    athlete_row.get("data_nascimento") if athlete_row is not None else None,
+                    edit_data_avaliacao,
+                    edit_peso,
+                    edit_altura,
+                    edit_sentada,
+                )
+                edit_status = _classify_maturity_offset(edit_offset)
+                e7, e8 = st.columns(2)
+                e7.text_input("Salto maturacional", value="" if edit_offset is None else f"{edit_offset:.2f}", disabled=True, key="edit_anth_offset")
+                e8.text_input("Estado maturacional", value=edit_status, disabled=True, key="edit_anth_status")
+                save_edit = st.form_submit_button("Guardar alteracoes do registo", type="primary")
+            if save_edit:
+                update_record(
+                    "physical",
+                    selected_record_id,
+                    {
+                        "data_avaliacao": _clean_date(edit_data_avaliacao),
+                        "peso_kg": edit_peso if edit_peso > 0 else None,
+                        "altura_cm": edit_altura if edit_altura > 0 else None,
+                        "envergadura_cm": edit_envergadura if edit_envergadura > 0 else None,
+                        "comprimento_perna_cm": edit_perna if edit_perna > 0 else None,
+                        "altura_sentada_cm": edit_sentada if edit_sentada > 0 else None,
+                        "salto_maturacional": edit_offset,
+                        "estado_maturacional": edit_status,
+                    },
+                )
+                st.session_state[edit_state_key] = False
+                st.success("Registo antropometrico atualizado com sucesso.")
+                st.rerun()
+
+
+def _render_physical_tests_tab(athletes_df: pd.DataFrame, physical_df: pd.DataFrame) -> None:
+    st.subheader("Ficha Testes Fisicos")
     athlete_options = athletes_df["atleta_id"].astype(str).tolist() if not athletes_df.empty else []
     if not athlete_options:
         st.info("Cria primeiro atletas na ficha mestre.")
@@ -700,13 +1065,6 @@ def _render_physical_tab(athletes_df: pd.DataFrame, physical_df: pd.DataFrame) -
         data_avaliacao = col2.date_input("Data avaliacao", value=myjump_defaults.get("data_avaliacao"))
         col3.markdown("**Conferencia MyJumpLab**")
         col3.caption(imported_name or "-")
-
-        st.markdown("**Antropometria**")
-        a1, a2, a3, a4 = st.columns(4)
-        peso_kg = a1.number_input("Peso corporal (kg)", min_value=0.0, value=float(myjump_defaults.get("peso_kg", 0.0) or 0.0), step=0.1)
-        altura_cm = a2.number_input("Altura (cm)", min_value=0.0, value=0.0, step=0.1)
-        envergadura_cm = a3.number_input("Envergadura (cm)", min_value=0.0, value=0.0, step=0.1)
-        comprimento_perna_cm = a4.number_input("Comprimento Perna (cm)", min_value=0.0, value=0.0, step=0.1)
 
         st.markdown("**Velocidade e Agilidade**")
         v1, v2, v3, v4, v5 = st.columns(5)
@@ -771,13 +1129,7 @@ def _render_physical_tab(athletes_df: pd.DataFrame, physical_df: pd.DataFrame) -
         submitted = st.form_submit_button("Guardar ficha fisica", type="primary")
 
     if submitted:
-        new_record = pd.DataFrame([{
-            "atleta_id": atleta_id,
-            "data_avaliacao": _clean_date(data_avaliacao),
-            "peso_kg": peso_kg if peso_kg > 0 else None,
-            "altura_cm": altura_cm if altura_cm > 0 else None,
-            "envergadura_cm": envergadura_cm if envergadura_cm > 0 else None,
-            "comprimento_perna_cm": comprimento_perna_cm if comprimento_perna_cm > 0 else None,
+        new_record = _build_physical_record(physical_df, atleta_id, data_avaliacao, {
             "sprint_10m_s": sprint_10m_s if sprint_10m_s > 0 else None,
             "sprint_20m_s": sprint_20m_s if sprint_20m_s > 0 else None,
             "teste_505_esq_s": teste_505_esq_s if teste_505_esq_s > 0 else None,
@@ -815,8 +1167,8 @@ def _render_physical_tab(athletes_df: pd.DataFrame, physical_df: pd.DataFrame) -
             "j10_maximo_cm": j10_maximo_cm if j10_maximo_cm > 0 else None,
             "j10_minimo_cm": j10_minimo_cm if j10_minimo_cm > 0 else None,
             "indice_fadiga_10j_pct": indice_fadiga_10j_pct if indice_fadiga_10j_pct != 0 else None,
-        }])
-        append_records("physical", new_record, source_type="manual")
+        })
+        append_records("physical", new_record, source_type="manual_physical_tests")
         st.success("Ficha fisica guardada com sucesso.")
         st.rerun()
 
@@ -862,14 +1214,14 @@ def _render_physical_tab(athletes_df: pd.DataFrame, physical_df: pd.DataFrame) -
 
     st.divider()
     st.markdown("**Historico fisico**")
-    if physical_df.empty:
+    physical_history_df = physical_df[~physical_df["source_type"].astype(str).isin(["manual_anthropometry"])].copy() if not physical_df.empty else physical_df
+    if physical_history_df.empty:
         st.info("Sem historico fisico.")
     else:
-        history_df = physical_df.copy()
+        history_df = physical_history_df.copy()
         history_df["data_avaliacao"] = pd.to_datetime(history_df["data_avaliacao"], errors="coerce").dt.strftime("%d/%m/%Y")
         history_df["inserted_at"] = pd.to_datetime(history_df["inserted_at"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M")
-        st.dataframe(
-            history_df[
+        display_df = history_df[
                 [
                     "record_id",
                     "batch_id",
@@ -887,19 +1239,63 @@ def _render_physical_tab(athletes_df: pd.DataFrame, physical_df: pd.DataFrame) -
                     "j10_media_saltos_cm",
                     "indice_fadiga_10j_pct",
                 ]
-            ],
+            ].reset_index(drop=True)
+        selection = st.dataframe(
+            display_df,
             use_container_width=True,
             hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
         )
-        record_to_delete = st.selectbox("Eliminar registo fisico", options=history_df["record_id"].astype(str).tolist(), key="delete_physical_record")
-        if st.button("Eliminar registo fisico selecionado", key="delete_physical_btn"):
-            delete_record("physical", record_to_delete)
+        selected_rows = selection.selection.rows if selection and selection.selection else []
+        selected_record_id = None if not selected_rows else str(display_df.iloc[selected_rows[0]]["record_id"])
+        if not selected_record_id:
+            st.caption("Seleciona uma linha do historico para editar ou eliminar.")
+            return
+
+        edit_state_key = "open_edit_physical_record"
+        action_col1, action_col2 = st.columns(2)
+        if action_col1.button("Editar registo fisico", key="open_edit_physical_btn"):
+            _toggle_state(edit_state_key)
+            st.rerun()
+        if action_col2.button("Eliminar registo fisico", key="delete_physical_btn"):
+            delete_record("physical", selected_record_id)
             st.success("Registo fisico eliminado com sucesso.")
             st.rerun()
+        edit_row = _record_row_by_id(physical_history_df, selected_record_id)
+        if st.session_state.get(edit_state_key, False) and edit_row is not None:
+            with st.form("edit_physical_record_form"):
+                e1, e2, e3, e4 = st.columns(4)
+                edit_data_avaliacao = e1.date_input("Data avaliacao", value=_clean_date(edit_row.get("data_avaliacao")), format="DD/MM/YYYY", key="edit_phys_date")
+                edit_sprint10 = e2.number_input("Sprint 10m (s)", min_value=0.0, value=float(edit_row.get("sprint_10m_s", 0.0) or 0.0), step=0.01, key="edit_phys_s10")
+                edit_sprint20 = e3.number_input("Sprint 20m (s)", min_value=0.0, value=float(edit_row.get("sprint_20m_s", 0.0) or 0.0), step=0.01, key="edit_phys_s20")
+                edit_cmj = e4.number_input("CMJ altura (cm)", min_value=0.0, value=float(edit_row.get("cmj_altura_cm", 0.0) or 0.0), step=0.1, key="edit_phys_cmj")
+                e5, e6, e7 = st.columns(3)
+                edit_sj = e5.number_input("SJ altura (cm)", min_value=0.0, value=float(edit_row.get("sj_altura_cm", 0.0) or 0.0), step=0.1, key="edit_phys_sj")
+                edit_rsi = e6.number_input("10J RSI 10-5", min_value=0.0, value=float(edit_row.get("j10_rsi_10_5", 0.0) or 0.0), step=0.01, key="edit_phys_rsi")
+                edit_fadiga = e7.number_input("Indice fadiga 10J (%)", value=float(edit_row.get("indice_fadiga_10j_pct", 0.0) or 0.0), step=0.1, key="edit_phys_fadiga")
+                save_edit = st.form_submit_button("Guardar alteracoes do registo", type="primary")
+            if save_edit:
+                update_record(
+                    "physical",
+                    selected_record_id,
+                    {
+                        "data_avaliacao": _clean_date(edit_data_avaliacao),
+                        "sprint_10m_s": edit_sprint10 if edit_sprint10 > 0 else None,
+                        "sprint_20m_s": edit_sprint20 if edit_sprint20 > 0 else None,
+                        "cmj_altura_cm": edit_cmj if edit_cmj > 0 else None,
+                        "sj_altura_cm": edit_sj if edit_sj > 0 else None,
+                        "j10_rsi_10_5": edit_rsi if edit_rsi > 0 else None,
+                        "indice_fadiga_10j_pct": edit_fadiga if edit_fadiga != 0 else None,
+                    },
+                )
+                st.session_state[edit_state_key] = False
+                st.success("Registo fisico atualizado com sucesso.")
+                st.rerun()
 
 
 def _render_technical_tab(athletes_df: pd.DataFrame, technical_df: pd.DataFrame) -> None:
-    st.subheader("Ficha Tecnica e Psicologica")
+    st.subheader("Registo Tecnica")
     athlete_options = athletes_df["atleta_id"].astype(str).tolist() if not athletes_df.empty else []
     if not athlete_options:
         st.info("Cria primeiro atletas na ficha mestre.")
@@ -909,37 +1305,70 @@ def _render_technical_tab(athletes_df: pd.DataFrame, technical_df: pd.DataFrame)
         col1, col2 = st.columns(2)
         atleta_id = col1.selectbox("Atleta ID", options=athlete_options, key="technical_atleta_id")
         data_avaliacao = col2.date_input("Data avaliacao", value=None, format="DD/MM/YYYY", key="technical_data_avaliacao")
-        c1, c2, c3, c4, c5 = st.columns(5)
+        latest_snapshot = _latest_technical_snapshot(technical_df, atleta_id)
+        c1, c2, c3, c4 = st.columns(4)
         passe_score = c1.number_input("Passe", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
         remate_score = c2.number_input("Remate", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
         drible_score = c3.number_input("Drible", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
         controlo_bola_score = c4.number_input("Controlo bola", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
-        decisao_score = c5.number_input("Decisao", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
-        p1, p2, p3, p4 = st.columns(4)
-        concentracao_score = p1.number_input("Concentracao", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
-        lideranca_score = p2.number_input("Lideranca", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
-        resiliencia_score = p3.number_input("Resiliencia", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
-        competitividade_score = p4.number_input("Competitividade", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
-        observacoes = st.text_input("Observacoes")
-        submitted = st.form_submit_button("Guardar ficha tecnica/psicologica", type="primary")
+        observacoes = st.text_input("Observacoes", value=_clean_text_value(latest_snapshot.get("observacoes")))
+        submitted = st.form_submit_button("Guardar registo tecnico", type="primary")
 
     if submitted:
-        record_df = pd.DataFrame([{
-            "atleta_id": atleta_id,
-            "data_avaliacao": _clean_date(data_avaliacao),
+        record_df = _build_technical_record(technical_df, atleta_id, data_avaliacao, {
             "passe_score": passe_score if passe_score > 0 else None,
             "remate_score": remate_score if remate_score > 0 else None,
             "drible_score": drible_score if drible_score > 0 else None,
             "controlo_bola_score": controlo_bola_score if controlo_bola_score > 0 else None,
+            "observacoes": _clean_text_value(observacoes),
+        })
+        append_records("technical", record_df, source_type="manual_technical")
+        st.success("Registo tecnico guardado com sucesso.")
+        st.rerun()
+
+    st.divider()
+    st.markdown("**Historico tecnico**")
+    if technical_df.empty:
+        st.info("Sem historico tecnico.")
+    else:
+        history_df = technical_df.copy()
+        history_df["data_avaliacao"] = pd.to_datetime(history_df["data_avaliacao"], errors="coerce").dt.strftime("%d/%m/%Y")
+        history_df["inserted_at"] = pd.to_datetime(history_df["inserted_at"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M")
+        st.dataframe(history_df[["record_id", "batch_id", "inserted_at", "source_type", "source_file", "atleta_id", "data_avaliacao", "passe_score", "remate_score", "drible_score", "controlo_bola_score"]], use_container_width=True, hide_index=True)
+
+
+def _render_psychological_tab(athletes_df: pd.DataFrame, technical_df: pd.DataFrame) -> None:
+    st.subheader("Registo Psicologica")
+    athlete_options = athletes_df["atleta_id"].astype(str).tolist() if not athletes_df.empty else []
+    if not athlete_options:
+        st.info("Cria primeiro atletas na ficha mestre.")
+        return
+
+    with st.form("psychological_single_record_form", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        atleta_id = col1.selectbox("Atleta ID", options=athlete_options, key="psychological_atleta_id")
+        data_avaliacao = col2.date_input("Data avaliacao", value=None, format="DD/MM/YYYY", key="psychological_data_avaliacao")
+        latest_snapshot = _latest_technical_snapshot(technical_df, atleta_id)
+        p1, p2, p3, p4, p5 = st.columns(5)
+        decisao_score = p1.number_input("Decisao", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
+        concentracao_score = p2.number_input("Concentracao", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
+        lideranca_score = p3.number_input("Lideranca", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
+        resiliencia_score = p4.number_input("Resiliencia", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
+        competitividade_score = p5.number_input("Competitividade", min_value=0.0, max_value=10.0, value=0.0, step=0.1)
+        observacoes = st.text_input("Observacoes", value=_clean_text_value(latest_snapshot.get("observacoes")), key="psychological_observacoes")
+        submitted = st.form_submit_button("Guardar registo psicologico", type="primary")
+
+    if submitted:
+        record_df = _build_technical_record(technical_df, atleta_id, data_avaliacao, {
             "decisao_score": decisao_score if decisao_score > 0 else None,
             "concentracao_score": concentracao_score if concentracao_score > 0 else None,
             "lideranca_score": lideranca_score if lideranca_score > 0 else None,
             "resiliencia_score": resiliencia_score if resiliencia_score > 0 else None,
             "competitividade_score": competitividade_score if competitividade_score > 0 else None,
             "observacoes": _clean_text_value(observacoes),
-        }])
-        append_records("technical", record_df, source_type="manual")
-        st.success("Ficha tecnica/psicologica guardada com sucesso.")
+        })
+        append_records("technical", record_df, source_type="manual_psychological")
+        st.success("Registo psicologico guardado com sucesso.")
         st.rerun()
 
     st.divider()
@@ -959,14 +1388,14 @@ def _render_technical_tab(athletes_df: pd.DataFrame, technical_df: pd.DataFrame)
             st.rerun()
 
     st.divider()
-    st.markdown("**Historico tecnico/psicologico**")
+    st.markdown("**Historico psicologico**")
     if technical_df.empty:
-        st.info("Sem historico tecnico/psicologico.")
+        st.info("Sem historico psicologico.")
     else:
         history_df = technical_df.copy()
         history_df["data_avaliacao"] = pd.to_datetime(history_df["data_avaliacao"], errors="coerce").dt.strftime("%d/%m/%Y")
         history_df["inserted_at"] = pd.to_datetime(history_df["inserted_at"], errors="coerce").dt.strftime("%d/%m/%Y %H:%M")
-        st.dataframe(history_df[["record_id", "batch_id", "inserted_at", "source_type", "source_file", "atleta_id", "data_avaliacao", "passe_score", "decisao_score", "resiliencia_score"]], use_container_width=True, hide_index=True)
+        st.dataframe(history_df[["record_id", "batch_id", "inserted_at", "source_type", "source_file", "atleta_id", "data_avaliacao", "decisao_score", "concentracao_score", "lideranca_score", "resiliencia_score", "competitividade_score"]], use_container_width=True, hide_index=True)
         record_to_delete = st.selectbox("Eliminar registo tecnico/psicologico", options=history_df["record_id"].astype(str).tolist(), key="delete_technical_record")
         if st.button("Eliminar registo tecnico/psicologico selecionado", key="delete_technical_btn"):
             delete_record("technical", record_to_delete)
@@ -983,8 +1412,8 @@ technical_df = read_technical_records()
 
 _render_summary_metrics(athletes_df, physical_df, technical_df)
 
-tab_registry, tab_create, tab_physical, tab_technical = st.tabs(
-    ["Atletas", "Criar Atleta", "Ficha Antropometria | Fisica", "Ficha Tecnica | Psicologica"]
+tab_registry, tab_create, tab_anthropometry, tab_physical_tests, tab_technical, tab_psychological = st.tabs(
+    ["Atletas", "Criar Atleta", "Registo Antropometria", "Registo Testes Fisicos", "Registo Tecnica", "Registo Psicologica"]
 )
 
 with tab_registry:
@@ -993,8 +1422,14 @@ with tab_registry:
 with tab_create:
     _render_create_athlete_form(athletes_df)
 
-with tab_physical:
-    _render_physical_tab(athletes_df, physical_df)
+with tab_anthropometry:
+    _render_anthropometry_tab(athletes_df, physical_df)
+
+with tab_physical_tests:
+    _render_physical_tests_tab(athletes_df, physical_df)
 
 with tab_technical:
     _render_technical_tab(athletes_df, technical_df)
+
+with tab_psychological:
+    _render_psychological_tab(athletes_df, technical_df)

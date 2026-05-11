@@ -1,6 +1,7 @@
 param(
     [switch]$Reinstall,
-    [switch]$Check
+    [switch]$Check,
+    [switch]$Foreground
 )
 
 $ErrorActionPreference = "Stop"
@@ -100,4 +101,29 @@ if ($Check) {
 }
 
 Write-Host "A iniciar FPF Hub com $PythonExe"
-Invoke-Checked $PythonExe @("-m", "streamlit", "run", "Home.py")
+$streamlitArgs = @("-m", "streamlit", "run", "Home.py")
+
+if ($Foreground) {
+    Invoke-Checked $PythonExe $streamlitArgs
+}
+
+$process = Start-Process `
+    -FilePath "powershell.exe" `
+    -ArgumentList @(
+        "-NoExit",
+        "-ExecutionPolicy", "Bypass",
+        "-Command",
+        "& { Set-Location '$ProjectRoot'; & '$PythonExe' @('-m','streamlit','run','Home.py') }"
+    ) `
+    -WorkingDirectory $ProjectRoot `
+    -PassThru
+
+Start-Sleep -Seconds 4
+
+if ($process.HasExited) {
+    throw "O servidor Streamlit terminou durante o arranque."
+}
+
+Write-Host "FPF Hub iniciado em background."
+Write-Host "PID: $($process.Id)"
+Write-Host "Local URL: http://localhost:8501"

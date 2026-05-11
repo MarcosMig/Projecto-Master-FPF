@@ -45,6 +45,9 @@ PHYSICAL_COLUMNS = [
     "altura_cm",
     "envergadura_cm",
     "comprimento_perna_cm",
+    "altura_sentada_cm",
+    "salto_maturacional",
+    "estado_maturacional",
     "sprint_10m_s",
     "sprint_20m_s",
     "teste_505_esq_s",
@@ -225,6 +228,30 @@ def delete_record(kind: str, record_id: str) -> None:
         save_technical_records(df[df["record_id"].astype(str) != record_id].copy())
     else:
         raise RuntimeError("Tipo de registo invalido.")
+
+
+def update_record(kind: str, record_id: str, updates: dict) -> None:
+    record_id = str(record_id or "").strip()
+    if not record_id:
+        raise RuntimeError("Record ID invalido.")
+
+    if kind == "physical":
+        df = read_physical_records()
+        save_fn = save_physical_records
+    elif kind == "technical":
+        df = read_technical_records()
+        save_fn = save_technical_records
+    else:
+        raise RuntimeError("Tipo de registo invalido.")
+
+    mask = df["record_id"].astype(str) == record_id
+    if not mask.any():
+        raise RuntimeError("Registo nao encontrado.")
+
+    for key, value in updates.items():
+        if key in df.columns:
+            df.loc[mask, key] = value
+    save_fn(df.copy())
 
 
 def delete_athlete(atleta_id: str) -> None:
