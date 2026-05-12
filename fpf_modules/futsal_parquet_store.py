@@ -12,6 +12,7 @@ from .constants import CLEANDATA_DIR
 FUTSAL_DIR = Path(CLEANDATA_DIR) / "futsal"
 FUTSAL_PHOTOS_DIR = FUTSAL_DIR / "athlete_photos"
 ATHLETES_PATH = FUTSAL_DIR / "athletes_master.parquet"
+ATHLETE_HISTORY_PATH = FUTSAL_DIR / "athlete_history.parquet"
 PHYSICAL_RECORDS_PATH = FUTSAL_DIR / "physical_assessments.parquet"
 TECHNICAL_RECORDS_PATH = FUTSAL_DIR / "technical_psychological_assessments.parquet"
 
@@ -28,6 +29,20 @@ ATHLETE_COLUMNS = [
     "ativo",
     "created_at",
     "updated_at",
+]
+
+ATHLETE_HISTORY_COLUMNS = [
+    "event_id",
+    "inserted_at",
+    "event_type",
+    "atleta_id",
+    "nome",
+    "data_nascimento",
+    "genero",
+    "selecao",
+    "posicao",
+    "ativo",
+    "descricao",
 ]
 
 RECORD_META_COLUMNS = [
@@ -88,16 +103,28 @@ PHYSICAL_COLUMNS = [
 ]
 
 TECHNICAL_COLUMNS = [
-    "passe_score",
-    "remate_score",
-    "drible_score",
-    "controlo_bola_score",
-    "decisao_score",
-    "concentracao_score",
-    "lideranca_score",
-    "resiliencia_score",
-    "competitividade_score",
+    "um_x_um_ofensivo_score",
+    "um_x_um_defensivo_score",
+    "lateralidade_score",
+    "imprevisibilidade_score",
+    "leitura_jogo_score",
+    "dominio_espaco_score",
+    "posicionamento_prontidao_score",
+    "defesa_membros_superiores_score",
+    "defesa_membros_inferiores_score",
+    "defesa_6m_ocupa_espaco_score",
+    "espirito_equipa_score",
+    "controlo_emocional_score",
+    "tenacidade_resiliencia_score",
+    "atencao_concentracao_score",
     "observacoes",
+]
+
+PHYSICAL_LENGTH_COLUMNS = [
+    "altura_cm",
+    "altura_sentada_cm",
+    "envergadura_cm",
+    "comprimento_perna_cm",
 ]
 
 
@@ -106,6 +133,7 @@ def ensure_store() -> None:
     FUTSAL_PHOTOS_DIR.mkdir(parents=True, exist_ok=True)
     for path, columns in [
         (ATHLETES_PATH, ATHLETE_COLUMNS),
+        (ATHLETE_HISTORY_PATH, ATHLETE_HISTORY_COLUMNS),
         (PHYSICAL_RECORDS_PATH, RECORD_META_COLUMNS + PHYSICAL_COLUMNS),
         (TECHNICAL_RECORDS_PATH, RECORD_META_COLUMNS + TECHNICAL_COLUMNS),
     ]:
@@ -132,6 +160,120 @@ def _write_parquet(df: pd.DataFrame, path: Path, columns: list[str]) -> None:
     df[columns].to_parquet(path, index=False)
 
 
+def _normalize_length_columns(df: pd.DataFrame) -> pd.DataFrame:
+    work_df = df.copy()
+    for col in PHYSICAL_LENGTH_COLUMNS:
+        if col not in work_df.columns:
+            continue
+        numeric = pd.to_numeric(work_df[col], errors="coerce")
+        meter_mask = numeric.notna() & (numeric > 0) & (numeric < 3)
+        numeric.loc[meter_mask] = numeric.loc[meter_mask] * 100
+        work_df[col] = numeric
+    return work_df
+
+
+def _clean_date_value(value):
+    if value in ("", None) or pd.isna(value):
+        return None
+    parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
+    return None if pd.isna(parsed) else parsed.date()
+
+
+def _clean_number_value(value):
+    if value in ("", None) or pd.isna(value):
+        return None
+    try:
+        return float(str(value).strip().replace(",", "."))
+    except Exception:
+        return None
+
+
+def _calculate_decimal_age(birth_date, reference_date) -> float | None:
+    birth = _clean_date_value(birth_date)
+    ref = _clean_date_value(reference_date)
+    if not birth or not ref:
+        return None
+    return (ref - birth).days / 365.25
+
+
+def _calculate_maturity_offset(genero, birth_date, reference_date, peso_kg, altura_cm, altura_sentada_cm) -> float | None:
+    age = _calculate_decimal_age(birth_date, reference_date)
+    weight = _clean_number_value(peso_kg)
+    stature = _clean_number_value(altura_cm)
+    sitting_height = _clean_number_value(altura_sentada_cm)
+    sex = "" if genero is None or pd.isna(genero) else str(genero).strip().lower()
+    if age is None or weight is None or stature is None or sitting_height is None:
+        return None
+
+    leg_length = stature - sitting_height
+    if leg_length <= 0:
+        return None
+
+    weight_height_ratio = (weight / stature) * 100 if stature else None
+    if weight_height_ratio is None:
+        return None
+
+    if sex == "masculino":
+        return (
+            -9.236
+            + (0.0002708 * (leg_length * sitting_height))
+            - (0.001663 * (age * leg_length))
+            + (0.007216 * (age * sitting_height))
+            + (0.02292 * weight_height_ratio)
+        )
+
+    return (
+        -9.376
+        + (0.0001882 * (leg_length * sitting_height))
+        + (0.0022 * (age * leg_length))
+        + (0.005841 * (age * sitting_height))
+        - (0.002658 * (age * weight))
+        + (0.07693 * weight_height_ratio)
+    )
+
+
+def _classify_maturity_offset(maturity_offset: float | None) -> str:
+    value = _clean_number_value(maturity_offset)
+    if value is None:
+        return ""
+    if value < -1:
+        return "Pre-PHV"
+    if value <= 1:
+        return "Circa-PHV"
+    return "Post-PHV"
+
+
+def _repair_physical_records(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    work_df = _normalize_length_columns(df)
+    athletes_df = read_athletes()
+    if athletes_df.empty:
+        return work_df
+
+    athlete_meta = athletes_df[["atleta_id", "data_nascimento", "genero"]].copy()
+    merged = work_df.merge(athlete_meta, on="atleta_id", how="left", suffixes=("", "_ath"))
+    calc_mask = (
+        merged["peso_kg"].notna()
+        & merged["altura_cm"].notna()
+        & merged["altura_sentada_cm"].notna()
+        & merged["data_nascimento"].notna()
+    )
+    merged.loc[calc_mask, "salto_maturacional"] = merged.loc[calc_mask].apply(
+        lambda row: _calculate_maturity_offset(
+            row.get("genero"),
+            row.get("data_nascimento"),
+            row.get("data_avaliacao"),
+            row.get("peso_kg"),
+            row.get("altura_cm"),
+            row.get("altura_sentada_cm"),
+        ),
+        axis=1,
+    )
+    merged.loc[calc_mask, "estado_maturacional"] = merged.loc[calc_mask, "salto_maturacional"].map(_classify_maturity_offset)
+    return merged[RECORD_META_COLUMNS + PHYSICAL_COLUMNS].copy()
+
+
 def read_athletes() -> pd.DataFrame:
     return _read_parquet(ATHLETES_PATH, ATHLETE_COLUMNS)
 
@@ -140,8 +282,29 @@ def save_athletes(df: pd.DataFrame) -> None:
     _write_parquet(df.copy(), ATHLETES_PATH, ATHLETE_COLUMNS)
 
 
+def read_athlete_history() -> pd.DataFrame:
+    return _read_parquet(ATHLETE_HISTORY_PATH, ATHLETE_HISTORY_COLUMNS)
+
+
+def save_athlete_history(df: pd.DataFrame) -> None:
+    _write_parquet(df.copy(), ATHLETE_HISTORY_PATH, ATHLETE_HISTORY_COLUMNS)
+
+
+def append_athlete_history_event(record: dict) -> None:
+    df = read_athlete_history()
+    payload = {col: record.get(col) for col in ATHLETE_HISTORY_COLUMNS}
+    payload["event_id"] = payload.get("event_id") or uuid.uuid4().hex
+    payload["inserted_at"] = payload.get("inserted_at") or datetime.now(timezone.utc).isoformat()
+    df = pd.concat([df, pd.DataFrame([payload])], ignore_index=True)
+    save_athlete_history(df)
+
+
 def read_physical_records() -> pd.DataFrame:
-    return _read_parquet(PHYSICAL_RECORDS_PATH, RECORD_META_COLUMNS + PHYSICAL_COLUMNS)
+    raw_df = _read_parquet(PHYSICAL_RECORDS_PATH, RECORD_META_COLUMNS + PHYSICAL_COLUMNS)
+    repaired_df = _repair_physical_records(raw_df)
+    if not raw_df.equals(repaired_df):
+        save_physical_records(repaired_df)
+    return repaired_df
 
 
 def save_physical_records(df: pd.DataFrame) -> None:
@@ -173,6 +336,7 @@ def upsert_athlete(record: dict) -> None:
     if not atleta_id:
         raise RuntimeError("O atleta tem de ter um ID.")
     old_row = df.loc[df["atleta_id"].astype(str) == atleta_id].head(1)
+    is_new = old_row.empty
     payload["created_at"] = payload.get("created_at") or (
         old_row["created_at"].iloc[0] if not old_row.empty else now
     )
@@ -186,6 +350,19 @@ def upsert_athlete(record: dict) -> None:
             ascending=[False, True, True],
             na_position="last",
         )
+    )
+    append_athlete_history_event(
+        {
+            "event_type": "create_athlete" if is_new else "update_athlete",
+            "atleta_id": atleta_id,
+            "nome": payload.get("nome"),
+            "data_nascimento": payload.get("data_nascimento"),
+            "genero": payload.get("genero"),
+            "selecao": payload.get("selecao"),
+            "posicao": payload.get("posicao"),
+            "ativo": payload.get("ativo"),
+            "descricao": "Criacao da atleta" if is_new else "Atualizacao da ficha da atleta",
+        }
     )
 
 
@@ -258,6 +435,8 @@ def delete_athlete(atleta_id: str) -> None:
     atleta_id = str(atleta_id or "").strip()
     if not atleta_id:
         raise RuntimeError("Atleta ID invalido.")
+    history_df = read_athlete_history()
+    save_athlete_history(history_df[history_df["atleta_id"].astype(str) != atleta_id].copy())
     athletes_df = read_athletes()
     save_athletes(athletes_df[athletes_df["atleta_id"].astype(str) != atleta_id].copy())
     physical_df = read_physical_records()

@@ -63,6 +63,9 @@ elif st.session_state.selected_modality == "futsal":
         "Futsal Hub": [
             st.Page("pages/Futsal_Inicio.py", title="Inicio", default=True, url_path="futsal-inicio"),
             st.Page("pages/Futsal_Atletas.py", title="Atletas", url_path="futsal-atletas"),
+            st.Page("pages/Futsal_Criar_Atleta.py", title="Criar Atleta", url_path="futsal-criar-atleta"),
+            st.Page("pages/Futsal_Insercao_Dados.py", title="Inserção de Dados", url_path="futsal-insercao-dados"),
+            st.Page("pages/Futsal_Referenciais.py", title="Referenciais", url_path="futsal-referenciais"),
         ],
     }
 
