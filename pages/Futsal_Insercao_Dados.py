@@ -6,7 +6,12 @@ from io import BytesIO, StringIO
 import pandas as pd
 import streamlit as st
 
-from fpf_modules.futsal_parquet_store import PHYSICAL_COLUMNS, append_records, read_athletes
+from fpf_modules.futsal_parquet_store import (
+    PHYSICAL_COLUMNS,
+    TECHNICAL_COLUMNS,
+    append_records,
+    read_athletes,
+)
 
 
 REPORT_PHYSICAL_COLUMN_MAP = {
@@ -49,14 +54,33 @@ REPORT_PHYSICAL_COLUMN_MAP = {
     "Contact 9 (ms)": "contact_9_ms",
     "Contact 10 (ms)": "contact_10_ms",
     "10J RSI 10-5": "j10_rsi_10_5",
-    "10J CMJ (cm)": "j10_cmj_cm",
     "10J média saltos (cm)": "j10_media_saltos_cm",
+    "10J mÃ©dia saltos (cm)": "j10_media_saltos_cm",
+    "10J CMJ (cm)": "j10_cmj_cm",
     "10J máximo (cm)": "j10_maximo_cm",
+    "10J mÃ¡ximo (cm)": "j10_maximo_cm",
     "10J mínimo (cm)": "j10_minimo_cm",
+    "10J mÃ­nimo (cm)": "j10_minimo_cm",
     "Índice fadiga 10J (%)": "indice_fadiga_10j_pct",
+    "Ãndice fadiga 10J (%)": "indice_fadiga_10j_pct",
 }
 
-MODEL_COLUMNS = [
+REPORT_TTP_COLUMN_MAP = {
+    "ID Atleta": "atleta_id",
+    "NOME JOGADOR": "nome_jogador",
+    "1x1 ofensivo": "um_x_um_ofensivo_score",
+    "1x1 defensivo": "um_x_um_defensivo_score",
+    "Lateralidade": "lateralidade_score",
+    "Imprevisibilidade": "imprevisibilidade_score",
+    "Leitura de jogo": "leitura_jogo_score",
+    "Domínio do Espaço": "dominio_espaco_score",
+    "Espírito de equipa": "espirito_equipa_score",
+    "Controlo emocional": "controlo_emocional_score",
+    "Tenacidade / Resiliência": "tenacidade_resiliencia_score",
+    "Atenção /concentração": "atencao_concentracao_score",
+}
+
+PHYSICAL_MODEL_COLUMNS = [
     "ID",
     "Nome",
     "Posição",
@@ -104,6 +128,34 @@ MODEL_COLUMNS = [
     "Índice fadiga 10J (%)",
 ]
 
+TTP_MODEL_COLUMNS = [
+    "ID Atleta",
+    "NOME JOGADOR",
+    "1x1 ofensivo",
+    "1x1 defensivo",
+    "Lateralidade",
+    "Imprevisibilidade",
+    "Leitura de jogo",
+    "Domínio do Espaço",
+    "Espírito de equipa",
+    "Controlo emocional",
+    "Tenacidade / Resiliência",
+    "Atenção /concentração",
+]
+
+TTP_SCORE_COLUMNS = [
+    "um_x_um_ofensivo_score",
+    "um_x_um_defensivo_score",
+    "lateralidade_score",
+    "imprevisibilidade_score",
+    "leitura_jogo_score",
+    "dominio_espaco_score",
+    "espirito_equipa_score",
+    "controlo_emocional_score",
+    "tenacidade_resiliencia_score",
+    "atencao_concentracao_score",
+]
+
 
 def _clean_text_value(value) -> str:
     if pd.isna(value):
@@ -130,7 +182,6 @@ def _clean_number(value):
 
 def _normalize_length_series(series: pd.Series) -> pd.Series:
     numeric = pd.to_numeric(series, errors="coerce")
-    # In the team Excel, stature-related fields may come in meters (e.g. 1.59).
     meter_mask = numeric.notna() & (numeric > 0) & (numeric < 3)
     numeric.loc[meter_mask] = numeric.loc[meter_mask] * 100
     return numeric
@@ -152,15 +203,12 @@ def _calculate_maturity_offset(genero, birth_date, reference_date, peso_kg, altu
     sex = _clean_text_value(genero).lower()
     if age is None or weight is None or stature is None or sitting_height is None:
         return None
-
     leg_length = stature - sitting_height
     if leg_length <= 0:
         return None
-
     weight_height_ratio = (weight / stature) * 100 if stature else None
     if weight_height_ratio is None:
         return None
-
     if sex == "masculino":
         return (
             -9.236
@@ -169,7 +217,6 @@ def _calculate_maturity_offset(genero, birth_date, reference_date, peso_kg, altu
             + (0.007216 * (age * sitting_height))
             + (0.02292 * weight_height_ratio)
         )
-
     return (
         -9.376
         + (0.0001882 * (leg_length * sitting_height))
@@ -218,36 +265,45 @@ def _validate_athlete_ids(df_upload: pd.DataFrame, athletes_df: pd.DataFrame) ->
         raise RuntimeError(f"Os seguintes atleta_id nao existem na ficha mestre: {', '.join(missing[:15])}")
 
 
+def _validate_ttp_scale(df_upload: pd.DataFrame, score_columns: list[str]) -> None:
+    invalid_messages: list[str] = []
+    for col in score_columns:
+        if col not in df_upload.columns:
+            continue
+        numeric = pd.to_numeric(df_upload[col], errors="coerce")
+        invalid_mask = numeric.notna() & ~numeric.between(1, 7)
+        if invalid_mask.any():
+            invalid_rows = (df_upload.index[invalid_mask] + 2).tolist()[:10]
+            invalid_messages.append(f"{col}: linhas {', '.join(str(row) for row in invalid_rows)}")
+    if invalid_messages:
+        raise RuntimeError(
+            "Foram encontrados valores fora da escala 1-7 no lote TTP. Corrige estas colunas/linhas: "
+            + " | ".join(invalid_messages)
+        )
+
+
 def _prepare_bulk_physical_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, data_avaliacao) -> pd.DataFrame:
     if df_upload is None or df_upload.empty:
         raise RuntimeError("O ficheiro nao contem linhas.")
-
     work_df = df_upload.copy()
     work_df.columns = [str(col).strip() for col in work_df.columns]
-
     if "ID" not in work_df.columns:
-        raise RuntimeError("O modelo tem de incluir a coluna 'ID'.")
-
+        raise RuntimeError("O modelo fisico tem de incluir a coluna 'ID'.")
     work_df["atleta_id"] = work_df["ID"].fillna("").astype(str).str.strip()
     work_df = work_df[work_df["atleta_id"].ne("")].copy()
     if work_df.empty:
         raise RuntimeError("Nenhuma linha valida foi encontrada no modelo.")
-
     rename_map = {source: target for source, target in REPORT_PHYSICAL_COLUMN_MAP.items() if source in work_df.columns}
     work_df = work_df.rename(columns=rename_map)
     work_df["data_avaliacao"] = pd.to_datetime(data_avaliacao).date()
-
     for col in PHYSICAL_COLUMNS:
         if col not in work_df.columns:
             work_df[col] = pd.NA
-
     for col in PHYSICAL_COLUMNS:
         work_df[col] = pd.to_numeric(work_df[col], errors="coerce")
-
     for col in ["altura_cm", "altura_sentada_cm", "envergadura_cm", "comprimento_perna_cm"]:
         if col in work_df.columns:
             work_df[col] = _normalize_length_series(work_df[col])
-
     _validate_athlete_ids(work_df[["atleta_id"]].copy(), athletes_df)
     athlete_meta = athletes_df[["atleta_id", "data_nascimento", "genero"]].copy()
     work_df = work_df.merge(athlete_meta, on="atleta_id", how="left")
@@ -266,11 +322,38 @@ def _prepare_bulk_physical_records(df_upload: pd.DataFrame, athletes_df: pd.Data
     return work_df[["atleta_id", "data_avaliacao"] + PHYSICAL_COLUMNS].copy()
 
 
-def _build_model_excel() -> bytes:
+def _prepare_bulk_ttp_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, data_avaliacao) -> pd.DataFrame:
+    if df_upload is None or df_upload.empty:
+        raise RuntimeError("O ficheiro nao contem linhas.")
+    work_df = df_upload.copy()
+    work_df.columns = [str(col).strip() for col in work_df.columns]
+    if "ID Atleta" not in work_df.columns:
+        raise RuntimeError("O modelo tecnico|tatica|psicologico tem de incluir a coluna 'ID Atleta'.")
+    rename_map = {source: target for source, target in REPORT_TTP_COLUMN_MAP.items() if source in work_df.columns}
+    work_df = work_df.rename(columns=rename_map)
+    work_df["atleta_id"] = work_df["atleta_id"].fillna("").astype(str).str.strip()
+    work_df = work_df[work_df["atleta_id"].ne("")].copy()
+    if work_df.empty:
+        raise RuntimeError("Nenhuma linha valida foi encontrada no modelo.")
+    work_df["data_avaliacao"] = pd.to_datetime(data_avaliacao).date()
+    for col in TECHNICAL_COLUMNS:
+        if col not in work_df.columns:
+            work_df[col] = pd.NA
+    numeric_columns = [col for col in TTP_SCORE_COLUMNS if col in TECHNICAL_COLUMNS]
+    for col in numeric_columns:
+        work_df[col] = pd.to_numeric(work_df[col], errors="coerce")
+    if "observacoes" in work_df.columns:
+        work_df["observacoes"] = work_df["observacoes"].fillna("").astype(str)
+    _validate_ttp_scale(work_df, numeric_columns)
+    _validate_athlete_ids(work_df[["atleta_id"]].copy(), athletes_df)
+    return work_df[["atleta_id", "data_avaliacao"] + TECHNICAL_COLUMNS].copy()
+
+
+def _build_model_excel(columns: list[str], sheet_name: str) -> bytes:
     output = BytesIO()
     try:
         with pd.ExcelWriter(output) as writer:
-            pd.DataFrame(columns=MODEL_COLUMNS).to_excel(writer, sheet_name="Dados_Atletas", index=False)
+            pd.DataFrame(columns=columns).to_excel(writer, sheet_name=sheet_name, index=False)
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "Para gerar o modelo Excel (.xlsx), a app precisa da biblioteca 'openpyxl' instalada."
@@ -278,8 +361,8 @@ def _build_model_excel() -> bytes:
     return output.getvalue()
 
 
-def _build_model_csv() -> bytes:
-    return pd.DataFrame(columns=MODEL_COLUMNS).to_csv(index=False).encode("utf-8-sig")
+def _build_model_csv(columns: list[str]) -> bytes:
+    return pd.DataFrame(columns=columns).to_csv(index=False).encode("utf-8-sig")
 
 
 st.title("Inserção de Dados")
@@ -294,56 +377,124 @@ if athletes_df.empty:
     st.info("Ainda nao existem atletas registadas.")
     st.stop()
 
-try:
-    excel_model = _build_model_excel()
-except RuntimeError as exc:
-    st.warning(str(exc))
-    st.download_button(
-        "Descarregar modelo base em CSV",
-        data=_build_model_csv(),
-        file_name="modelo_insercao_dados_futsal.csv",
-        mime="text/csv",
-    )
-else:
-    st.download_button(
-        "Descarregar modelo Excel base",
-        data=excel_model,
-        file_name="modelo_insercao_dados_futsal.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+tab_physical, tab_ttp = st.tabs(["Dados Fisicos", "Dados Tecnico | Tatica | Psicologico"])
 
-data_avaliacao = st.date_input("Data da avaliacao do lote", value=date.today(), format="DD/MM/YYYY")
-uploaded_file = st.file_uploader("Carregar modelo Excel da seleção", type=["xlsx", "xls", "csv"], key="futsal_bulk_selection_upload")
-
-if uploaded_file is not None:
+with tab_physical:
+    st.markdown("**Importação física da seleção**")
     try:
-        raw_df = _read_table_upload(uploaded_file)
-        prepared_df = _prepare_bulk_physical_records(raw_df, athletes_df, data_avaliacao)
-    except Exception as exc:
-        st.error(str(exc))
+        excel_model = _build_model_excel(PHYSICAL_MODEL_COLUMNS, "Dados_Atletas")
+    except RuntimeError as exc:
+        st.warning(str(exc))
+        st.download_button(
+            "Descarregar modelo fisico em CSV",
+            data=_build_model_csv(PHYSICAL_MODEL_COLUMNS),
+            file_name="modelo_insercao_dados_fisicos_futsal.csv",
+            mime="text/csv",
+        )
     else:
-        preview_df = prepared_df.merge(
-            athletes_df[["atleta_id", "nome", "posicao"]],
-            on="atleta_id",
-            how="left",
+        st.download_button(
+            "Descarregar modelo fisico em Excel",
+            data=excel_model,
+            file_name="modelo_insercao_dados_fisicos_futsal.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
-        st.markdown("**Pré-visualização**")
-        preview_columns = [
-            "atleta_id",
-            "nome",
-            "posicao",
-            "data_avaliacao",
-        ]
-        preview_columns.extend(PHYSICAL_COLUMNS)
-        st.dataframe(
-            preview_df[preview_columns],
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(f"Linhas prontas a importar: {len(prepared_df)}")
-        if st.button("Importar dados da seleção", type="primary", key="import_bulk_selection_button"):
-            result = append_records("physical", prepared_df, source_type="selection_excel", source_file=uploaded_file.name)
-            st.session_state["futsal_bulk_insert_success"] = (
-                f"Operação concluída. Lote importado com sucesso. Batch: {result['batch_id']} | Linhas: {result['inserted']}"
+
+    data_avaliacao_fisica = st.date_input("Data da avaliacao do lote fisico", value=date.today(), format="DD/MM/YYYY", key="bulk_date_physical")
+    uploaded_physical_file = st.file_uploader(
+        "Carregar modelo Excel fisico da seleção",
+        type=["xlsx", "xls", "csv"],
+        key="futsal_bulk_selection_upload_physical",
+    )
+
+    if uploaded_physical_file is not None:
+        try:
+            raw_df = _read_table_upload(uploaded_physical_file)
+            prepared_df = _prepare_bulk_physical_records(raw_df, athletes_df, data_avaliacao_fisica)
+        except Exception as exc:
+            st.error(str(exc))
+        else:
+            preview_df = prepared_df.merge(
+                athletes_df[["atleta_id", "nome", "posicao"]],
+                on="atleta_id",
+                how="left",
             )
-            st.rerun()
+            st.markdown("**Pré-visualização**")
+            preview_columns = ["atleta_id", "nome", "posicao", "data_avaliacao"] + PHYSICAL_COLUMNS
+            st.dataframe(preview_df[preview_columns], use_container_width=True, hide_index=True)
+            st.caption(f"Linhas prontas a importar: {len(prepared_df)}")
+            if st.button("Importar dados fisicos da seleção", type="primary", key="import_bulk_selection_button"):
+                result = append_records("physical", prepared_df, source_type="selection_excel", source_file=uploaded_physical_file.name)
+                st.session_state["futsal_bulk_insert_success"] = (
+                    f"Operação concluída. Lote físico importado com sucesso. Batch: {result['batch_id']} | Linhas: {result['inserted']}"
+                )
+                st.rerun()
+
+with tab_ttp:
+    st.markdown("**Importação técnico | tática | psicológica da seleção**")
+    st.caption("Modelo orientado para jogadoras de campo, com ligação por ID da atleta.")
+    st.info(
+        "Escala TTP: 1-2 Mau | 3 Dificuldades | 4 Medio (Neutro) | 5 Positivo | 6 Muito bom | 7 Top. "
+        "A importação valida automaticamente esta escala para manter os referenciais equilibrados."
+    )
+    try:
+        excel_model_ttp = _build_model_excel(TTP_MODEL_COLUMNS, "Avaliacao_TTP")
+    except RuntimeError as exc:
+        st.warning(str(exc))
+        st.download_button(
+            "Descarregar modelo TTP em CSV",
+            data=_build_model_csv(TTP_MODEL_COLUMNS),
+            file_name="modelo_insercao_dados_ttp_futsal.csv",
+            mime="text/csv",
+        )
+    else:
+        st.download_button(
+            "Descarregar modelo TTP em Excel",
+            data=excel_model_ttp,
+            file_name="modelo_insercao_dados_ttp_futsal.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    data_avaliacao_ttp = st.date_input("Data da avaliacao do lote TTP", value=date.today(), format="DD/MM/YYYY", key="bulk_date_ttp")
+    uploaded_ttp_file = st.file_uploader(
+        "Carregar modelo Excel tecnico | tatica | psicologico",
+        type=["xlsx", "xls", "csv"],
+        key="futsal_bulk_selection_upload_ttp",
+    )
+
+    if uploaded_ttp_file is not None:
+        try:
+            raw_ttp_df = _read_table_upload(uploaded_ttp_file)
+            prepared_ttp_df = _prepare_bulk_ttp_records(raw_ttp_df, athletes_df, data_avaliacao_ttp)
+        except Exception as exc:
+            st.error(str(exc))
+        else:
+            preview_ttp_df = prepared_ttp_df.merge(
+                athletes_df[["atleta_id", "nome", "posicao"]],
+                on="atleta_id",
+                how="left",
+            )
+            st.markdown("**Pré-visualização**")
+            preview_columns = [
+                "atleta_id",
+                "nome",
+                "posicao",
+                "data_avaliacao",
+                "um_x_um_ofensivo_score",
+                "um_x_um_defensivo_score",
+                "lateralidade_score",
+                "imprevisibilidade_score",
+                "leitura_jogo_score",
+                "dominio_espaco_score",
+                "espirito_equipa_score",
+                "controlo_emocional_score",
+                "tenacidade_resiliencia_score",
+                "atencao_concentracao_score",
+            ]
+            st.dataframe(preview_ttp_df[preview_columns], use_container_width=True, hide_index=True)
+            st.caption(f"Linhas prontas a importar: {len(prepared_ttp_df)}")
+            if st.button("Importar dados TTP da seleção", type="primary", key="import_bulk_ttp_button"):
+                result = append_records("technical", prepared_ttp_df, source_type="selection_ttp_excel", source_file=uploaded_ttp_file.name)
+                st.session_state["futsal_bulk_insert_success"] = (
+                    f"Operação concluída. Lote tecnico | tatica | psicologico importado com sucesso. Batch: {result['batch_id']} | Linhas: {result['inserted']}"
+                )
+                st.rerun()
