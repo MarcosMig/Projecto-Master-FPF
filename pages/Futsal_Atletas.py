@@ -6,8 +6,10 @@ from datetime import date
 from io import StringIO
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
+from fpf_modules.futsal_analytics import build_metric_history
 from fpf_modules.futsal_parquet_store import (
     ATHLETE_COLUMNS,
     PHYSICAL_COLUMNS,
@@ -226,6 +228,257 @@ def _format_metric(value, suffix: str = "", decimals: int = 1) -> str:
     if number is None:
         return "-"
     return f"{number:.{decimals}f}{suffix}"
+
+
+@st.cache_data(show_spinner=False)
+def _get_metric_history_cached() -> pd.DataFrame:
+    return build_metric_history()
+
+
+def _to_radar_scale_1_7(value) -> float | None:
+    number = _clean_number(value)
+    if number is None:
+        return None
+    clipped = min(max(number, 1.0), 7.0)
+    return ((clipped - 1.0) / 6.0) * 100.0
+
+
+def _comparison_scope_label(scope_fields: list[str]) -> str:
+    labels = {
+        "genero": "Genero",
+        "selecao": "Selecao",
+        "escalao_avaliacao": "Escalao",
+        "posicao": "Posicao",
+    }
+    if not scope_fields:
+        return "Historico total"
+    return " + ".join(labels.get(field, field) for field in scope_fields)
+
+
+def _metric_comparison(metric_key: str, value, athlete_row: pd.Series, scope_sets: list[list[str]]) -> dict | None:
+    number = _clean_number(value)
+    if number is None:
+        return None
+    history_df = _get_metric_history_cached()
+    metric_df = history_df[history_df["metric_key"] == metric_key].copy()
+    if metric_df.empty:
+        return None
+
+    field_values = {
+        "genero": _clean_text_value(athlete_row.get("genero")),
+        "selecao": _clean_text_value(athlete_row.get("selecao")),
+        "escalao_avaliacao": _clean_text_value(athlete_row.get("escalao")),
+        "posicao": _clean_text_value(athlete_row.get("posicao")),
+    }
+
+    chosen_df = metric_df
+    chosen_scope: list[str] = []
+    for scope_fields in scope_sets:
+        scoped_df = metric_df.copy()
+        valid_scope = True
+        for field in scope_fields:
+            field_value = field_values.get(field, "")
+            if not field_value:
+                valid_scope = False
+                break
+            scoped_df = scoped_df[scoped_df[field].astype(str) == field_value].copy()
+        if valid_scope and len(scoped_df) >= 4 and scoped_df["atleta_id"].nunique() >= 3:
+            chosen_df = scoped_df
+            chosen_scope = scope_fields
+            break
+
+    values = pd.to_numeric(chosen_df["metric_value"], errors="coerce").dropna()
+    if values.empty:
+        return None
+    direction = _clean_text_value(chosen_df["direction"].iloc[0])
+    p25 = float(values.quantile(0.25))
+    p50 = float(values.quantile(0.50))
+    p75 = float(values.quantile(0.75))
+    if direction == "lower":
+        perf_values = -values
+        perf_value = -number
+    else:
+        perf_values = values
+        perf_value = number
+    percentile = float((perf_values <= perf_value).mean() * 100)
+
+    if direction == "lower":
+        if number <= p25:
+            band = "Acima do perfil do grupo"
+        elif number <= p50:
+            band = "Entre P25 e P50"
+        elif number <= p75:
+            band = "Entre P50 e P75"
+        else:
+            band = "Abaixo do perfil do grupo"
+        median_text = "Acima da mediana do grupo" if number <= p50 else "Abaixo da mediana do grupo"
+    else:
+        if number >= p75:
+            band = "Acima do perfil do grupo"
+        elif number >= p50:
+            band = "Entre P50 e P75"
+        elif number >= p25:
+            band = "Entre P25 e P50"
+        else:
+            band = "Abaixo do perfil do grupo"
+        median_text = "Acima da mediana do grupo" if number >= p50 else "Abaixo da mediana do grupo"
+
+    return {
+        "band": band,
+        "median_text": median_text,
+        "p25": p25,
+        "p50": p50,
+        "p75": p75,
+        "direction": direction,
+        "percentile": percentile,
+        "scope_label": _comparison_scope_label(chosen_scope),
+        "n_avaliacoes": int(len(chosen_df)),
+        "n_atletas": int(chosen_df["atleta_id"].nunique()),
+    }
+
+
+def _render_spider_map(title: str, axes: list[tuple[str, float | None]], subtitle: str = "", chart_key: str = "") -> None:
+    valid_axes = [(label, value) for label, value in axes if value is not None]
+    if not valid_axes:
+        st.info(f"Sem dados suficientes para o mapa de {title.lower()}.")
+        return
+    categories = [label for label, _ in valid_axes]
+    values = [value for _, value in valid_axes]
+    categories.append(categories[0])
+    values.append(values[0])
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatterpolar(
+            r=values,
+            theta=categories,
+            fill="toself",
+            mode="lines+markers",
+            line=dict(color="#0f766e", width=3),
+            marker=dict(size=7, color="#0f766e"),
+            fillcolor="rgba(15, 118, 110, 0.22)",
+            hovertemplate="%{theta}: %{r:.1f}<extra></extra>",
+            name=title,
+        )
+    )
+    fig.update_layout(
+        title={"text": title, "x": 0.02, "xanchor": "left", "font": {"size": 16}},
+        margin=dict(l=30, r=30, t=55, b=20),
+        height=420,
+        showlegend=False,
+        polar=dict(
+            bgcolor="rgba(0,0,0,0)",
+            radialaxis=dict(
+                visible=True,
+                range=[0, 100],
+                tickvals=[20, 40, 60, 80, 100],
+                ticktext=["20", "40", "60", "80", "100"],
+                gridcolor="#d0d5dd",
+                linecolor="#d0d5dd",
+            ),
+            angularaxis=dict(
+                gridcolor="#eaecf0",
+                linecolor="#d0d5dd",
+                tickfont=dict(size=11),
+            ),
+        ),
+        annotations=[
+            dict(
+                text=subtitle,
+                x=0.02,
+                y=1.08,
+                xref="paper",
+                yref="paper",
+                showarrow=False,
+                font=dict(size=11, color="#667085"),
+                align="left",
+            )
+        ] if subtitle else [],
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=chart_key or title)
+
+
+def _render_absolute_metric_grid(
+    athlete_row: pd.Series,
+    title: str,
+    metrics: list[dict],
+    scope_sets: list[list[str]],
+    columns_count: int = 3,
+) -> None:
+    st.markdown(f"**{title}**")
+    valid_metrics = [metric for metric in metrics if _clean_number(athlete_row.get(metric["row_key"])) is not None]
+    if not valid_metrics:
+        st.info(f"Sem dados disponíveis para {title.lower()}.")
+        return
+
+    rows = [valid_metrics[idx:idx + columns_count] for idx in range(0, len(valid_metrics), columns_count)]
+    for metric_row in rows:
+        cols = st.columns(columns_count)
+        for idx, metric in enumerate(metric_row):
+            col = cols[idx]
+            metric_value = athlete_row.get(metric["row_key"])
+            formatted_value = _format_metric(metric_value, metric.get("suffix", ""), metric.get("decimals", 1))
+            comparison = _metric_comparison(metric["metric_key"], metric_value, athlete_row, scope_sets)
+            col.markdown(f"**{metric['label']}:** {formatted_value}")
+            if comparison:
+                col.caption(
+                    f"{comparison['band']} | Mediana: {_format_metric(comparison['p50'], metric.get('suffix', ''), metric.get('decimals', 1))}"
+                )
+                col.caption(f"Grupo: {comparison['scope_label']}")
+
+
+def _render_grouped_absolute_metrics(
+    athlete_row: pd.Series,
+    groups: list[tuple[str, list[dict]]],
+    scope_sets: list[list[str]],
+    columns_count: int = 3,
+) -> None:
+    for title, metrics in groups:
+        _render_absolute_metric_grid(
+            athlete_row,
+            title,
+            metrics,
+            scope_sets=scope_sets,
+            columns_count=columns_count,
+        )
+
+
+def _build_context_radar_axes(
+    athlete_row: pd.Series,
+    metrics: list[dict],
+    scope_sets: list[list[str]],
+) -> list[tuple[str, float | None]]:
+    axes: list[tuple[str, float | None]] = []
+    for metric in metrics:
+        comparison = _metric_comparison(
+            metric["metric_key"],
+            athlete_row.get(metric["row_key"]),
+            athlete_row,
+            scope_sets,
+        )
+        axes.append((metric["label"], None if comparison is None else comparison["percentile"]))
+    return axes
+
+
+def _build_grouped_context_radar_axes(
+    athlete_row: pd.Series,
+    grouped_metrics: list[tuple[str, list[dict]]],
+    scope_sets: list[list[str]],
+) -> list[tuple[str, float | None]]:
+    axes: list[tuple[str, float | None]] = []
+    for group_label, metrics in grouped_metrics:
+        percentiles: list[float] = []
+        for metric in metrics:
+            comparison = _metric_comparison(
+                metric["metric_key"],
+                athlete_row.get(metric["row_key"]),
+                athlete_row,
+                scope_sets,
+            )
+            percentile = None if comparison is None else comparison["percentile"]
+            if percentile is not None:
+                percentiles.append(float(percentile))
+        axes.append((group_label, None if not percentiles else sum(percentiles) / len(percentiles)))
+    return axes
 
 
 def _calculate_age(birth_date, reference_date: date | None = None) -> int | None:
@@ -1247,89 +1500,248 @@ def _render_athlete_registry(
             with tab_anth:
                 _render_inline_anthropometry_insert(row, physical_df)
                 st.caption(f"Data: {_format_date(row.get('fis_data_avaliacao'))}")
-                a1, a2, a3 = st.columns(3)
-                a1.markdown(f"**Peso:** {_format_metric(row.get('fis_peso_kg'), ' kg')}")
-                a2.markdown(f"**Altura:** {_format_metric(row.get('fis_altura_cm'), ' cm')}")
-                a3.markdown(f"**Envergadura:** {_format_metric(row.get('fis_envergadura_cm'), ' cm')}")
-                a4, a5, a6 = st.columns(3)
-                a4.markdown(f"**Comp. perna:** {_format_metric(row.get('fis_comprimento_perna_cm'), ' cm')}")
-                a5.markdown(f"**Altura sentada:** {_format_metric(row.get('fis_altura_sentada_cm'), ' cm')}")
-                a6.markdown(f"**Salto maturacional:** {_format_metric(row.get('fis_salto_maturacional'), '', 2)}")
+                anthropometry_metrics = [
+                    {"label": "Peso", "row_key": "fis_peso_kg", "metric_key": "peso_kg", "suffix": " kg", "decimals": 1},
+                    {"label": "Altura", "row_key": "fis_altura_cm", "metric_key": "altura_cm", "suffix": " cm", "decimals": 1},
+                    {"label": "Envergadura", "row_key": "fis_envergadura_cm", "metric_key": "envergadura_cm", "suffix": " cm", "decimals": 1},
+                    {"label": "Comp. perna", "row_key": "fis_comprimento_perna_cm", "metric_key": "comprimento_perna_cm", "suffix": " cm", "decimals": 1},
+                    {"label": "Alt. sentada", "row_key": "fis_altura_sentada_cm", "metric_key": "altura_sentada_cm", "suffix": " cm", "decimals": 1},
+                    {"label": "Maturacao", "row_key": "fis_salto_maturacional", "metric_key": "salto_maturacional", "suffix": "", "decimals": 2},
+                ]
+                _render_spider_map(
+                    "Spider de Enquadramento | Antropometria",
+                    _build_context_radar_axes(row, anthropometry_metrics, [["genero", "escalao_avaliacao"], ["genero"], []]),
+                    "Mapa percentilico 0-100 do enquadramento da atleta face ao grupo comparavel.",
+                    chart_key=f"radar_anth_{_clean_text_value(row.get('atleta_id'))}",
+                )
+                _render_absolute_metric_grid(
+                    row,
+                    "Resultados absolutos",
+                    anthropometry_metrics,
+                    scope_sets=[["genero", "escalao_avaliacao"], ["genero"], []],
+                )
                 st.markdown(f"**Estado maturacional:** {_clean_text_value(row.get('fis_estado_maturacional')) or '-'}")
 
             with tab_phys:
                 _render_inline_physical_insert(row, physical_df)
                 st.caption(f"Data: {_format_date(row.get('fis_data_avaliacao'))}")
-                p1, p2, p3, p4 = st.columns(4)
-                p1.markdown(f"**Sprint 10m:** {_format_metric(row.get('fis_sprint_10m_s'), ' s', 2)}")
-                p2.markdown(f"**Sprint 20m:** {_format_metric(row.get('fis_sprint_20m_s'), ' s', 2)}")
-                p3.markdown(f"**505 esq:** {_format_metric(row.get('fis_teste_505_esq_s'), ' s', 2)}")
-                p4.markdown(f"**505 dir:** {_format_metric(row.get('fis_teste_505_dir_s'), ' s', 2)}")
-                p5, p6, p7, p8 = st.columns(4)
-                p5.markdown(f"**SJ:** {_format_metric(row.get('fis_sj_altura_cm'), ' cm')}")
-                p6.markdown(f"**CMJ:** {_format_metric(row.get('fis_cmj_altura_cm'), ' cm')}")
-                p7.markdown(f"**DJ altura:** {_format_metric(row.get('fis_dj_altura_cm'), ' cm')}")
-                p8.markdown(f"**DJ RSI:** {_format_metric(row.get('fis_dj_rsi'), '', 2)}")
-                p9, p10, p11, p12 = st.columns(4)
-                p9.markdown(f"**10J RSI 10-5:** {_format_metric(row.get('fis_j10_rsi_10_5'), '', 2)}")
-                p10.markdown(f"**10J media:** {_format_metric(row.get('fis_j10_media_saltos_cm'), ' cm')}")
-                p11.markdown(f"**Indice fadiga:** {_format_metric(row.get('fis_indice_fadiga_10j_pct'), '%', 2)}")
-                p12.empty()
+                physical_metrics = [
+                    {"label": "Sprint 10m", "row_key": "fis_sprint_10m_s", "metric_key": "sprint_10m_s", "suffix": " s", "decimals": 2},
+                    {"label": "Sprint 20m", "row_key": "fis_sprint_20m_s", "metric_key": "sprint_20m_s", "suffix": " s", "decimals": 2},
+                    {"label": "505 Esq", "row_key": "fis_teste_505_esq_s", "metric_key": "teste_505_esq_s", "suffix": " s", "decimals": 2},
+                    {"label": "505 Dir", "row_key": "fis_teste_505_dir_s", "metric_key": "teste_505_dir_s", "suffix": " s", "decimals": 2},
+                    {"label": "SJ", "row_key": "fis_sj_altura_cm", "metric_key": "sj_altura_cm", "suffix": " cm", "decimals": 1},
+                    {"label": "CMJ", "row_key": "fis_cmj_altura_cm", "metric_key": "cmj_altura_cm", "suffix": " cm", "decimals": 1},
+                    {"label": "DJ Altura", "row_key": "fis_dj_altura_cm", "metric_key": "dj_altura_cm", "suffix": " cm", "decimals": 1},
+                    {"label": "DJ RSI", "row_key": "fis_dj_rsi", "metric_key": "dj_rsi", "suffix": "", "decimals": 2},
+                    {"label": "10J RSI", "row_key": "fis_j10_rsi_10_5", "metric_key": "j10_rsi_10_5", "suffix": "", "decimals": 2},
+                    {"label": "10J Media", "row_key": "fis_j10_media_saltos_cm", "metric_key": "j10_media_saltos_cm", "suffix": " cm", "decimals": 1},
+                    {"label": "Fatiga", "row_key": "fis_indice_fadiga_10j_pct", "metric_key": "indice_fadiga_10j_pct", "suffix": "%", "decimals": 2},
+                ]
+                physical_absolute_groups = [
+                    (
+                        "Velocidade",
+                        [
+                            {"label": "Sprint 10m", "row_key": "fis_sprint_10m_s", "metric_key": "sprint_10m_s", "suffix": " s", "decimals": 2},
+                            {"label": "Sprint 20m", "row_key": "fis_sprint_20m_s", "metric_key": "sprint_20m_s", "suffix": " s", "decimals": 2},
+                        ],
+                    ),
+                    (
+                        "Agilidade",
+                        [
+                            {"label": "505 Esq", "row_key": "fis_teste_505_esq_s", "metric_key": "teste_505_esq_s", "suffix": " s", "decimals": 2},
+                            {"label": "505 Dir", "row_key": "fis_teste_505_dir_s", "metric_key": "teste_505_dir_s", "suffix": " s", "decimals": 2},
+                        ],
+                    ),
+                    (
+                        "Potencia",
+                        [
+                            {"label": "SJ", "row_key": "fis_sj_altura_cm", "metric_key": "sj_altura_cm", "suffix": " cm", "decimals": 1},
+                            {"label": "CMJ", "row_key": "fis_cmj_altura_cm", "metric_key": "cmj_altura_cm", "suffix": " cm", "decimals": 1},
+                            {"label": "DJ Altura", "row_key": "fis_dj_altura_cm", "metric_key": "dj_altura_cm", "suffix": " cm", "decimals": 1},
+                        ],
+                    ),
+                    (
+                        "Reatividade",
+                        [
+                            {"label": "DJ RSI", "row_key": "fis_dj_rsi", "metric_key": "dj_rsi", "suffix": "", "decimals": 2},
+                            {"label": "10J RSI 10-5", "row_key": "fis_j10_rsi_10_5", "metric_key": "j10_rsi_10_5", "suffix": "", "decimals": 2},
+                        ],
+                    ),
+                    (
+                        "Resistencia",
+                        [
+                            {"label": "10J Media", "row_key": "fis_j10_media_saltos_cm", "metric_key": "j10_media_saltos_cm", "suffix": " cm", "decimals": 1},
+                            {"label": "Indice fadiga", "row_key": "fis_indice_fadiga_10j_pct", "metric_key": "indice_fadiga_10j_pct", "suffix": "%", "decimals": 2},
+                        ],
+                    ),
+                ]
+                physical_grouped_metrics = [
+                    (
+                        "Velocidade",
+                        [
+                            {"row_key": "fis_sprint_10m_s", "metric_key": "sprint_10m_s"},
+                            {"row_key": "fis_sprint_20m_s", "metric_key": "sprint_20m_s"},
+                        ],
+                    ),
+                    (
+                        "Agilidade",
+                        [
+                            {"row_key": "fis_teste_505_esq_s", "metric_key": "teste_505_esq_s"},
+                            {"row_key": "fis_teste_505_dir_s", "metric_key": "teste_505_dir_s"},
+                        ],
+                    ),
+                    (
+                        "Potencia",
+                        [
+                            {"row_key": "fis_sj_altura_cm", "metric_key": "sj_altura_cm"},
+                            {"row_key": "fis_cmj_altura_cm", "metric_key": "cmj_altura_cm"},
+                            {"row_key": "fis_dj_altura_cm", "metric_key": "dj_altura_cm"},
+                        ],
+                    ),
+                    (
+                        "Reatividade",
+                        [
+                            {"row_key": "fis_dj_rsi", "metric_key": "dj_rsi"},
+                            {"row_key": "fis_j10_rsi_10_5", "metric_key": "j10_rsi_10_5"},
+                        ],
+                    ),
+                    (
+                        "Resistencia",
+                        [
+                            {"row_key": "fis_j10_media_saltos_cm", "metric_key": "j10_media_saltos_cm"},
+                            {"row_key": "fis_indice_fadiga_10j_pct", "metric_key": "indice_fadiga_10j_pct"},
+                        ],
+                    ),
+                ]
+                _render_spider_map(
+                    "Spider de Enquadramento | Fisico",
+                    _build_grouped_context_radar_axes(row, physical_grouped_metrics, [["genero", "escalao_avaliacao"], ["genero"], []]),
+                    "Mapa percentilico 0-100 por subcategoria fisica: velocidade, agilidade, potencia, reatividade e resistencia.",
+                    chart_key=f"radar_phys_{_clean_text_value(row.get('atleta_id'))}",
+                )
+                _render_grouped_absolute_metrics(
+                    row,
+                    physical_absolute_groups,
+                    scope_sets=[["genero", "escalao_avaliacao"], ["genero"], []],
+                    columns_count=3,
+                )
 
             with tab_tech:
                 _render_inline_technical_insert(row, technical_df, include_psychological=False)
                 st.caption(f"Data: {_format_date(row.get('tec_data_avaliacao'))}")
                 if _clean_text_value(row.get("posicao")) == "GR":
-                    st.markdown("**Guarda-Redes**")
-                    t1, t2, t3 = st.columns(3)
-                    t1.markdown(f"**Posicionamento:** {_format_metric(row.get('tec_posicionamento_prontidao_score'), '/10')}")
-                    t2.markdown(f"**Defesa MS:** {_format_metric(row.get('tec_defesa_membros_superiores_score'), '/10')}")
-                    t3.markdown(f"**Defesa MI:** {_format_metric(row.get('tec_defesa_membros_inferiores_score'), '/10')}")
-                    t4, t5 = st.columns(2)
-                    t4.markdown(f"**Defesa 6m:** {_format_metric(row.get('tec_defesa_6m_ocupa_espaco_score'), '/10')}")
-                    t5.markdown(f"**Leitura de Jogo:** {_format_metric(row.get('tec_leitura_jogo_score'), '/10')}")
+                    technical_metrics = [
+                        {"label": "Posicionamento", "row_key": "tec_posicionamento_prontidao_score", "metric_key": "posicionamento_prontidao_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Defesa MS", "row_key": "tec_defesa_membros_superiores_score", "metric_key": "defesa_membros_superiores_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Defesa MI", "row_key": "tec_defesa_membros_inferiores_score", "metric_key": "defesa_membros_inferiores_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Defesa 6m", "row_key": "tec_defesa_6m_ocupa_espaco_score", "metric_key": "defesa_6m_ocupa_espaco_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Leitura", "row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score", "suffix": "/7", "decimals": 1},
+                    ]
+                    _render_spider_map(
+                        "Spider de Enquadramento | Tecnico | Tatica GR",
+                        _build_context_radar_axes(row, technical_metrics, [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []]),
+                        "Mapa percentilico 0-100 do enquadramento da atleta face ao grupo comparavel.",
+                        chart_key=f"radar_tech_gr_{_clean_text_value(row.get('atleta_id'))}",
+                    )
+                    _render_absolute_metric_grid(
+                        row,
+                        "Enquadramento comparativo",
+                        technical_metrics,
+                        scope_sets=[["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []],
+                    )
                 else:
-                    st.markdown("**Tecnica**")
-                    t1, t2, t3 = st.columns(3)
-                    t1.markdown(f"**1x1 Ofensivo:** {_format_metric(row.get('tec_um_x_um_ofensivo_score'), '/10')}")
-                    t2.markdown(f"**1x1 Defensivo:** {_format_metric(row.get('tec_um_x_um_defensivo_score'), '/10')}")
-                    t3.markdown(f"**Lateralidade:** {_format_metric(row.get('tec_lateralidade_score'), '/10')}")
-                    st.markdown("**Tatica**")
-                    t4, t5, t6 = st.columns(3)
-                    t4.markdown(f"**Imprevisibilidade:** {_format_metric(row.get('tec_imprevisibilidade_score'), '/10')}")
-                    t5.markdown(f"**Leitura de Jogo:** {_format_metric(row.get('tec_leitura_jogo_score'), '/10')}")
-                    t6.markdown(f"**Dominio do Espaco:** {_format_metric(row.get('tec_dominio_espaco_score'), '/10')}")
+                    technical_metrics = [
+                        {"label": "1x1 Ofensivo", "row_key": "tec_um_x_um_ofensivo_score", "metric_key": "um_x_um_ofensivo_score", "suffix": "/7", "decimals": 1},
+                        {"label": "1x1 Defensivo", "row_key": "tec_um_x_um_defensivo_score", "metric_key": "um_x_um_defensivo_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Lateralidade", "row_key": "tec_lateralidade_score", "metric_key": "lateralidade_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Imprevisibilidade", "row_key": "tec_imprevisibilidade_score", "metric_key": "imprevisibilidade_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Leitura", "row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Dominio Espaco", "row_key": "tec_dominio_espaco_score", "metric_key": "dominio_espaco_score", "suffix": "/7", "decimals": 1},
+                    ]
+                    _render_spider_map(
+                        "Spider de Enquadramento | Tecnico | Tatica",
+                        _build_context_radar_axes(row, technical_metrics, [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []]),
+                        "Mapa percentilico 0-100 do enquadramento da atleta face ao grupo comparavel.",
+                        chart_key=f"radar_tech_{_clean_text_value(row.get('atleta_id'))}",
+                    )
+                    _render_absolute_metric_grid(
+                        row,
+                        "Enquadramento comparativo",
+                        technical_metrics,
+                        scope_sets=[["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []],
+                    )
 
             with tab_psych:
                 _render_inline_technical_insert(row, technical_df, include_psychological=True)
                 st.caption(f"Data: {_format_date(row.get('tec_data_avaliacao'))}")
-                s1, s2, s3, s4 = st.columns(4)
-                s1.markdown(f"**Espírito de equipa:** {_format_metric(row.get('tec_espirito_equipa_score'), '/10')}")
-                s2.markdown(f"**Controlo emocional:** {_format_metric(row.get('tec_controlo_emocional_score'), '/10')}")
-                s3.markdown(f"**Tenacidade / Resiliência:** {_format_metric(row.get('tec_tenacidade_resiliencia_score'), '/10')}")
-                s4.markdown(f"**Atenção / concentração:** {_format_metric(row.get('tec_atencao_concentracao_score'), '/10')}")
+                psych_metrics = [
+                    {"label": "Espirito Equipa", "row_key": "tec_espirito_equipa_score", "metric_key": "espirito_equipa_score", "suffix": "/7", "decimals": 1},
+                    {"label": "Controlo Emocional", "row_key": "tec_controlo_emocional_score", "metric_key": "controlo_emocional_score", "suffix": "/7", "decimals": 1},
+                    {"label": "Tenacidade", "row_key": "tec_tenacidade_resiliencia_score", "metric_key": "tenacidade_resiliencia_score", "suffix": "/7", "decimals": 1},
+                    {"label": "Atencao", "row_key": "tec_atencao_concentracao_score", "metric_key": "atencao_concentracao_score", "suffix": "/7", "decimals": 1},
+                ]
+                _render_spider_map(
+                    "Spider de Enquadramento | Psicologico",
+                    _build_context_radar_axes(row, psych_metrics, [["genero", "selecao", "escalao_avaliacao"], ["genero", "escalao_avaliacao"], ["genero"], []]),
+                    "Mapa percentilico 0-100 do enquadramento da atleta face ao grupo comparavel.",
+                    chart_key=f"radar_psych_{_clean_text_value(row.get('atleta_id'))}",
+                )
+                _render_absolute_metric_grid(
+                    row,
+                    "Enquadramento comparativo",
+                    psych_metrics,
+                    scope_sets=[["genero", "selecao", "escalao_avaliacao"], ["genero", "escalao_avaliacao"], ["genero"], []],
+                    columns_count=2,
+                )
 
             with tab_history:
                 athlete_history = _athlete_history_rows(row, athlete_history_df, physical_df, technical_df)
                 if athlete_history.empty:
                     st.info("Sem historico disponivel.")
                 else:
-                    display_history = athlete_history.rename(
-                        columns={
-                            "momento": "Momento",
-                            "tipo": "Tipo",
-                            "data_avaliacao": "Data avaliacao",
-                            "detalhe": "Detalhe",
-                        }
-                    )
-                    selection = st.dataframe(
-                        display_history[["Momento", "Tipo", "Data avaliacao", "Detalhe"]],
-                        use_container_width=True,
-                        hide_index=True,
-                        on_select="rerun",
-                        selection_mode="single-row",
-                    )
-                    _render_inline_history_actions(row, athletes_df, physical_df, technical_df, athlete_history, selection)
+                    eval_history = athlete_history[athlete_history["record_kind"].isin(["physical", "technical"])].copy()
+                    admin_history = athlete_history[athlete_history["record_kind"].eq("athlete_event")].copy()
+                    hist_eval_tab, hist_admin_tab = st.tabs(["Historico de Avaliacoes", "Historico da Ficha"])
+
+                    with hist_eval_tab:
+                        if eval_history.empty:
+                            st.info("Sem historico de avaliacoes disponivel.")
+                        else:
+                            display_eval_history = eval_history.rename(
+                                columns={
+                                    "momento": "Momento",
+                                    "tipo": "Tipo",
+                                    "data_avaliacao": "Data avaliacao",
+                                    "detalhe": "Detalhe",
+                                }
+                            )
+                            selection = st.dataframe(
+                                display_eval_history[["Momento", "Tipo", "Data avaliacao", "Detalhe"]],
+                                use_container_width=True,
+                                hide_index=True,
+                                on_select="rerun",
+                                selection_mode="single-row",
+                            )
+                            _render_inline_history_actions(row, athletes_df, physical_df, technical_df, eval_history, selection)
+
+                    with hist_admin_tab:
+                        if admin_history.empty:
+                            st.info("Sem historico administrativo disponivel.")
+                        else:
+                            display_admin_history = admin_history.rename(
+                                columns={
+                                    "momento": "Momento",
+                                    "tipo": "Tipo",
+                                    "data_avaliacao": "Data de referencia",
+                                    "detalhe": "Detalhe",
+                                }
+                            )
+                            st.dataframe(
+                                display_admin_history[["Momento", "Tipo", "Data de referencia", "Detalhe"]],
+                                use_container_width=True,
+                                hide_index=True,
+                            )
 
             if st.session_state.get("open_athlete_editor_id", "") == _clean_text_value(row.get("atleta_id")):
                 st.divider()
