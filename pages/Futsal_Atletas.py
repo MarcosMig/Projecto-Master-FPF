@@ -481,6 +481,150 @@ def _build_grouped_context_radar_axes(
     return axes
 
 
+def _average_percentile_for_metrics(
+    athlete_row: pd.Series,
+    metrics: list[dict],
+    scope_sets: list[list[str]],
+) -> float | None:
+    values: list[float] = []
+    for metric in metrics:
+        comparison = _metric_comparison(
+            metric["metric_key"],
+            athlete_row.get(metric["row_key"]),
+            athlete_row,
+            scope_sets,
+        )
+        if comparison is not None and comparison.get("percentile") is not None:
+            values.append(float(comparison["percentile"]))
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _compute_profile_scores(athlete_row: pd.Series) -> dict[str, float | None]:
+    scope_general = [["genero", "escalao_avaliacao"], ["genero"], []]
+    scope_field = [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []]
+    scope_psych = [["genero", "selecao", "escalao_avaliacao"], ["genero", "escalao_avaliacao"], ["genero"], []]
+
+    anthropometry_metrics = [
+        {"row_key": "fis_peso_kg", "metric_key": "peso_kg"},
+        {"row_key": "fis_altura_cm", "metric_key": "altura_cm"},
+        {"row_key": "fis_envergadura_cm", "metric_key": "envergadura_cm"},
+        {"row_key": "fis_comprimento_perna_cm", "metric_key": "comprimento_perna_cm"},
+        {"row_key": "fis_altura_sentada_cm", "metric_key": "altura_sentada_cm"},
+        {"row_key": "fis_salto_maturacional", "metric_key": "salto_maturacional"},
+    ]
+    physical_metrics = [
+        {"row_key": "fis_sprint_10m_s", "metric_key": "sprint_10m_s"},
+        {"row_key": "fis_sprint_20m_s", "metric_key": "sprint_20m_s"},
+        {"row_key": "fis_teste_505_esq_s", "metric_key": "teste_505_esq_s"},
+        {"row_key": "fis_teste_505_dir_s", "metric_key": "teste_505_dir_s"},
+        {"row_key": "fis_sj_altura_cm", "metric_key": "sj_altura_cm"},
+        {"row_key": "fis_cmj_altura_cm", "metric_key": "cmj_altura_cm"},
+        {"row_key": "fis_dj_altura_cm", "metric_key": "dj_altura_cm"},
+        {"row_key": "fis_dj_rsi", "metric_key": "dj_rsi"},
+        {"row_key": "fis_j10_rsi_10_5", "metric_key": "j10_rsi_10_5"},
+        {"row_key": "fis_j10_media_saltos_cm", "metric_key": "j10_media_saltos_cm"},
+        {"row_key": "fis_indice_fadiga_10j_pct", "metric_key": "indice_fadiga_10j_pct"},
+    ]
+    is_goalkeeper = _clean_text_value(athlete_row.get("posicao")) == "GR"
+    technical_metrics = (
+        [
+            {"row_key": "tec_posicionamento_prontidao_score", "metric_key": "posicionamento_prontidao_score"},
+            {"row_key": "tec_defesa_membros_superiores_score", "metric_key": "defesa_membros_superiores_score"},
+            {"row_key": "tec_defesa_membros_inferiores_score", "metric_key": "defesa_membros_inferiores_score"},
+            {"row_key": "tec_defesa_6m_ocupa_espaco_score", "metric_key": "defesa_6m_ocupa_espaco_score"},
+        ]
+        if is_goalkeeper
+        else [
+            {"row_key": "tec_um_x_um_ofensivo_score", "metric_key": "um_x_um_ofensivo_score"},
+            {"row_key": "tec_um_x_um_defensivo_score", "metric_key": "um_x_um_defensivo_score"},
+            {"row_key": "tec_lateralidade_score", "metric_key": "lateralidade_score"},
+        ]
+    )
+    tactical_metrics = (
+        [{"row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score"}]
+        if is_goalkeeper
+        else [
+            {"row_key": "tec_imprevisibilidade_score", "metric_key": "imprevisibilidade_score"},
+            {"row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score"},
+            {"row_key": "tec_dominio_espaco_score", "metric_key": "dominio_espaco_score"},
+        ]
+    )
+    psychological_metrics = [
+        {"row_key": "tec_espirito_equipa_score", "metric_key": "espirito_equipa_score"},
+        {"row_key": "tec_controlo_emocional_score", "metric_key": "controlo_emocional_score"},
+        {"row_key": "tec_tenacidade_resiliencia_score", "metric_key": "tenacidade_resiliencia_score"},
+        {"row_key": "tec_atencao_concentracao_score", "metric_key": "atencao_concentracao_score"},
+    ]
+
+    return {
+        "ANT": _average_percentile_for_metrics(athlete_row, anthropometry_metrics, scope_general),
+        "FIS": _average_percentile_for_metrics(athlete_row, physical_metrics, scope_general),
+        "TEC": _average_percentile_for_metrics(athlete_row, technical_metrics, scope_field),
+        "TAT": _average_percentile_for_metrics(athlete_row, tactical_metrics, scope_field),
+        "PSI": _average_percentile_for_metrics(athlete_row, psychological_metrics, scope_psych),
+    }
+
+
+def _render_profile_score_strip(athlete_row: pd.Series) -> None:
+    scores = _compute_profile_scores(athlete_row)
+
+    def score_text(key: str) -> str:
+        value = scores.get(key)
+        return "--" if value is None else str(int(round(value)))
+
+    html = f"""
+    <style>
+    .player-score-strip {{
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+        margin: 10px 0 4px 0;
+    }}
+    .player-score-pill {{
+        text-align: center;
+        color: white;
+        border-radius: 18px;
+        padding: 12px 8px 10px;
+        border: 1px solid rgba(255,255,255,0.14);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
+    }}
+    .player-score-pill.ant {{ background: linear-gradient(135deg, #7c4a66, #9a637d); }}
+    .player-score-pill.fis {{ background: linear-gradient(135deg, #6e485d, #86586a); }}
+    .player-score-pill.tec {{ background: linear-gradient(135deg, #53617c, #67748f); }}
+    .player-score-pill.tat {{ background: linear-gradient(135deg, #4f6877, #5f8294); }}
+    .player-score-pill.psi {{ background: linear-gradient(135deg, #497687, #5a90a2); }}
+    .player-score-value {{
+        font-size: 26px;
+        line-height: 1;
+        font-weight: 800;
+    }}
+    .player-score-label {{
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        margin-top: 5px;
+        text-transform: uppercase;
+        color: rgba(255,255,255,0.84);
+        font-weight: 700;
+    }}
+    @media (max-width: 720px) {{
+        .player-score-strip {{
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }}
+    }}
+    </style>
+    <div class="player-score-strip">
+        <div class="player-score-pill ant"><div class="player-score-value">{score_text("ANT")}</div><div class="player-score-label">ANT</div></div>
+        <div class="player-score-pill fis"><div class="player-score-value">{score_text("FIS")}</div><div class="player-score-label">FIS</div></div>
+        <div class="player-score-pill tec"><div class="player-score-value">{score_text("TEC")}</div><div class="player-score-label">TEC</div></div>
+        <div class="player-score-pill tat"><div class="player-score-value">{score_text("TAT")}</div><div class="player-score-label">TAT</div></div>
+        <div class="player-score-pill psi"><div class="player-score-value">{score_text("PSI")}</div><div class="player-score-label">PSI</div></div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def _calculate_age(birth_date, reference_date: date | None = None) -> int | None:
     birth = _clean_date(birth_date)
     if not birth:
@@ -1474,6 +1618,8 @@ def _render_athlete_registry(
                     st.markdown(f"**Escalao:** {_clean_text_value(row.get('escalao')) or '-'}")
                     st.markdown(f"**Selecao:** {_clean_text_value(row.get('selecao')) or '-'}")
                     st.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
+
+            _render_profile_score_strip(row)
 
             action_col1, action_col2, action_col3 = st.columns(3)
             if action_col1.button("Editar atleta", key=f"open_edit_athlete_{row['atleta_id']}"):

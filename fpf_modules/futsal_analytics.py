@@ -4,7 +4,12 @@ from datetime import date
 
 import pandas as pd
 
-from .futsal_parquet_store import read_athletes, read_physical_records, read_technical_records
+from .futsal_parquet_store import (
+    latest_records_by_athlete,
+    read_athletes,
+    read_physical_records,
+    read_technical_records,
+)
 
 
 METRIC_CATALOG = [
@@ -65,12 +70,103 @@ META_COLUMNS = [
     "record_source",
 ]
 
+PROFILE_SCORE_METRICS = {
+    "ANT": {
+        "metrics": [
+            {"row_key": "fis_peso_kg", "metric_key": "peso_kg"},
+            {"row_key": "fis_altura_cm", "metric_key": "altura_cm"},
+            {"row_key": "fis_envergadura_cm", "metric_key": "envergadura_cm"},
+            {"row_key": "fis_comprimento_perna_cm", "metric_key": "comprimento_perna_cm"},
+            {"row_key": "fis_altura_sentada_cm", "metric_key": "altura_sentada_cm"},
+            {"row_key": "fis_salto_maturacional", "metric_key": "salto_maturacional"},
+        ],
+        "scopes": [["genero", "escalao_avaliacao"], ["genero"], []],
+    },
+    "FIS": {
+        "metrics": [
+            {"row_key": "fis_sprint_10m_s", "metric_key": "sprint_10m_s"},
+            {"row_key": "fis_sprint_20m_s", "metric_key": "sprint_20m_s"},
+            {"row_key": "fis_teste_505_esq_s", "metric_key": "teste_505_esq_s"},
+            {"row_key": "fis_teste_505_dir_s", "metric_key": "teste_505_dir_s"},
+            {"row_key": "fis_sj_altura_cm", "metric_key": "sj_altura_cm"},
+            {"row_key": "fis_cmj_altura_cm", "metric_key": "cmj_altura_cm"},
+            {"row_key": "fis_dj_altura_cm", "metric_key": "dj_altura_cm"},
+            {"row_key": "fis_dj_rsi", "metric_key": "dj_rsi"},
+            {"row_key": "fis_j10_rsi_10_5", "metric_key": "j10_rsi_10_5"},
+            {"row_key": "fis_j10_media_saltos_cm", "metric_key": "j10_media_saltos_cm"},
+            {"row_key": "fis_indice_fadiga_10j_pct", "metric_key": "indice_fadiga_10j_pct"},
+        ],
+        "scopes": [["genero", "escalao_avaliacao"], ["genero"], []],
+    },
+    "PSI": {
+        "metrics": [
+            {"row_key": "tec_espirito_equipa_score", "metric_key": "espirito_equipa_score"},
+            {"row_key": "tec_controlo_emocional_score", "metric_key": "controlo_emocional_score"},
+            {"row_key": "tec_tenacidade_resiliencia_score", "metric_key": "tenacidade_resiliencia_score"},
+            {"row_key": "tec_atencao_concentracao_score", "metric_key": "atencao_concentracao_score"},
+        ],
+        "scopes": [["genero", "selecao", "escalao_avaliacao"], ["genero", "escalao_avaliacao"], ["genero"], []],
+    },
+}
+
+FIELD_PLAYER_PROFILE_SCORE_METRICS = {
+    "TEC": {
+        "metrics": [
+            {"row_key": "tec_um_x_um_ofensivo_score", "metric_key": "um_x_um_ofensivo_score"},
+            {"row_key": "tec_um_x_um_defensivo_score", "metric_key": "um_x_um_defensivo_score"},
+            {"row_key": "tec_lateralidade_score", "metric_key": "lateralidade_score"},
+        ],
+        "scopes": [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []],
+    },
+    "TAT": {
+        "metrics": [
+            {"row_key": "tec_imprevisibilidade_score", "metric_key": "imprevisibilidade_score"},
+            {"row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score"},
+            {"row_key": "tec_dominio_espaco_score", "metric_key": "dominio_espaco_score"},
+        ],
+        "scopes": [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []],
+    },
+}
+
+GOALKEEPER_PROFILE_SCORE_METRICS = {
+    "TEC": {
+        "metrics": [
+            {"row_key": "tec_defesa_membros_superiores_score", "metric_key": "defesa_membros_superiores_score"},
+            {"row_key": "tec_defesa_membros_inferiores_score", "metric_key": "defesa_membros_inferiores_score"},
+        ],
+        "scopes": [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []],
+    },
+    "TAT": {
+        "metrics": [
+            {"row_key": "tec_posicionamento_prontidao_score", "metric_key": "posicionamento_prontidao_score"},
+            {"row_key": "tec_defesa_6m_ocupa_espaco_score", "metric_key": "defesa_6m_ocupa_espaco_score"},
+            {"row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score"},
+        ],
+        "scopes": [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []],
+    },
+}
+
 
 def _clean_date(value):
     if value in ("", None) or pd.isna(value):
         return None
     parsed = pd.to_datetime(value, errors="coerce", dayfirst=True)
     return None if pd.isna(parsed) else parsed.date()
+
+
+def _clean_number(value):
+    if value in ("", None) or pd.isna(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clean_text_value(value) -> str:
+    if value in ("", None) or pd.isna(value):
+        return ""
+    return str(value).strip()
 
 
 def _calculate_age(birth_date, reference_date: date | None = None) -> int | None:
@@ -269,3 +365,114 @@ def build_yearly_trend(metric_df: pd.DataFrame) -> pd.DataFrame:
         .sort_values("ano_avaliacao")
     )
     return trend_df
+
+
+def build_latest_athlete_profiles() -> pd.DataFrame:
+    athletes_df = read_athletes().copy()
+    if athletes_df.empty:
+        return athletes_df
+    athletes_df["ativo"] = athletes_df["ativo"].fillna(False).astype(bool)
+    athletes_df["idade"] = athletes_df["data_nascimento"].map(_calculate_age)
+    athletes_df["escalao"] = athletes_df["idade"].map(_derive_escalao_from_age)
+
+    latest_physical = latest_records_by_athlete(read_physical_records())
+    latest_technical = latest_records_by_athlete(read_technical_records())
+    if not latest_physical.empty:
+        latest_physical = latest_physical.add_prefix("fis_").rename(columns={"fis_atleta_id": "atleta_id"})
+        athletes_df = athletes_df.merge(latest_physical, on="atleta_id", how="left")
+    if not latest_technical.empty:
+        latest_technical = latest_technical.add_prefix("tec_").rename(columns={"tec_atleta_id": "atleta_id"})
+        athletes_df = athletes_df.merge(latest_technical, on="atleta_id", how="left")
+    return athletes_df
+
+
+def metric_comparison(metric_key: str, value, athlete_row: pd.Series, history_df: pd.DataFrame, scope_sets: list[list[str]]) -> dict | None:
+    number = _clean_number(value)
+    if number is None or history_df.empty:
+        return None
+    metric_df = history_df[history_df["metric_key"] == metric_key].copy()
+    if metric_df.empty:
+        return None
+
+    field_values = {
+        "genero": _clean_text_value(athlete_row.get("genero")),
+        "selecao": _clean_text_value(athlete_row.get("selecao")),
+        "escalao_avaliacao": _clean_text_value(athlete_row.get("escalao")),
+        "posicao": _clean_text_value(athlete_row.get("posicao")),
+    }
+
+    chosen_df = metric_df
+    for scope_fields in scope_sets:
+        scoped_df = metric_df.copy()
+        valid_scope = True
+        for field in scope_fields:
+            field_value = field_values.get(field, "")
+            if not field_value:
+                valid_scope = False
+                break
+            scoped_df = scoped_df[scoped_df[field].astype(str) == field_value].copy()
+        if valid_scope and len(scoped_df) >= 4 and scoped_df["atleta_id"].nunique() >= 3:
+            chosen_df = scoped_df
+            break
+
+    values = pd.to_numeric(chosen_df["metric_value"], errors="coerce").dropna()
+    if values.empty:
+        return None
+    direction = _clean_text_value(chosen_df["direction"].iloc[0])
+    if direction == "lower":
+        perf_values = -values
+        perf_value = -number
+    else:
+        perf_values = values
+        perf_value = number
+    percentile = float((perf_values <= perf_value).mean() * 100)
+    return {
+        "percentile": percentile,
+        "direction": direction,
+        "n_avaliacoes": int(len(chosen_df)),
+        "n_atletas": int(chosen_df["atleta_id"].nunique()),
+    }
+
+
+def compute_profile_scores_for_row(athlete_row: pd.Series, history_df: pd.DataFrame) -> dict[str, float | None]:
+    is_goalkeeper = _clean_text_value(athlete_row.get("posicao")) == "GR"
+    score_map = dict(PROFILE_SCORE_METRICS)
+    score_map.update(GOALKEEPER_PROFILE_SCORE_METRICS if is_goalkeeper else FIELD_PLAYER_PROFILE_SCORE_METRICS)
+
+    results: dict[str, float | None] = {}
+    for score_key, config in score_map.items():
+        percentiles: list[float] = []
+        for metric in config["metrics"]:
+            comparison = metric_comparison(
+                metric["metric_key"],
+                athlete_row.get(metric["row_key"]),
+                athlete_row,
+                history_df,
+                config["scopes"],
+            )
+            if comparison is not None and comparison.get("percentile") is not None:
+                percentiles.append(float(comparison["percentile"]))
+        results[score_key] = None if not percentiles else sum(percentiles) / len(percentiles)
+    return results
+
+
+def build_profile_scores_dataframe() -> pd.DataFrame:
+    profiles_df = build_latest_athlete_profiles()
+    if profiles_df.empty:
+        return profiles_df
+    history_df = build_metric_history()
+    score_rows: list[dict] = []
+    for _, row in profiles_df.iterrows():
+        scores = compute_profile_scores_for_row(row, history_df)
+        score_rows.append(
+            {
+                "atleta_id": row.get("atleta_id"),
+                "ANT": scores.get("ANT"),
+                "FIS": scores.get("FIS"),
+                "TEC": scores.get("TEC"),
+                "TAT": scores.get("TAT"),
+                "PSI": scores.get("PSI"),
+            }
+        )
+    scores_df = pd.DataFrame(score_rows)
+    return profiles_df.merge(scores_df, on="atleta_id", how="left")
