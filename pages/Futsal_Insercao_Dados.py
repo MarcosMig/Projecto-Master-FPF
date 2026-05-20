@@ -67,6 +67,7 @@ REPORT_PHYSICAL_COLUMN_MAP = {
 }
 
 REPORT_TTP_COLUMN_MAP = {
+    "ID": "atleta_id",
     "ID Atleta": "atleta_id",
     "NOME JOGADOR": "nome_jogador",
     "1x1 ofensivo": "um_x_um_ofensivo_score",
@@ -144,7 +145,7 @@ PHYSICAL_MODEL_COLUMNS = [
 ]
 
 TTP_MODEL_COLUMNS = [
-    "ID Atleta",
+    "ID",
     "NOME JOGADOR",
     "1x1 ofensivo",
     "1x1 defensivo",
@@ -159,7 +160,7 @@ TTP_MODEL_COLUMNS = [
 ]
 
 TTP_GR_MODEL_COLUMNS = [
-    "ID Atleta",
+    "ID",
     "NOME JOGADOR",
     "Reposição com o pé",
     "Reposição com a mão",
@@ -197,6 +198,9 @@ TTP_SCORE_COLUMNS = [
     "atencao_concentracao_score",
 ]
 
+PHYSICAL_TEMPLATE_HINT_COLUMNS = set(REPORT_PHYSICAL_COLUMN_MAP.keys()) | {"ID", "Nome", "Posição", "Posicao"}
+TTP_TEMPLATE_HINT_COLUMNS = set(REPORT_TTP_COLUMN_MAP.keys()) | {"ID", "NOME JOGADOR"}
+
 
 def _clean_text_value(value) -> str:
     if pd.isna(value):
@@ -213,6 +217,33 @@ def _normalize_name_key(value) -> str:
     ascii_text = "".join(ch for ch in normalized if not unicodedata.combining(ch))
     compact = " ".join(ascii_text.lower().split())
     return compact
+
+
+def _name_tokens(value) -> list[str]:
+    normalized = _normalize_name_key(value)
+    return [token for token in normalized.split(" ") if token]
+
+
+def _names_match_reasonable(db_name, upload_name) -> bool:
+    db_tokens = _name_tokens(db_name)
+    upload_tokens = _name_tokens(upload_name)
+    if not db_tokens or not upload_tokens:
+        return True
+    if db_tokens == upload_tokens:
+        return True
+
+    db_set = set(db_tokens)
+    upload_set = set(upload_tokens)
+
+    if len(db_tokens) >= 2 and len(upload_tokens) >= 2:
+        if db_tokens[0] == upload_tokens[0] and db_tokens[-1] == upload_tokens[-1]:
+            return True
+
+    overlap = db_set & upload_set
+    if len(overlap) >= 2 and (db_set.issubset(upload_set) or upload_set.issubset(db_set)):
+        return True
+
+    return False
 
 
 def _clean_date(value):
@@ -330,7 +361,10 @@ def _validate_athlete_name_match(df_upload: pd.DataFrame, athletes_df: pd.DataFr
     compare_df["nome_upload"] = compare_df[upload_name_column].map(_normalize_name_key)
     compare_df = compare_df.merge(athlete_names[["atleta_id", "nome", "nome_base"]], on="atleta_id", how="left")
 
-    mismatch_mask = compare_df["nome_base"].fillna("") != compare_df["nome_upload"].fillna("")
+    mismatch_mask = ~compare_df.apply(
+        lambda row: _names_match_reasonable(row.get("nome"), row.get(upload_name_column)),
+        axis=1,
+    )
     mismatches = compare_df[mismatch_mask].copy()
     if mismatches.empty:
         return
@@ -364,11 +398,41 @@ def _validate_ttp_scale(df_upload: pd.DataFrame, score_columns: list[str]) -> No
         )
 
 
+def _validate_template_family(upload_columns: list[str], expected_kind: str) -> None:
+    cleaned_columns = {str(col).strip() for col in upload_columns}
+    physical_hits = len(cleaned_columns & PHYSICAL_TEMPLATE_HINT_COLUMNS)
+    ttp_hits = len(cleaned_columns & TTP_TEMPLATE_HINT_COLUMNS)
+
+    if expected_kind == "physical":
+        if physical_hits < 4:
+            raise RuntimeError(
+                "O ficheiro carregado nao parece ser um modelo de dados fisicos valido. "
+                "Confirma se selecionaste a tab correta e se o ficheiro corresponde ao modelo fisico."
+            )
+        if ttp_hits >= 5 and ttp_hits > physical_hits:
+            raise RuntimeError(
+                "O ficheiro carregado parece pertencer a Tecnico | Tatica | Psicologico, nao a Dados Fisicos. "
+                "Carrega este ficheiro na tab correta."
+            )
+    elif expected_kind == "ttp":
+        if ttp_hits < 4:
+            raise RuntimeError(
+                "O ficheiro carregado nao parece ser um modelo TTP valido. "
+                "Confirma se selecionaste a tab correta e se o ficheiro corresponde ao modelo tecnico | tatica | psicologico."
+            )
+        if physical_hits >= 5 and physical_hits > ttp_hits:
+            raise RuntimeError(
+                "O ficheiro carregado parece pertencer a Dados Fisicos, nao a Tecnico | Tatica | Psicologico. "
+                "Carrega este ficheiro na tab correta."
+            )
+
+
 def _prepare_bulk_physical_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, data_avaliacao) -> pd.DataFrame:
     if df_upload is None or df_upload.empty:
         raise RuntimeError("O ficheiro nao contem linhas.")
     work_df = df_upload.copy()
     work_df.columns = [str(col).strip() for col in work_df.columns]
+    _validate_template_family(work_df.columns.tolist(), "physical")
     if "ID" not in work_df.columns:
         raise RuntimeError("O modelo fisico tem de incluir a coluna 'ID'.")
     work_df["atleta_id"] = work_df["ID"].fillna("").astype(str).str.strip()
@@ -410,8 +474,9 @@ def _prepare_bulk_ttp_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame
         raise RuntimeError("O ficheiro nao contem linhas.")
     work_df = df_upload.copy()
     work_df.columns = [str(col).strip() for col in work_df.columns]
-    if "ID Atleta" not in work_df.columns:
-        raise RuntimeError("O modelo tecnico|tatica|psicologico tem de incluir a coluna 'ID Atleta'.")
+    _validate_template_family(work_df.columns.tolist(), "ttp")
+    if "ID" not in work_df.columns and "ID Atleta" not in work_df.columns:
+        raise RuntimeError("O modelo tecnico|tatica|psicologico tem de incluir a coluna 'ID'.")
     rename_map = {source: target for source, target in REPORT_TTP_COLUMN_MAP.items() if source in work_df.columns}
     work_df = work_df.rename(columns=rename_map)
     work_df["atleta_id"] = work_df["atleta_id"].fillna("").astype(str).str.strip()

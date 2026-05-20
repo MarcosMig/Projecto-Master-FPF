@@ -15,16 +15,20 @@ from fpf_modules.futsal_parquet_store import (
     PHYSICAL_COLUMNS,
     TECHNICAL_COLUMNS,
     append_records,
+    append_athlete_pathway_entry,
     delete_athlete,
+    delete_athlete_pathway_entry,
     delete_photo,
     delete_record,
     generate_athlete_id,
     latest_records_by_athlete,
     read_athlete_history,
+    read_athlete_pathway,
     read_athletes,
     read_physical_records,
     read_technical_records,
     save_photo,
+    update_athlete_pathway_entry,
     update_record,
     upsert_athlete,
 )
@@ -35,6 +39,7 @@ ATHLETE_BIRTHDATE_MAX = date.today()
 GENDER_OPTIONS = ["Masculino", "Feminino"]
 POSITION_OPTIONS = ["", "GR", "Fixo", "Ala", "Pivot", "Universal"]
 SELECTION_OPTIONS = ["", "S12", "S13", "S14", "S15", "S16", "S17"]
+STATE_OPTIONS = ["", "Observado", "Referenciado", "Processo Seleção", "Seleção Distrital", "Internacional"]
 
 MYJUMPLAB_IMPORT_COLUMNS = [
     "Date",
@@ -230,7 +235,49 @@ def _format_metric(value, suffix: str = "", decimals: int = 1) -> str:
     return f"{number:.{decimals}f}{suffix}"
 
 
-@st.cache_data(show_spinner=False)
+def _interpolate_hex(color_a: tuple[int, int, int], color_b: tuple[int, int, int], factor: float) -> str:
+    factor = max(0.0, min(1.0, factor))
+    channels = [
+        int(round(color_a[idx] + (color_b[idx] - color_a[idx]) * factor))
+        for idx in range(3)
+    ]
+    return "#{:02x}{:02x}{:02x}".format(*channels)
+
+
+def _hsl_to_hex(h: float, s: float, l: float) -> str:
+    h = h % 360.0
+    s = max(0.0, min(1.0, s))
+    l = max(0.0, min(1.0, l))
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs((h / 60.0) % 2 - 1))
+    m = l - c / 2
+    if h < 60:
+        r1, g1, b1 = c, x, 0
+    elif h < 120:
+        r1, g1, b1 = x, c, 0
+    elif h < 180:
+        r1, g1, b1 = 0, c, x
+    elif h < 240:
+        r1, g1, b1 = 0, x, c
+    elif h < 300:
+        r1, g1, b1 = x, 0, c
+    else:
+        r1, g1, b1 = c, 0, x
+    rgb = [int(round((channel + m) * 255)) for channel in (r1, g1, b1)]
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+def _score_gradient(score_value) -> tuple[str, str]:
+    number = _clean_number(score_value)
+    if number is None:
+        return "#667085", "#98a2b3"
+    clipped = max(0.0, min(100.0, number))
+    hue = 120.0 * (clipped / 100.0)
+    base = _hsl_to_hex(hue, 0.76, 0.40)
+    accent = _hsl_to_hex(hue, 0.88, 0.52)
+    return base, accent
+
+
 def _get_metric_history_cached() -> pd.DataFrame:
     return build_metric_history()
 
@@ -581,6 +628,12 @@ def _render_profile_score_strip(athlete_row: pd.Series) -> None:
         value = scores.get(key)
         return "--" if value is None else str(int(round(value)))
 
+    ant_base, ant_accent = _score_gradient(scores.get("ANT"))
+    fis_base, fis_accent = _score_gradient(scores.get("FIS"))
+    tec_base, tec_accent = _score_gradient(scores.get("TEC"))
+    tat_base, tat_accent = _score_gradient(scores.get("TAT"))
+    psi_base, psi_accent = _score_gradient(scores.get("PSI"))
+
     html = f"""
     <style>
     .player-score-strip {{
@@ -597,11 +650,11 @@ def _render_profile_score_strip(athlete_row: pd.Series) -> None:
         border: 1px solid rgba(255,255,255,0.14);
         box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
     }}
-    .player-score-pill.ant {{ background: linear-gradient(135deg, #7c4a66, #9a637d); }}
-    .player-score-pill.fis {{ background: linear-gradient(135deg, #6e485d, #86586a); }}
-    .player-score-pill.tec {{ background: linear-gradient(135deg, #53617c, #67748f); }}
-    .player-score-pill.tat {{ background: linear-gradient(135deg, #4f6877, #5f8294); }}
-    .player-score-pill.psi {{ background: linear-gradient(135deg, #497687, #5a90a2); }}
+    .player-score-pill.ant {{ background: linear-gradient(135deg, {ant_base}, {ant_accent}); }}
+    .player-score-pill.fis {{ background: linear-gradient(135deg, {fis_base}, {fis_accent}); }}
+    .player-score-pill.tec {{ background: linear-gradient(135deg, {tec_base}, {tec_accent}); }}
+    .player-score-pill.tat {{ background: linear-gradient(135deg, {tat_base}, {tat_accent}); }}
+    .player-score-pill.psi {{ background: linear-gradient(135deg, {psi_base}, {psi_accent}); }}
     .player-score-value {{
         font-size: 26px;
         line-height: 1;
@@ -766,6 +819,7 @@ def _athlete_history_rows(
     athlete_history_df: pd.DataFrame,
     physical_df: pd.DataFrame,
     technical_df: pd.DataFrame,
+    pathway_df: pd.DataFrame,
 ) -> pd.DataFrame:
     atleta_id = _clean_text_value(athlete_row.get("atleta_id"))
     history_frames: list[pd.DataFrame] = []
@@ -778,6 +832,8 @@ def _athlete_history_rows(
                 "tipo": "Criacao atleta",
                 "data_avaliacao": None,
                 "detalhe": "Criacao da atleta",
+                "selecao": _clean_text_value(athlete_row.get("selecao")),
+                "estado": "",
             }
         ]
         updated_at = athlete_row.get("updated_at")
@@ -789,6 +845,8 @@ def _athlete_history_rows(
                     "tipo": "Atualizacao atleta",
                     "data_avaliacao": None,
                     "detalhe": "Atualizacao da ficha da atleta",
+                    "selecao": _clean_text_value(athlete_row.get("selecao")),
+                    "estado": "",
                 }
             )
         athlete_events = pd.DataFrame(synthetic_rows)
@@ -801,13 +859,27 @@ def _athlete_history_rows(
             }
         ).fillna("Evento atleta")
         athlete_events["detalhe"] = athlete_events["descricao"].fillna("")
-        athlete_events = athlete_events[["momento", "tipo", "data_nascimento", "detalhe"]].rename(
+        athlete_events["selecao"] = athlete_events["selecao"].map(_clean_text_value)
+        athlete_events["estado"] = ""
+        athlete_events = athlete_events[["momento", "tipo", "data_nascimento", "detalhe", "selecao", "estado"]].rename(
             columns={"data_nascimento": "data_avaliacao"}
         )
         athlete_events["record_kind"] = "athlete_event"
         athlete_events["record_id"] = athlete_events.index.astype(str)
         athlete_events["source_type"] = "athlete_event"
     history_frames.append(athlete_events)
+
+    pathway_rows = pathway_df[pathway_df["atleta_id"].astype(str) == atleta_id].copy() if not pathway_df.empty else pd.DataFrame()
+    if not pathway_rows.empty:
+        pathway_rows["momento"] = pathway_rows["inserted_at"]
+        pathway_rows["tipo"] = "Atualizacao percurso"
+        pathway_rows["data_avaliacao"] = pathway_rows["data_referencia"]
+        pathway_rows["detalhe"] = pathway_rows["observacoes"].fillna("")
+        pathway_rows["selecao"] = pathway_rows["selecao"].map(_clean_text_value)
+        pathway_rows["estado"] = pathway_rows["estado"].map(_clean_text_value)
+        pathway_rows["record_kind"] = "pathway"
+        pathway_rows["record_id"] = pathway_rows["entry_id"]
+        history_frames.append(pathway_rows[["momento", "tipo", "data_avaliacao", "detalhe", "selecao", "estado", "record_kind", "record_id"]])
 
     physical_rows = physical_df[physical_df["atleta_id"].astype(str) == atleta_id].copy() if not physical_df.empty else pd.DataFrame()
     if not physical_rows.empty:
@@ -838,8 +910,10 @@ def _athlete_history_rows(
             ).strip(", "),
             axis=1,
         )
+        physical_rows["selecao"] = ""
+        physical_rows["estado"] = ""
         physical_rows["record_kind"] = "physical"
-        history_frames.append(physical_rows[["momento", "tipo", "data_avaliacao", "detalhe", "record_kind", "record_id", "source_type"]])
+        history_frames.append(physical_rows[["momento", "tipo", "data_avaliacao", "detalhe", "selecao", "estado", "record_kind", "record_id", "source_type"]])
 
     technical_rows = technical_df[technical_df["atleta_id"].astype(str) == atleta_id].copy() if not technical_df.empty else pd.DataFrame()
     if not technical_rows.empty:
@@ -876,8 +950,10 @@ def _athlete_history_rows(
             ).strip(", "),
             axis=1,
         )
+        technical_rows["selecao"] = ""
+        technical_rows["estado"] = ""
         technical_rows["record_kind"] = "technical"
-        history_frames.append(technical_rows[["momento", "tipo", "data_avaliacao", "detalhe", "record_kind", "record_id", "source_type"]])
+        history_frames.append(technical_rows[["momento", "tipo", "data_avaliacao", "detalhe", "selecao", "estado", "record_kind", "record_id", "source_type"]])
 
     history_df = pd.concat(history_frames, ignore_index=True) if history_frames else pd.DataFrame()
     if history_df.empty:
@@ -887,6 +963,8 @@ def _athlete_history_rows(
     history_df = history_df.sort_values("momento", ascending=False, na_position="last").reset_index(drop=True)
     history_df["momento"] = history_df["momento"].dt.strftime("%d/%m/%Y %H:%M")
     history_df["data_avaliacao"] = history_df["data_avaliacao"].dt.strftime("%d/%m/%Y").replace("NaT", "")
+    history_df["selecao"] = history_df["selecao"].fillna("").map(_clean_text_value)
+    history_df["estado"] = history_df["estado"].fillna("").map(_clean_text_value)
     history_df["detalhe"] = history_df["detalhe"].fillna("").replace("", "-")
     return history_df
 
@@ -1160,7 +1238,12 @@ def _myjumplab_defaults(uploaded_file) -> tuple[dict, str]:
     return defaults, imported_name
 
 
-def _athletes_with_latest(athletes_df: pd.DataFrame, physical_df: pd.DataFrame, technical_df: pd.DataFrame) -> pd.DataFrame:
+def _athletes_with_latest(
+    athletes_df: pd.DataFrame,
+    physical_df: pd.DataFrame,
+    technical_df: pd.DataFrame,
+    pathway_df: pd.DataFrame,
+) -> pd.DataFrame:
     work_df = athletes_df.copy()
     if work_df.empty:
         return work_df
@@ -1176,6 +1259,25 @@ def _athletes_with_latest(athletes_df: pd.DataFrame, physical_df: pd.DataFrame, 
     if not latest_technical.empty:
         latest_technical = latest_technical.add_prefix("tec_").rename(columns={"tec_atleta_id": "atleta_id"})
         work_df = work_df.merge(latest_technical, on="atleta_id", how="left")
+    if pathway_df is not None and not pathway_df.empty:
+        latest_pathway = pathway_df.copy()
+        latest_pathway["ano"] = pd.to_numeric(latest_pathway["ano"], errors="coerce")
+        latest_pathway["data_referencia"] = pd.to_datetime(latest_pathway["data_referencia"], errors="coerce", dayfirst=True)
+        latest_pathway["inserted_at"] = pd.to_datetime(latest_pathway["inserted_at"], errors="coerce")
+        latest_pathway = latest_pathway.sort_values(
+            ["atleta_id", "ano", "data_referencia", "inserted_at"],
+            ascending=[True, False, False, False],
+            na_position="last",
+        ).drop_duplicates(subset=["atleta_id"], keep="first")
+        latest_pathway = latest_pathway.add_prefix("per_").rename(columns={"per_atleta_id": "atleta_id"})
+        work_df = work_df.merge(latest_pathway, on="atleta_id", how="left")
+        work_df["selecao_atual"] = work_df["per_selecao"].where(work_df["per_selecao"].notna() & (work_df["per_selecao"].astype(str) != ""), work_df["selecao"])
+        work_df["escalao_atual"] = work_df["per_escalao"].where(work_df["per_escalao"].notna() & (work_df["per_escalao"].astype(str) != ""), work_df["escalao"])
+        work_df["estado_atual"] = work_df["per_estado"].fillna("")
+    else:
+        work_df["selecao_atual"] = work_df["selecao"]
+        work_df["escalao_atual"] = work_df["escalao"]
+        work_df["estado_atual"] = ""
     return work_df
 
 
@@ -1219,6 +1321,19 @@ def _build_technical_record(technical_df: pd.DataFrame, atleta_id: str, data_ava
     for key, value in updates.items():
         base[key] = value
     return pd.DataFrame([base])
+
+
+def _latest_pathway_snapshot(pathway_df: pd.DataFrame, atleta_id: str) -> dict:
+    if pathway_df is None or pathway_df.empty:
+        return {}
+    work_df = pathway_df[pathway_df["atleta_id"].astype(str) == str(atleta_id)].copy()
+    if work_df.empty:
+        return {}
+    work_df["ano"] = pd.to_numeric(work_df["ano"], errors="coerce")
+    work_df["data_referencia"] = pd.to_datetime(work_df["data_referencia"], errors="coerce", dayfirst=True)
+    work_df["inserted_at"] = pd.to_datetime(work_df["inserted_at"], errors="coerce")
+    work_df = work_df.sort_values(["ano", "data_referencia", "inserted_at"], ascending=[False, False, False], na_position="last")
+    return work_df.head(1).iloc[0].to_dict()
 
 
 def _record_row_by_id(df: pd.DataFrame, record_id: str) -> pd.Series | None:
@@ -1453,6 +1568,141 @@ def _render_inline_technical_insert(athlete_row: pd.Series, technical_df: pd.Dat
         st.rerun()
 
 
+def _render_inline_pathway_insert(athlete_row: pd.Series, pathway_df: pd.DataFrame) -> None:
+    atleta_id = _clean_text_value(athlete_row.get("atleta_id"))
+    panel_key = f"open_insert_pathway_{atleta_id}"
+    if st.button("Inserir", key=f"insert_pathway_button_{atleta_id}"):
+        _toggle_state(panel_key)
+        st.rerun()
+
+    if not st.session_state.get(panel_key, False):
+        return
+
+    latest_snapshot = _latest_pathway_snapshot(pathway_df, atleta_id)
+    default_year = _clean_integer(latest_snapshot.get("ano")) or date.today().year
+    default_selection = _clean_text_value(latest_snapshot.get("selecao")) or _clean_text_value(athlete_row.get("selecao_atual"))
+    default_scale = _clean_text_value(latest_snapshot.get("escalao")) or _clean_text_value(athlete_row.get("escalao_atual"))
+    default_state = _clean_text_value(latest_snapshot.get("estado"))
+    default_reference = _clean_date(latest_snapshot.get("data_referencia")) or date.today()
+    default_notes = _clean_text_value(latest_snapshot.get("observacoes"))
+
+    with st.form(f"insert_pathway_form_{atleta_id}"):
+        p1, p2, p3, p4 = st.columns(4)
+        ano = p1.number_input("Ano", min_value=2000, max_value=2100, value=int(default_year), step=1, key=f"path_year_{atleta_id}")
+        selecao = p2.selectbox(
+            "Selecao",
+            options=SELECTION_OPTIONS,
+            index=SELECTION_OPTIONS.index(default_selection) if default_selection in SELECTION_OPTIONS else 0,
+            key=f"path_sel_{atleta_id}",
+        )
+        escalao = p3.text_input("Escalao", value=default_scale, key=f"path_scale_{atleta_id}")
+        estado = p4.selectbox(
+            "Estado",
+            options=STATE_OPTIONS,
+            index=STATE_OPTIONS.index(default_state) if default_state in STATE_OPTIONS else 0,
+            key=f"path_state_{atleta_id}",
+        )
+        data_referencia = st.date_input("Data de referencia", value=default_reference, format="DD/MM/YYYY", key=f"path_date_{atleta_id}")
+        observacoes = st.text_area("Observacoes", value=default_notes, key=f"path_notes_{atleta_id}", height=90)
+        submitted = st.form_submit_button("Guardar percurso", type="primary")
+
+    if submitted:
+        if not _clean_text_value(estado):
+            st.error("O campo Estado e obrigatorio.")
+            return
+        append_athlete_pathway_entry(
+            {
+                "atleta_id": atleta_id,
+                "ano": int(ano),
+                "selecao": _clean_text_value(selecao),
+                "escalao": _clean_text_value(escalao),
+                "estado": _clean_text_value(estado),
+                "data_referencia": _clean_date(data_referencia),
+                "observacoes": _clean_text_value(observacoes),
+            }
+        )
+        st.session_state[panel_key] = False
+        st.success("Percurso guardado com sucesso.")
+        st.rerun()
+
+
+def _render_pathway_history_actions(athlete_row: pd.Series, pathway_history: pd.DataFrame, selection) -> None:
+    selected_rows = selection.selection.rows if selection and selection.selection else []
+    if not selected_rows:
+        st.caption("Seleciona uma linha do percurso para editar ou eliminar.")
+        return
+
+    atleta_id = _clean_text_value(athlete_row.get("atleta_id"))
+    selected_row = pathway_history.iloc[selected_rows[0]]
+    entry_id = _clean_text_value(selected_row.get("entry_id"))
+
+    action_col1, action_col2 = st.columns(2)
+    if action_col1.button("Editar registo", key=f"edit_pathway_row_{atleta_id}_{entry_id}"):
+        _toggle_state(f"open_pathway_edit_{atleta_id}_{entry_id}")
+        st.rerun()
+    if action_col2.button("Eliminar registo", key=f"delete_pathway_row_{atleta_id}_{entry_id}"):
+        delete_athlete_pathway_entry(entry_id)
+        st.success("Registo de percurso eliminado com sucesso.")
+        st.rerun()
+
+    if not st.session_state.get(f"open_pathway_edit_{atleta_id}_{entry_id}", False):
+        return
+
+    with st.form(f"edit_pathway_form_{entry_id}"):
+        current_selection = _clean_text_value(selected_row.get("Selecao"))
+        current_state = _clean_text_value(selected_row.get("Estado"))
+        p1, p2, p3, p4 = st.columns(4)
+        edit_year = p1.number_input("Ano", min_value=2000, max_value=2100, value=int(_clean_integer(selected_row.get("Ano")) or date.today().year), step=1, key=f"edit_path_year_{entry_id}")
+        edit_selection = p2.selectbox(
+            "Selecao",
+            options=SELECTION_OPTIONS,
+            index=SELECTION_OPTIONS.index(current_selection) if current_selection in SELECTION_OPTIONS else 0,
+            key=f"edit_path_sel_{entry_id}",
+        )
+        edit_scale = p3.text_input("Escalao", value=_clean_text_value(selected_row.get("Escalao")), key=f"edit_path_scale_{entry_id}")
+        edit_state = p4.selectbox(
+            "Estado",
+            options=STATE_OPTIONS,
+            index=STATE_OPTIONS.index(current_state) if current_state in STATE_OPTIONS else 0,
+            key=f"edit_path_state_{entry_id}",
+        )
+        edit_reference = st.date_input("Data de referencia", value=_clean_date(selected_row.get("Data de referencia")) or date.today(), format="DD/MM/YYYY", key=f"edit_path_date_{entry_id}")
+        edit_notes = st.text_area("Observacoes", value=_clean_text_value(selected_row.get("Observacoes")), key=f"edit_path_notes_{entry_id}", height=90)
+        save_edit = st.form_submit_button("Guardar alteracoes", type="primary")
+
+    if save_edit:
+        if not _clean_text_value(edit_state):
+            st.error("O campo Estado e obrigatorio.")
+            return
+        update_athlete_pathway_entry(
+            entry_id,
+            {
+                "ano": int(edit_year),
+                "selecao": _clean_text_value(edit_selection),
+                "escalao": _clean_text_value(edit_scale),
+                "estado": _clean_text_value(edit_state),
+                "data_referencia": _clean_date(edit_reference),
+                "observacoes": _clean_text_value(edit_notes),
+            },
+        )
+        st.session_state[f"open_pathway_edit_{atleta_id}_{entry_id}"] = False
+        st.success("Registo de percurso atualizado com sucesso.")
+        st.rerun()
+
+
+def _render_admin_history_actions(athlete_row: pd.Series, admin_history: pd.DataFrame, selection) -> None:
+    selected_rows = selection.selection.rows if selection and selection.selection else []
+    if not selected_rows:
+        st.caption("Seleciona uma linha do historico da ficha para editar ou eliminar.")
+        return
+
+    selected_row = admin_history.iloc[selected_rows[0]]
+    if _clean_text_value(selected_row.get("record_kind")) == "pathway":
+        _render_pathway_history_actions(athlete_row, admin_history, selection)
+    else:
+        st.caption("Os eventos de criacao e atualizacao da ficha ficam apenas para consulta.")
+
+
 def _render_inline_history_actions(athlete_row: pd.Series, athletes_df: pd.DataFrame, physical_df: pd.DataFrame, technical_df: pd.DataFrame, athlete_history: pd.DataFrame, selection) -> None:
     selected_rows = selection.selection.rows if selection and selection.selection else []
     if not selected_rows:
@@ -1584,9 +1834,10 @@ def _render_athlete_registry(
     athlete_history_df: pd.DataFrame,
     physical_df: pd.DataFrame,
     technical_df: pd.DataFrame,
+    pathway_df: pd.DataFrame,
 ) -> None:
     st.subheader("Atletas registados")
-    registry_df = _athletes_with_latest(athletes_df, physical_df, technical_df)
+    registry_df = _athletes_with_latest(athletes_df, physical_df, technical_df, pathway_df)
     if registry_df.empty:
         st.info("Ainda nao existem atletas registados.")
         return
@@ -1594,7 +1845,7 @@ def _render_athlete_registry(
     filter_col1, filter_col2, filter_col3 = st.columns(3)
     search_term = filter_col1.text_input("Pesquisar atleta", key="futsal_registry_search")
     state_filter = filter_col2.selectbox("Estado", options=["Todos", "Ativos", "Inativos"], key="futsal_registry_state")
-    escalao_options = ["Todos"] + sorted([value for value in registry_df["escalao"].dropna().astype(str).unique().tolist() if value])
+    escalao_options = ["Todos"] + sorted([value for value in registry_df["escalao_atual"].dropna().astype(str).unique().tolist() if value])
     escalao_filter = filter_col3.selectbox("Escalao", options=escalao_options, key="futsal_registry_escalao")
 
     view_df = registry_df.copy()
@@ -1609,7 +1860,7 @@ def _render_athlete_registry(
     elif state_filter == "Inativos":
         view_df = view_df[~view_df["ativo"]].copy()
     if escalao_filter != "Todos":
-        view_df = view_df[view_df["escalao"].astype(str) == escalao_filter].copy()
+        view_df = view_df[view_df["escalao_atual"].astype(str) == escalao_filter].copy()
 
     if view_df.empty:
         st.info("Sem atletas para este filtro.")
@@ -1734,8 +1985,9 @@ def _render_athlete_registry(
                         st.markdown(f"**Idade:** {_calculate_age(row.get('data_nascimento')) or '-'}")
                     with info_col2:
                         st.markdown(f"**Genero:** {_clean_text_value(row.get('genero')) or '-'}")
-                        st.markdown(f"**Escalao:** {_clean_text_value(row.get('escalao')) or '-'}")
-                        st.markdown(f"**Selecao:** {_clean_text_value(row.get('selecao')) or '-'}")
+                        st.markdown(f"**Escalao:** {_clean_text_value(row.get('escalao_atual')) or '-'}")
+                        st.markdown(f"**Selecao:** {_clean_text_value(row.get('selecao_atual')) or '-'}")
+                        st.markdown(f"**Estado:** {_clean_text_value(row.get('estado_atual')) or '-'}")
                         st.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
 
             _render_profile_score_strip(row)
@@ -1997,52 +2249,66 @@ def _render_athlete_registry(
                 )
 
             with tab_history:
-                athlete_history = _athlete_history_rows(row, athlete_history_df, physical_df, technical_df)
+                athlete_history = _athlete_history_rows(row, athlete_history_df, physical_df, technical_df, pathway_df)
                 if athlete_history.empty:
                     st.info("Sem historico disponivel.")
                 else:
                     eval_history = athlete_history[athlete_history["record_kind"].isin(["physical", "technical"])].copy()
-                    admin_history = athlete_history[athlete_history["record_kind"].eq("athlete_event")].copy()
+                    admin_history = athlete_history[athlete_history["record_kind"].isin(["athlete_event", "pathway"])].copy()
                     hist_eval_tab, hist_admin_tab = st.tabs(["Historico de Avaliacoes", "Historico da Ficha"])
 
                     with hist_eval_tab:
                         if eval_history.empty:
                             st.info("Sem historico de avaliacoes disponivel.")
                         else:
-                            display_eval_history = eval_history.rename(
+                            display_eval_history = eval_history.copy()
+                            display_eval_history["Data"] = display_eval_history["data_avaliacao"].where(
+                                display_eval_history["data_avaliacao"].astype(str) != "",
+                                display_eval_history["momento"].astype(str).str.slice(0, 10),
+                            )
+                            display_eval_history = display_eval_history.rename(
                                 columns={
-                                    "momento": "Momento",
                                     "tipo": "Tipo",
-                                    "data_avaliacao": "Data avaliacao",
-                                    "detalhe": "Detalhe",
+                                    "selecao": "Selecao",
+                                    "estado": "Estado",
                                 }
                             )
                             selection = st.dataframe(
-                                display_eval_history[["Momento", "Tipo", "Data avaliacao", "Detalhe"]],
+                                display_eval_history[["Data", "Selecao", "Estado", "Tipo"]],
                                 use_container_width=True,
                                 hide_index=True,
                                 on_select="rerun",
                                 selection_mode="single-row",
+                                key=f"history_eval_table_{_clean_text_value(row.get('atleta_id'))}",
                             )
                             _render_inline_history_actions(row, athletes_df, physical_df, technical_df, eval_history, selection)
 
                     with hist_admin_tab:
+                        _render_inline_pathway_insert(row, pathway_df)
                         if admin_history.empty:
-                            st.info("Sem historico administrativo disponivel.")
+                            st.info("Sem historico da ficha disponivel.")
                         else:
-                            display_admin_history = admin_history.rename(
+                            display_admin_history = admin_history.copy()
+                            display_admin_history["Data"] = display_admin_history["data_avaliacao"].where(
+                                display_admin_history["data_avaliacao"].astype(str) != "",
+                                display_admin_history["momento"].astype(str).str.slice(0, 10),
+                            )
+                            display_admin_history = display_admin_history.rename(
                                 columns={
-                                    "momento": "Momento",
                                     "tipo": "Tipo",
-                                    "data_avaliacao": "Data de referencia",
-                                    "detalhe": "Detalhe",
+                                    "selecao": "Selecao",
+                                    "estado": "Estado",
                                 }
                             )
-                            st.dataframe(
-                                display_admin_history[["Momento", "Tipo", "Data de referencia", "Detalhe"]],
+                            admin_selection = st.dataframe(
+                                display_admin_history[["Data", "Selecao", "Estado", "Tipo"]],
                                 use_container_width=True,
                                 hide_index=True,
+                                on_select="rerun",
+                                selection_mode="single-row",
+                                key=f"history_admin_table_{_clean_text_value(row.get('atleta_id'))}",
                             )
+                            _render_admin_history_actions(row, admin_history, admin_selection)
 
 
 
@@ -2632,8 +2898,9 @@ st.caption("Parquet local com ficha mestre de atletas, ficha antropometrica/fisi
 
 athletes_df = read_athletes()
 athlete_history_df = read_athlete_history()
+pathway_df = read_athlete_pathway()
 physical_df = read_physical_records()
 technical_df = read_technical_records()
 
 _render_summary_metrics(athletes_df, physical_df, technical_df)
-_render_athlete_registry(athletes_df, athlete_history_df, physical_df, technical_df)
+_render_athlete_registry(athletes_df, athlete_history_df, physical_df, technical_df, pathway_df)

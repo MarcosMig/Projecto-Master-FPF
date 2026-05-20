@@ -13,6 +13,7 @@ FUTSAL_DIR = Path(CLEANDATA_DIR) / "futsal"
 FUTSAL_PHOTOS_DIR = FUTSAL_DIR / "athlete_photos"
 ATHLETES_PATH = FUTSAL_DIR / "athletes_master.parquet"
 ATHLETE_HISTORY_PATH = FUTSAL_DIR / "athlete_history.parquet"
+ATHLETE_PATHWAY_PATH = FUTSAL_DIR / "athlete_pathway.parquet"
 PHYSICAL_RECORDS_PATH = FUTSAL_DIR / "physical_assessments.parquet"
 TECHNICAL_RECORDS_PATH = FUTSAL_DIR / "technical_psychological_assessments.parquet"
 
@@ -43,6 +44,18 @@ ATHLETE_HISTORY_COLUMNS = [
     "posicao",
     "ativo",
     "descricao",
+]
+
+ATHLETE_PATHWAY_COLUMNS = [
+    "entry_id",
+    "inserted_at",
+    "atleta_id",
+    "ano",
+    "selecao",
+    "escalao",
+    "estado",
+    "data_referencia",
+    "observacoes",
 ]
 
 RECORD_META_COLUMNS = [
@@ -138,6 +151,7 @@ def ensure_store() -> None:
     for path, columns in [
         (ATHLETES_PATH, ATHLETE_COLUMNS),
         (ATHLETE_HISTORY_PATH, ATHLETE_HISTORY_COLUMNS),
+        (ATHLETE_PATHWAY_PATH, ATHLETE_PATHWAY_COLUMNS),
         (PHYSICAL_RECORDS_PATH, RECORD_META_COLUMNS + PHYSICAL_COLUMNS),
         (TECHNICAL_RECORDS_PATH, RECORD_META_COLUMNS + TECHNICAL_COLUMNS),
     ]:
@@ -303,6 +317,45 @@ def append_athlete_history_event(record: dict) -> None:
     save_athlete_history(df)
 
 
+def read_athlete_pathway() -> pd.DataFrame:
+    return _read_parquet(ATHLETE_PATHWAY_PATH, ATHLETE_PATHWAY_COLUMNS)
+
+
+def save_athlete_pathway(df: pd.DataFrame) -> None:
+    _write_parquet(df.copy(), ATHLETE_PATHWAY_PATH, ATHLETE_PATHWAY_COLUMNS)
+
+
+def append_athlete_pathway_entry(record: dict) -> None:
+    df = read_athlete_pathway()
+    payload = {col: record.get(col) for col in ATHLETE_PATHWAY_COLUMNS}
+    payload["entry_id"] = payload.get("entry_id") or uuid.uuid4().hex
+    payload["inserted_at"] = payload.get("inserted_at") or datetime.now(timezone.utc).isoformat()
+    df = pd.concat([df, pd.DataFrame([payload])], ignore_index=True)
+    save_athlete_pathway(df)
+
+
+def update_athlete_pathway_entry(entry_id: str, updates: dict) -> None:
+    entry_id = str(entry_id or "").strip()
+    if not entry_id:
+        raise RuntimeError("Entry ID invalido.")
+    df = read_athlete_pathway()
+    mask = df["entry_id"].astype(str) == entry_id
+    if not mask.any():
+        raise RuntimeError("Registo de percurso nao encontrado.")
+    for key, value in updates.items():
+        if key in df.columns:
+            df.loc[mask, key] = value
+    save_athlete_pathway(df.copy())
+
+
+def delete_athlete_pathway_entry(entry_id: str) -> None:
+    entry_id = str(entry_id or "").strip()
+    if not entry_id:
+        raise RuntimeError("Entry ID invalido.")
+    df = read_athlete_pathway()
+    save_athlete_pathway(df[df["entry_id"].astype(str) != entry_id].copy())
+
+
 def read_physical_records() -> pd.DataFrame:
     raw_df = _read_parquet(PHYSICAL_RECORDS_PATH, RECORD_META_COLUMNS + PHYSICAL_COLUMNS)
     repaired_df = _repair_physical_records(raw_df)
@@ -441,6 +494,8 @@ def delete_athlete(atleta_id: str) -> None:
         raise RuntimeError("Atleta ID invalido.")
     history_df = read_athlete_history()
     save_athlete_history(history_df[history_df["atleta_id"].astype(str) != atleta_id].copy())
+    pathway_df = read_athlete_pathway()
+    save_athlete_pathway(pathway_df[pathway_df["atleta_id"].astype(str) != atleta_id].copy())
     athletes_df = read_athletes()
     save_athletes(athletes_df[athletes_df["atleta_id"].astype(str) != atleta_id].copy())
     physical_df = read_physical_records()

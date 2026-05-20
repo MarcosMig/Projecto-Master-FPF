@@ -16,7 +16,6 @@ st.title("Comparacao de Perfis")
 st.caption("Compare o perfil global de 2 a 4 atletas a partir dos indices ANT | FIS | TEC | TAT | PSI.")
 
 
-@st.cache_data(show_spinner=False)
 def _load_profiles() -> pd.DataFrame:
     return build_profile_scores_dataframe()
 
@@ -34,6 +33,49 @@ def _format_int(value) -> str:
         return str(int(round(float(value))))
     except (TypeError, ValueError):
         return "--"
+
+
+def _interpolate_hex(color_a: tuple[int, int, int], color_b: tuple[int, int, int], factor: float) -> str:
+    factor = max(0.0, min(1.0, factor))
+    channels = [
+        int(round(color_a[idx] + (color_b[idx] - color_a[idx]) * factor))
+        for idx in range(3)
+    ]
+    return "#{:02x}{:02x}{:02x}".format(*channels)
+
+
+def _hsl_to_hex(h: float, s: float, l: float) -> str:
+    h = h % 360.0
+    s = max(0.0, min(1.0, s))
+    l = max(0.0, min(1.0, l))
+    c = (1 - abs(2 * l - 1)) * s
+    x = c * (1 - abs((h / 60.0) % 2 - 1))
+    m = l - c / 2
+    if h < 60:
+        r1, g1, b1 = c, x, 0
+    elif h < 120:
+        r1, g1, b1 = x, c, 0
+    elif h < 180:
+        r1, g1, b1 = 0, c, x
+    elif h < 240:
+        r1, g1, b1 = 0, x, c
+    elif h < 300:
+        r1, g1, b1 = x, 0, c
+    else:
+        r1, g1, b1 = c, 0, x
+    rgb = [int(round((channel + m) * 255)) for channel in (r1, g1, b1)]
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+def _score_gradient(score_value) -> tuple[str, str]:
+    value = None if score_value in ("", None) or pd.isna(score_value) else float(score_value)
+    if value is None:
+        return "#667085", "#98a2b3"
+    clipped = max(0.0, min(100.0, value))
+    hue = 120.0 * (clipped / 100.0)
+    base = _hsl_to_hex(hue, 0.76, 0.40)
+    accent = _hsl_to_hex(hue, 0.88, 0.52)
+    return base, accent
 
 
 def _athlete_label(row: pd.Series) -> str:
@@ -112,6 +154,11 @@ def _find_similar_profiles(base_row: pd.Series, candidates_df: pd.DataFrame, top
 
 
 def _render_score_pills(row: pd.Series) -> None:
+    ant_base, ant_accent = _score_gradient(row.get("ANT"))
+    fis_base, fis_accent = _score_gradient(row.get("FIS"))
+    tec_base, tec_accent = _score_gradient(row.get("TEC"))
+    tat_base, tat_accent = _score_gradient(row.get("TAT"))
+    psi_base, psi_accent = _score_gradient(row.get("PSI"))
     html = f"""
     <style>
     .compare-score-strip {{
@@ -128,11 +175,11 @@ def _render_score_pills(row: pd.Series) -> None:
         border: 1px solid rgba(255,255,255,0.14);
         box-shadow: inset 0 1px 0 rgba(255,255,255,0.08);
     }}
-    .compare-score-pill.ant {{ background: linear-gradient(135deg, #7c4a66, #9a637d); }}
-    .compare-score-pill.fis {{ background: linear-gradient(135deg, #6e485d, #86586a); }}
-    .compare-score-pill.tec {{ background: linear-gradient(135deg, #53617c, #67748f); }}
-    .compare-score-pill.tat {{ background: linear-gradient(135deg, #4f6877, #5f8294); }}
-    .compare-score-pill.psi {{ background: linear-gradient(135deg, #497687, #5a90a2); }}
+    .compare-score-pill.ant {{ background: linear-gradient(135deg, {ant_base}, {ant_accent}); }}
+    .compare-score-pill.fis {{ background: linear-gradient(135deg, {fis_base}, {fis_accent}); }}
+    .compare-score-pill.tec {{ background: linear-gradient(135deg, {tec_base}, {tec_accent}); }}
+    .compare-score-pill.tat {{ background: linear-gradient(135deg, {tat_base}, {tat_accent}); }}
+    .compare-score-pill.psi {{ background: linear-gradient(135deg, {psi_base}, {psi_accent}); }}
     .compare-score-value {{
         font-size: 24px;
         line-height: 1;
