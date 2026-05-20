@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from io import BytesIO, StringIO
+import unicodedata
 
 import pandas as pd
 import streamlit as st
@@ -78,6 +79,20 @@ REPORT_TTP_COLUMN_MAP = {
     "Controlo emocional": "controlo_emocional_score",
     "Tenacidade / Resiliência": "tenacidade_resiliencia_score",
     "Atenção /concentração": "atencao_concentracao_score",
+    "Reposição com o pé": "reposicao_pe_score",
+    "Reposicao com o pe": "reposicao_pe_score",
+    "Reposição com a mão": "reposicao_mao_score",
+    "Reposicao com a mao": "reposicao_mao_score",
+    "Tomada de decisão": "tomada_decisao_score",
+    "Tomada de decisao": "tomada_decisao_score",
+    "Comunicação": "comunicacao_score",
+    "Comunicacao": "comunicacao_score",
+    "Posicionamento": "posicionamento_prontidao_score",
+    "Defesa Membros Inferiores": "defesa_membros_inferiores_score",
+    "Defesa Membros Superiores": "defesa_membros_superiores_score",
+    "Defesa 6m": "defesa_6m_ocupa_espaco_score",
+    "Tenacidade": "tenacidade_resiliencia_score",
+    "Atenção": "atencao_concentracao_score",
 }
 
 PHYSICAL_MODEL_COLUMNS = [
@@ -143,6 +158,24 @@ TTP_MODEL_COLUMNS = [
     "Atenção /concentração",
 ]
 
+TTP_GR_MODEL_COLUMNS = [
+    "ID Atleta",
+    "NOME JOGADOR",
+    "Reposição com o pé",
+    "Reposição com a mão",
+    "Tomada de decisão",
+    "Comunicação",
+    "Posicionamento",
+    "Defesa Membros Inferiores",
+    "Defesa Membros Superiores",
+    "Defesa 6m",
+    "Leitura de jogo",
+    "Espírito de equipa",
+    "Controlo emocional",
+    "Tenacidade",
+    "Atenção",
+]
+
 TTP_SCORE_COLUMNS = [
     "um_x_um_ofensivo_score",
     "um_x_um_defensivo_score",
@@ -150,6 +183,14 @@ TTP_SCORE_COLUMNS = [
     "imprevisibilidade_score",
     "leitura_jogo_score",
     "dominio_espaco_score",
+    "reposicao_pe_score",
+    "reposicao_mao_score",
+    "tomada_decisao_score",
+    "comunicacao_score",
+    "posicionamento_prontidao_score",
+    "defesa_membros_inferiores_score",
+    "defesa_membros_superiores_score",
+    "defesa_6m_ocupa_espaco_score",
     "espirito_equipa_score",
     "controlo_emocional_score",
     "tenacidade_resiliencia_score",
@@ -162,6 +203,16 @@ def _clean_text_value(value) -> str:
         return ""
     text = str(value).strip()
     return "" if text in {"", "None", "nan", "NaT", "<NA>"} else text
+
+
+def _normalize_name_key(value) -> str:
+    text = _clean_text_value(value)
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFKD", text)
+    ascii_text = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+    compact = " ".join(ascii_text.lower().split())
+    return compact
 
 
 def _clean_date(value):
@@ -265,6 +316,37 @@ def _validate_athlete_ids(df_upload: pd.DataFrame, athletes_df: pd.DataFrame) ->
         raise RuntimeError(f"Os seguintes atleta_id nao existem na ficha mestre: {', '.join(missing[:15])}")
 
 
+def _validate_athlete_name_match(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, upload_name_column: str) -> None:
+    if upload_name_column not in df_upload.columns:
+        return
+    compare_df = df_upload[["atleta_id", upload_name_column]].copy()
+    compare_df[upload_name_column] = compare_df[upload_name_column].fillna("").astype(str).str.strip()
+    compare_df = compare_df[compare_df[upload_name_column].ne("")].copy()
+    if compare_df.empty:
+        return
+
+    athlete_names = athletes_df[["atleta_id", "nome"]].copy()
+    athlete_names["nome_base"] = athlete_names["nome"].map(_normalize_name_key)
+    compare_df["nome_upload"] = compare_df[upload_name_column].map(_normalize_name_key)
+    compare_df = compare_df.merge(athlete_names[["atleta_id", "nome", "nome_base"]], on="atleta_id", how="left")
+
+    mismatch_mask = compare_df["nome_base"].fillna("") != compare_df["nome_upload"].fillna("")
+    mismatches = compare_df[mismatch_mask].copy()
+    if mismatches.empty:
+        return
+
+    messages: list[str] = []
+    for row_idx, row in mismatches.head(12).iterrows():
+        line_number = int(row_idx) + 2
+        messages.append(
+            f"linha {line_number}: ID {row.get('atleta_id')} | ficheiro '{_clean_text_value(row.get(upload_name_column))}' | BD '{_clean_text_value(row.get('nome'))}'"
+        )
+    raise RuntimeError(
+        "Foram encontradas divergencias entre o ID e o nome da atleta no ficheiro. "
+        "Corrige antes de importar: " + " ; ".join(messages)
+    )
+
+
 def _validate_ttp_scale(df_upload: pd.DataFrame, score_columns: list[str]) -> None:
     invalid_messages: list[str] = []
     for col in score_columns:
@@ -305,6 +387,7 @@ def _prepare_bulk_physical_records(df_upload: pd.DataFrame, athletes_df: pd.Data
         if col in work_df.columns:
             work_df[col] = _normalize_length_series(work_df[col])
     _validate_athlete_ids(work_df[["atleta_id"]].copy(), athletes_df)
+    _validate_athlete_name_match(work_df, athletes_df, "Nome")
     athlete_meta = athletes_df[["atleta_id", "data_nascimento", "genero"]].copy()
     work_df = work_df.merge(athlete_meta, on="atleta_id", how="left")
     work_df["salto_maturacional"] = work_df.apply(
@@ -346,6 +429,7 @@ def _prepare_bulk_ttp_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame
         work_df["observacoes"] = work_df["observacoes"].fillna("").astype(str)
     _validate_ttp_scale(work_df, numeric_columns)
     _validate_athlete_ids(work_df[["atleta_id"]].copy(), athletes_df)
+    _validate_athlete_name_match(work_df, athletes_df, "nome_jogador")
     return work_df[["atleta_id", "data_avaliacao"] + TECHNICAL_COLUMNS].copy()
 
 
@@ -431,26 +515,41 @@ with tab_physical:
 
 with tab_ttp:
     st.markdown("**Importação técnico | tática | psicológica da seleção**")
-    st.caption("Modelo orientado para jogadoras de campo, com ligação por ID da atleta.")
+    st.caption("Modelos orientados para jogadoras de campo e guarda-redes, com ligação por ID da atleta.")
     st.info(
         "Escala TTP: 1-2 Mau | 3 Dificuldades | 4 Medio (Neutro) | 5 Positivo | 6 Muito bom | 7 Top. "
         "A importação valida automaticamente esta escala para manter os referenciais equilibrados."
     )
     try:
         excel_model_ttp = _build_model_excel(TTP_MODEL_COLUMNS, "Avaliacao_TTP")
+        excel_model_ttp_gr = _build_model_excel(TTP_GR_MODEL_COLUMNS, "Avaliacao_TTP_GR")
     except RuntimeError as exc:
         st.warning(str(exc))
-        st.download_button(
-            "Descarregar modelo TTP em CSV",
+        dl1, dl2 = st.columns(2)
+        dl1.download_button(
+            "Descarregar modelo TTP campo em CSV",
             data=_build_model_csv(TTP_MODEL_COLUMNS),
             file_name="modelo_insercao_dados_ttp_futsal.csv",
             mime="text/csv",
         )
+        dl2.download_button(
+            "Descarregar modelo TTP GR em CSV",
+            data=_build_model_csv(TTP_GR_MODEL_COLUMNS),
+            file_name="modelo_insercao_dados_ttp_gr_futsal.csv",
+            mime="text/csv",
+        )
     else:
-        st.download_button(
-            "Descarregar modelo TTP em Excel",
+        dl1, dl2 = st.columns(2)
+        dl1.download_button(
+            "Descarregar modelo TTP campo em Excel",
             data=excel_model_ttp,
             file_name="modelo_insercao_dados_ttp_futsal.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        dl2.download_button(
+            "Descarregar modelo TTP GR em Excel",
+            data=excel_model_ttp_gr,
+            file_name="modelo_insercao_dados_ttp_gr_futsal.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
@@ -474,22 +573,37 @@ with tab_ttp:
                 how="left",
             )
             st.markdown("**Pré-visualização**")
-            preview_columns = [
+            base_preview_columns = [
                 "atleta_id",
                 "nome",
                 "posicao",
                 "data_avaliacao",
+            ]
+            ttp_preview_columns = [
                 "um_x_um_ofensivo_score",
                 "um_x_um_defensivo_score",
                 "lateralidade_score",
                 "imprevisibilidade_score",
                 "leitura_jogo_score",
                 "dominio_espaco_score",
+                "reposicao_pe_score",
+                "reposicao_mao_score",
+                "tomada_decisao_score",
+                "comunicacao_score",
+                "posicionamento_prontidao_score",
+                "defesa_membros_inferiores_score",
+                "defesa_membros_superiores_score",
+                "defesa_6m_ocupa_espaco_score",
                 "espirito_equipa_score",
                 "controlo_emocional_score",
                 "tenacidade_resiliencia_score",
                 "atencao_concentracao_score",
             ]
+            visible_ttp_columns = [
+                col for col in ttp_preview_columns
+                if col in preview_ttp_df.columns and preview_ttp_df[col].notna().any()
+            ]
+            preview_columns = base_preview_columns + visible_ttp_columns
             st.dataframe(preview_ttp_df[preview_columns], use_container_width=True, hide_index=True)
             st.caption(f"Linhas prontas a importar: {len(prepared_ttp_df)}")
             if st.button("Importar dados TTP da seleção", type="primary", key="import_bulk_ttp_button"):

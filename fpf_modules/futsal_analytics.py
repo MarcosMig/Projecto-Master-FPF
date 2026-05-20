@@ -41,6 +41,10 @@ METRIC_CATALOG = [
     {"source": "technical", "key": "imprevisibilidade_score", "label": "Imprevisibilidade (Tatica)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
     {"source": "technical", "key": "leitura_jogo_score", "label": "Leitura de Jogo (Tatica)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
     {"source": "technical", "key": "dominio_espaco_score", "label": "Dominio do Espaco (Tatica)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
+    {"source": "technical", "key": "reposicao_pe_score", "label": "Reposicao com o Pe (Tecnica GR)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
+    {"source": "technical", "key": "reposicao_mao_score", "label": "Reposicao com a Mao (Tecnica GR)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
+    {"source": "technical", "key": "tomada_decisao_score", "label": "Tomada de Decisao (Tatica GR)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
+    {"source": "technical", "key": "comunicacao_score", "label": "Comunicacao (Tatica GR)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
     {"source": "technical", "key": "posicionamento_prontidao_score", "label": "Posicionamento (Tatica GR)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
     {"source": "technical", "key": "defesa_membros_superiores_score", "label": "Defesa Membros Superiores (Tecnica GR)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
     {"source": "technical", "key": "defesa_membros_inferiores_score", "label": "Defesa Membros Inferiores (Tecnica GR)", "group": "Tecnico | Tatica", "unit": "score", "direction": "higher"},
@@ -131,6 +135,8 @@ FIELD_PLAYER_PROFILE_SCORE_METRICS = {
 GOALKEEPER_PROFILE_SCORE_METRICS = {
     "TEC": {
         "metrics": [
+            {"row_key": "tec_reposicao_pe_score", "metric_key": "reposicao_pe_score"},
+            {"row_key": "tec_reposicao_mao_score", "metric_key": "reposicao_mao_score"},
             {"row_key": "tec_defesa_membros_superiores_score", "metric_key": "defesa_membros_superiores_score"},
             {"row_key": "tec_defesa_membros_inferiores_score", "metric_key": "defesa_membros_inferiores_score"},
         ],
@@ -138,6 +144,8 @@ GOALKEEPER_PROFILE_SCORE_METRICS = {
     },
     "TAT": {
         "metrics": [
+            {"row_key": "tec_tomada_decisao_score", "metric_key": "tomada_decisao_score"},
+            {"row_key": "tec_comunicacao_score", "metric_key": "comunicacao_score"},
             {"row_key": "tec_posicionamento_prontidao_score", "metric_key": "posicionamento_prontidao_score"},
             {"row_key": "tec_defesa_6m_ocupa_espaco_score", "metric_key": "defesa_6m_ocupa_espaco_score"},
             {"row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score"},

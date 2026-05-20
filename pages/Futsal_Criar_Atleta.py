@@ -166,7 +166,13 @@ def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
         top_left, top_right = st.columns([0.8, 2.2], gap="large")
         with top_left:
             st.markdown("**Foto do atleta**")
-            st.caption("Captura tipo passe.")
+            st.caption("Adicionar por upload ou capturar tipo passe.")
+            foto_upload = st.file_uploader(
+                "Carregar foto",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="futsal_create_photo_upload",
+                label_visibility="collapsed",
+            )
             foto = st.camera_input("Tirar foto", key="futsal_master_camera", label_visibility="collapsed")
         with top_right:
             line1_col1, line1_col2 = st.columns([1.1, 0.9])
@@ -197,9 +203,10 @@ def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
         if not _clean_text_value(nome):
             st.error("O campo Nome e obrigatorio.")
             return
+        photo_source = foto_upload if foto_upload is not None else foto
         photo_path = ""
-        if foto is not None:
-            photo_path = save_photo(athlete_id, foto)
+        if photo_source is not None:
+            photo_path = save_photo(athlete_id, photo_source)
         upsert_athlete(
             {
                 "atleta_id": athlete_id,

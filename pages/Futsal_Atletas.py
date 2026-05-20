@@ -530,10 +530,11 @@ def _compute_profile_scores(athlete_row: pd.Series) -> dict[str, float | None]:
     is_goalkeeper = _clean_text_value(athlete_row.get("posicao")) == "GR"
     technical_metrics = (
         [
+            {"row_key": "tec_reposicao_pe_score", "metric_key": "reposicao_pe_score"},
+            {"row_key": "tec_reposicao_mao_score", "metric_key": "reposicao_mao_score"},
             {"row_key": "tec_posicionamento_prontidao_score", "metric_key": "posicionamento_prontidao_score"},
             {"row_key": "tec_defesa_membros_superiores_score", "metric_key": "defesa_membros_superiores_score"},
             {"row_key": "tec_defesa_membros_inferiores_score", "metric_key": "defesa_membros_inferiores_score"},
-            {"row_key": "tec_defesa_6m_ocupa_espaco_score", "metric_key": "defesa_6m_ocupa_espaco_score"},
         ]
         if is_goalkeeper
         else [
@@ -543,7 +544,13 @@ def _compute_profile_scores(athlete_row: pd.Series) -> dict[str, float | None]:
         ]
     )
     tactical_metrics = (
-        [{"row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score"}]
+        [
+            {"row_key": "tec_tomada_decisao_score", "metric_key": "tomada_decisao_score"},
+            {"row_key": "tec_comunicacao_score", "metric_key": "comunicacao_score"},
+            {"row_key": "tec_posicionamento_prontidao_score", "metric_key": "posicionamento_prontidao_score"},
+            {"row_key": "tec_defesa_6m_ocupa_espaco_score", "metric_key": "defesa_6m_ocupa_espaco_score"},
+            {"row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score"},
+        ]
         if is_goalkeeper
         else [
             {"row_key": "tec_imprevisibilidade_score", "metric_key": "imprevisibilidade_score"},
@@ -848,18 +855,22 @@ def _athlete_history_rows(
             lambda row: ", ".join(
                 (
                     [
-                        f"Posicionamento {_format_metric(row.get('posicionamento_prontidao_score'), '/10')}" if _clean_number(row.get("posicionamento_prontidao_score")) is not None else "",
-                        f"Defesa MS {_format_metric(row.get('defesa_membros_superiores_score'), '/10')}" if _clean_number(row.get("defesa_membros_superiores_score")) is not None else "",
-                        f"Defesa MI {_format_metric(row.get('defesa_membros_inferiores_score'), '/10')}" if _clean_number(row.get("defesa_membros_inferiores_score")) is not None else "",
-                        f"Defesa 6m {_format_metric(row.get('defesa_6m_ocupa_espaco_score'), '/10')}" if _clean_number(row.get("defesa_6m_ocupa_espaco_score")) is not None else "",
-                        f"Leitura {_format_metric(row.get('leitura_jogo_score'), '/10')}" if _clean_number(row.get("leitura_jogo_score")) is not None else "",
-                        f"Controlo emocional {_format_metric(row.get('controlo_emocional_score'), '/10')}" if _clean_number(row.get("controlo_emocional_score")) is not None else "",
+                        f"Reposição pé {_format_metric(row.get('reposicao_pe_score'), '/7')}" if _clean_number(row.get("reposicao_pe_score")) is not None else "",
+                        f"Reposição mão {_format_metric(row.get('reposicao_mao_score'), '/7')}" if _clean_number(row.get("reposicao_mao_score")) is not None else "",
+                        f"Tomada decisão {_format_metric(row.get('tomada_decisao_score'), '/7')}" if _clean_number(row.get("tomada_decisao_score")) is not None else "",
+                        f"Comunicação {_format_metric(row.get('comunicacao_score'), '/7')}" if _clean_number(row.get("comunicacao_score")) is not None else "",
+                        f"Posicionamento {_format_metric(row.get('posicionamento_prontidao_score'), '/7')}" if _clean_number(row.get("posicionamento_prontidao_score")) is not None else "",
+                        f"Defesa MS {_format_metric(row.get('defesa_membros_superiores_score'), '/7')}" if _clean_number(row.get("defesa_membros_superiores_score")) is not None else "",
+                        f"Defesa MI {_format_metric(row.get('defesa_membros_inferiores_score'), '/7')}" if _clean_number(row.get("defesa_membros_inferiores_score")) is not None else "",
+                        f"Defesa 6m {_format_metric(row.get('defesa_6m_ocupa_espaco_score'), '/7')}" if _clean_number(row.get("defesa_6m_ocupa_espaco_score")) is not None else "",
+                        f"Leitura {_format_metric(row.get('leitura_jogo_score'), '/7')}" if _clean_number(row.get("leitura_jogo_score")) is not None else "",
+                        f"Controlo emocional {_format_metric(row.get('controlo_emocional_score'), '/7')}" if _clean_number(row.get("controlo_emocional_score")) is not None else "",
                     ]
                     if is_goalkeeper
                     else [
-                        f"1x1 Ofensivo {_format_metric(row.get('um_x_um_ofensivo_score'), '/10')}" if _clean_number(row.get("um_x_um_ofensivo_score")) is not None else "",
-                        f"Leitura {_format_metric(row.get('leitura_jogo_score'), '/10')}" if _clean_number(row.get("leitura_jogo_score")) is not None else "",
-                        f"Controlo emocional {_format_metric(row.get('controlo_emocional_score'), '/10')}" if _clean_number(row.get("controlo_emocional_score")) is not None else "",
+                        f"1x1 Ofensivo {_format_metric(row.get('um_x_um_ofensivo_score'), '/7')}" if _clean_number(row.get("um_x_um_ofensivo_score")) is not None else "",
+                        f"Leitura {_format_metric(row.get('leitura_jogo_score'), '/7')}" if _clean_number(row.get("leitura_jogo_score")) is not None else "",
+                        f"Controlo emocional {_format_metric(row.get('controlo_emocional_score'), '/7')}" if _clean_number(row.get("controlo_emocional_score")) is not None else "",
                     ]
                 )
             ).strip(", "),
@@ -1405,29 +1416,33 @@ def _render_inline_technical_insert(athlete_row: pd.Series, technical_df: pd.Dat
         data_avaliacao = st.date_input("Data avaliacao", value=date.today(), format="DD/MM/YYYY", key=f"{mode_key}_date_{atleta_id}")
         updates: dict = {}
         if is_goalkeeper:
-            c1, c2, c3 = st.columns(3)
-            updates["posicionamento_prontidao_score"] = c1.number_input("Posicionamento", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("posicionamento_prontidao_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_pos_{atleta_id}")
-            updates["defesa_membros_superiores_score"] = c2.number_input("Defesa MS", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("defesa_membros_superiores_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_dms_{atleta_id}")
-            updates["defesa_membros_inferiores_score"] = c3.number_input("Defesa MI", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("defesa_membros_inferiores_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_dmi_{atleta_id}")
-            c4, c5 = st.columns(2)
-            updates["defesa_6m_ocupa_espaco_score"] = c4.number_input("Defesa 6m", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("defesa_6m_ocupa_espaco_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_d6_{atleta_id}")
-            updates["leitura_jogo_score"] = c5.number_input("Leitura de Jogo", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("leitura_jogo_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_lj_{atleta_id}")
+            c1, c2, c3, c4 = st.columns(4)
+            updates["reposicao_pe_score"] = c1.number_input("Reposição com o pé", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("reposicao_pe_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_rep_pe_{atleta_id}")
+            updates["reposicao_mao_score"] = c2.number_input("Reposição com a mão", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("reposicao_mao_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_rep_mao_{atleta_id}")
+            updates["tomada_decisao_score"] = c3.number_input("Tomada de decisão", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("tomada_decisao_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_td_{atleta_id}")
+            updates["comunicacao_score"] = c4.number_input("Comunicação", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("comunicacao_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_com_{atleta_id}")
+            c5, c6, c7, c8, c9 = st.columns(5)
+            updates["posicionamento_prontidao_score"] = c5.number_input("Posicionamento", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("posicionamento_prontidao_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_pos_{atleta_id}")
+            updates["defesa_membros_inferiores_score"] = c6.number_input("Defesa MI", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("defesa_membros_inferiores_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_dmi_{atleta_id}")
+            updates["defesa_membros_superiores_score"] = c7.number_input("Defesa MS", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("defesa_membros_superiores_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_dms_{atleta_id}")
+            updates["defesa_6m_ocupa_espaco_score"] = c8.number_input("Defesa 6m", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("defesa_6m_ocupa_espaco_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_d6_{atleta_id}")
+            updates["leitura_jogo_score"] = c9.number_input("Leitura de jogo", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("leitura_jogo_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_lj_{atleta_id}")
         else:
             c1, c2, c3 = st.columns(3)
-            updates["um_x_um_ofensivo_score"] = c1.number_input("1x1 Ofensivo", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("um_x_um_ofensivo_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_11o_{atleta_id}")
-            updates["um_x_um_defensivo_score"] = c2.number_input("1x1 Defensivo", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("um_x_um_defensivo_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_11d_{atleta_id}")
-            updates["lateralidade_score"] = c3.number_input("Lateralidade", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("lateralidade_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_lat_{atleta_id}")
+            updates["um_x_um_ofensivo_score"] = c1.number_input("1x1 Ofensivo", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("um_x_um_ofensivo_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_11o_{atleta_id}")
+            updates["um_x_um_defensivo_score"] = c2.number_input("1x1 Defensivo", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("um_x_um_defensivo_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_11d_{atleta_id}")
+            updates["lateralidade_score"] = c3.number_input("Lateralidade", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("lateralidade_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_lat_{atleta_id}")
             c4, c5, c6 = st.columns(3)
-            updates["imprevisibilidade_score"] = c4.number_input("Imprevisibilidade", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("imprevisibilidade_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_imp_{atleta_id}")
-            updates["leitura_jogo_score"] = c5.number_input("Leitura de Jogo", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("leitura_jogo_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_lei_{atleta_id}")
-            updates["dominio_espaco_score"] = c6.number_input("Dominio do Espaco", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("dominio_espaco_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_dom_{atleta_id}")
+            updates["imprevisibilidade_score"] = c4.number_input("Imprevisibilidade", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("imprevisibilidade_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_imp_{atleta_id}")
+            updates["leitura_jogo_score"] = c5.number_input("Leitura de Jogo", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("leitura_jogo_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_lei_{atleta_id}")
+            updates["dominio_espaco_score"] = c6.number_input("Dominio do Espaco", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("dominio_espaco_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_dom_{atleta_id}")
         if include_psychological:
             st.markdown("**Psicologico**")
             p1, p2, p3, p4 = st.columns(4)
-            updates["espirito_equipa_score"] = p1.number_input("Espírito de equipa", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("espirito_equipa_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_eq_{atleta_id}")
-            updates["controlo_emocional_score"] = p2.number_input("Controlo emocional", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("controlo_emocional_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_ce_{atleta_id}")
-            updates["tenacidade_resiliencia_score"] = p3.number_input("Tenacidade / Resiliencia", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("tenacidade_resiliencia_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_tr_{atleta_id}")
-            updates["atencao_concentracao_score"] = p4.number_input("Atencao / concentracao", min_value=0.0, max_value=10.0, value=float(latest_snapshot.get("atencao_concentracao_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_ac_{atleta_id}")
+            updates["espirito_equipa_score"] = p1.number_input("Espírito de equipa", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("espirito_equipa_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_eq_{atleta_id}")
+            updates["controlo_emocional_score"] = p2.number_input("Controlo emocional", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("controlo_emocional_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_ce_{atleta_id}")
+            updates["tenacidade_resiliencia_score"] = p3.number_input("Tenacidade / Resiliencia", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("tenacidade_resiliencia_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_tr_{atleta_id}")
+            updates["atencao_concentracao_score"] = p4.number_input("Atencao / concentracao", min_value=0.0, max_value=7.0, value=float(latest_snapshot.get("atencao_concentracao_score", 0.0) or 0.0), step=0.1, key=f"{mode_key}_ac_{atleta_id}")
         submitted = st.form_submit_button("Guardar registo", type="primary")
     if submitted:
         cleaned_updates = {key: (value if value > 0 else None) for key, value in updates.items()}
@@ -1528,28 +1543,32 @@ def _render_inline_history_actions(athlete_row: pd.Series, athletes_df: pd.DataF
             edit_data_avaliacao = st.date_input("Data avaliacao", value=_clean_date(edit_row.get("data_avaliacao")), format="DD/MM/YYYY", key=f"hist_tech_date_{record_id}")
             updates = {}
             if is_goalkeeper:
-                c1, c2, c3 = st.columns(3)
-                updates["posicionamento_prontidao_score"] = c1.number_input("Posicionamento", min_value=0.0, max_value=10.0, value=float(edit_row.get("posicionamento_prontidao_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_pos_{record_id}")
-                updates["defesa_membros_superiores_score"] = c2.number_input("Defesa MS", min_value=0.0, max_value=10.0, value=float(edit_row.get("defesa_membros_superiores_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_dms_{record_id}")
-                updates["defesa_membros_inferiores_score"] = c3.number_input("Defesa MI", min_value=0.0, max_value=10.0, value=float(edit_row.get("defesa_membros_inferiores_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_dmi_{record_id}")
-                c4, c5 = st.columns(2)
-                updates["defesa_6m_ocupa_espaco_score"] = c4.number_input("Defesa 6m", min_value=0.0, max_value=10.0, value=float(edit_row.get("defesa_6m_ocupa_espaco_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_d6_{record_id}")
-                updates["leitura_jogo_score"] = c5.number_input("Leitura de Jogo", min_value=0.0, max_value=10.0, value=float(edit_row.get("leitura_jogo_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_lj_{record_id}")
+                c1, c2, c3, c4 = st.columns(4)
+                updates["reposicao_pe_score"] = c1.number_input("Reposição com o pé", min_value=0.0, max_value=7.0, value=float(edit_row.get("reposicao_pe_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_rep_pe_{record_id}")
+                updates["reposicao_mao_score"] = c2.number_input("Reposição com a mão", min_value=0.0, max_value=7.0, value=float(edit_row.get("reposicao_mao_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_rep_mao_{record_id}")
+                updates["tomada_decisao_score"] = c3.number_input("Tomada de decisão", min_value=0.0, max_value=7.0, value=float(edit_row.get("tomada_decisao_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_td_{record_id}")
+                updates["comunicacao_score"] = c4.number_input("Comunicação", min_value=0.0, max_value=7.0, value=float(edit_row.get("comunicacao_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_com_{record_id}")
+                c5, c6, c7, c8, c9 = st.columns(5)
+                updates["posicionamento_prontidao_score"] = c5.number_input("Posicionamento", min_value=0.0, max_value=7.0, value=float(edit_row.get("posicionamento_prontidao_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_pos_{record_id}")
+                updates["defesa_membros_inferiores_score"] = c6.number_input("Defesa MI", min_value=0.0, max_value=7.0, value=float(edit_row.get("defesa_membros_inferiores_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_dmi_{record_id}")
+                updates["defesa_membros_superiores_score"] = c7.number_input("Defesa MS", min_value=0.0, max_value=7.0, value=float(edit_row.get("defesa_membros_superiores_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_dms_{record_id}")
+                updates["defesa_6m_ocupa_espaco_score"] = c8.number_input("Defesa 6m", min_value=0.0, max_value=7.0, value=float(edit_row.get("defesa_6m_ocupa_espaco_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_d6_{record_id}")
+                updates["leitura_jogo_score"] = c9.number_input("Leitura de Jogo", min_value=0.0, max_value=7.0, value=float(edit_row.get("leitura_jogo_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_lj_{record_id}")
             else:
                 c1, c2, c3 = st.columns(3)
-                updates["um_x_um_ofensivo_score"] = c1.number_input("1x1 Ofensivo", min_value=0.0, max_value=10.0, value=float(edit_row.get("um_x_um_ofensivo_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_11o_{record_id}")
-                updates["um_x_um_defensivo_score"] = c2.number_input("1x1 Defensivo", min_value=0.0, max_value=10.0, value=float(edit_row.get("um_x_um_defensivo_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_11d_{record_id}")
-                updates["lateralidade_score"] = c3.number_input("Lateralidade", min_value=0.0, max_value=10.0, value=float(edit_row.get("lateralidade_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_lat_{record_id}")
+                updates["um_x_um_ofensivo_score"] = c1.number_input("1x1 Ofensivo", min_value=0.0, max_value=7.0, value=float(edit_row.get("um_x_um_ofensivo_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_11o_{record_id}")
+                updates["um_x_um_defensivo_score"] = c2.number_input("1x1 Defensivo", min_value=0.0, max_value=7.0, value=float(edit_row.get("um_x_um_defensivo_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_11d_{record_id}")
+                updates["lateralidade_score"] = c3.number_input("Lateralidade", min_value=0.0, max_value=7.0, value=float(edit_row.get("lateralidade_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_lat_{record_id}")
                 c4, c5, c6 = st.columns(3)
-                updates["imprevisibilidade_score"] = c4.number_input("Imprevisibilidade", min_value=0.0, max_value=10.0, value=float(edit_row.get("imprevisibilidade_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_imp_{record_id}")
-                updates["leitura_jogo_score"] = c5.number_input("Leitura de Jogo", min_value=0.0, max_value=10.0, value=float(edit_row.get("leitura_jogo_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_lei_{record_id}")
-                updates["dominio_espaco_score"] = c6.number_input("Dominio do Espaco", min_value=0.0, max_value=10.0, value=float(edit_row.get("dominio_espaco_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_dom_{record_id}")
+                updates["imprevisibilidade_score"] = c4.number_input("Imprevisibilidade", min_value=0.0, max_value=7.0, value=float(edit_row.get("imprevisibilidade_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_imp_{record_id}")
+                updates["leitura_jogo_score"] = c5.number_input("Leitura de Jogo", min_value=0.0, max_value=7.0, value=float(edit_row.get("leitura_jogo_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_lei_{record_id}")
+                updates["dominio_espaco_score"] = c6.number_input("Dominio do Espaco", min_value=0.0, max_value=7.0, value=float(edit_row.get("dominio_espaco_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_dom_{record_id}")
             st.markdown("**Psicologico**")
             p1, p2, p3, p4 = st.columns(4)
-            updates["espirito_equipa_score"] = p1.number_input("Espírito de equipa", min_value=0.0, max_value=10.0, value=float(edit_row.get("espirito_equipa_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_eq_{record_id}")
-            updates["controlo_emocional_score"] = p2.number_input("Controlo emocional", min_value=0.0, max_value=10.0, value=float(edit_row.get("controlo_emocional_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_ce_{record_id}")
-            updates["tenacidade_resiliencia_score"] = p3.number_input("Tenacidade / Resiliencia", min_value=0.0, max_value=10.0, value=float(edit_row.get("tenacidade_resiliencia_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_tr_{record_id}")
-            updates["atencao_concentracao_score"] = p4.number_input("Atencao / concentracao", min_value=0.0, max_value=10.0, value=float(edit_row.get("atencao_concentracao_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_ac_{record_id}")
+            updates["espirito_equipa_score"] = p1.number_input("Espírito de equipa", min_value=0.0, max_value=7.0, value=float(edit_row.get("espirito_equipa_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_eq_{record_id}")
+            updates["controlo_emocional_score"] = p2.number_input("Controlo emocional", min_value=0.0, max_value=7.0, value=float(edit_row.get("controlo_emocional_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_ce_{record_id}")
+            updates["tenacidade_resiliencia_score"] = p3.number_input("Tenacidade / Resiliencia", min_value=0.0, max_value=7.0, value=float(edit_row.get("tenacidade_resiliencia_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_tr_{record_id}")
+            updates["atencao_concentracao_score"] = p4.number_input("Atencao / concentracao", min_value=0.0, max_value=7.0, value=float(edit_row.get("atencao_concentracao_score", 0.0) or 0.0), step=0.1, key=f"hist_tech_ac_{record_id}")
             save_edit = st.form_submit_button("Guardar alteracoes", type="primary")
         if save_edit:
             cleaned = {key: (value if value > 0 else None) for key, value in updates.items()}
@@ -1599,25 +1618,125 @@ def _render_athlete_registry(
     for _, row in view_df.sort_values(["ativo", "nome"], ascending=[False, True], na_position="last").iterrows():
         label = _clean_text_value(row.get("nome")) or _clean_text_value(row.get("atleta_id"))
         with st.expander(label, expanded=False):
-            head_col1, head_col2 = st.columns([0.8, 2.2], gap="large")
-            with head_col1:
-                photo_path = _clean_text_value(row.get("foto_path"))
-                if photo_path:
-                    st.image(photo_path, width=140)
-                else:
-                    st.caption("Sem foto registada.")
-            with head_col2:
-                info_col1, info_col2 = st.columns(2, gap="large")
-                with info_col1:
-                    st.markdown(f"**ID:** {_clean_text_value(row.get('atleta_id'))}")
-                    st.markdown(f"**Nome:** {_clean_text_value(row.get('nome')) or '-'}")
-                    st.markdown(f"**Data nascimento:** {_format_date(row.get('data_nascimento'))}")
-                    st.markdown(f"**Idade:** {_calculate_age(row.get('data_nascimento')) or '-'}")
-                with info_col2:
-                    st.markdown(f"**Genero:** {_clean_text_value(row.get('genero')) or '-'}")
-                    st.markdown(f"**Escalao:** {_clean_text_value(row.get('escalao')) or '-'}")
-                    st.markdown(f"**Selecao:** {_clean_text_value(row.get('selecao')) or '-'}")
-                    st.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
+            is_editing_athlete = st.session_state.get("open_athlete_editor_id", "") == _clean_text_value(row.get("atleta_id"))
+
+            if is_editing_athlete:
+                with st.form(f"edit_athlete_form_{row['atleta_id']}"):
+                    head_col1, head_col2 = st.columns([0.8, 2.2], gap="large")
+                    with head_col1:
+                        photo_path = _clean_text_value(row.get("foto_path"))
+                        if photo_path:
+                            st.image(photo_path, width=140)
+                        else:
+                            st.caption("Sem foto registada.")
+                        st.caption("Atualizar foto")
+                        nova_foto_upload = st.file_uploader(
+                            "Carregar nova foto",
+                            type=["png", "jpg", "jpeg", "webp"],
+                            key=f"edit_photo_upload_{row['atleta_id']}",
+                            label_visibility="collapsed",
+                        )
+                        nova_foto = st.camera_input(
+                            "Tirar foto",
+                            key=f"edit_camera_{row['atleta_id']}",
+                            label_visibility="collapsed",
+                        )
+                    with head_col2:
+                        info_col1, info_col2 = st.columns(2, gap="large")
+                        with info_col1:
+                            st.text_input("ID", value=_clean_text_value(row.get("atleta_id")), disabled=True, key=f"edit_id_{row['atleta_id']}")
+                            nome = st.text_input("Nome", value=_clean_text_value(row.get("nome")), key=f"edit_nome_{row['atleta_id']}")
+                            data_nascimento = st.date_input(
+                                "Data nascimento",
+                                value=_clean_date(row.get("data_nascimento")),
+                                min_value=ATHLETE_BIRTHDATE_MIN,
+                                max_value=ATHLETE_BIRTHDATE_MAX,
+                                format="DD/MM/YYYY",
+                                key=f"edit_birth_{row['atleta_id']}",
+                            )
+                            idade_preview = _calculate_age(data_nascimento)
+                            st.text_input(
+                                "Idade",
+                                value="" if idade_preview is None else str(idade_preview),
+                                disabled=True,
+                                key=f"edit_age_{row['atleta_id']}",
+                            )
+                        with info_col2:
+                            genero = st.selectbox(
+                                "Genero",
+                                options=GENDER_OPTIONS,
+                                index=GENDER_OPTIONS.index(_clean_text_value(row.get("genero"))) if _clean_text_value(row.get("genero")) in GENDER_OPTIONS else 0,
+                                key=f"edit_genero_{row['atleta_id']}",
+                            )
+                            escalao_preview = _derive_escalao_from_age(idade_preview)
+                            st.text_input("Escalao", value=escalao_preview, disabled=True, key=f"edit_scale_{row['atleta_id']}")
+                            selecao = st.selectbox(
+                                "Selecao",
+                                options=SELECTION_OPTIONS,
+                                index=SELECTION_OPTIONS.index(_clean_text_value(row.get("selecao"))) if _clean_text_value(row.get("selecao")) in SELECTION_OPTIONS else 0,
+                                key=f"edit_selecao_{row['atleta_id']}",
+                            )
+                            posicao = st.selectbox(
+                                "Posicao",
+                                options=POSITION_OPTIONS,
+                                index=POSITION_OPTIONS.index(_clean_text_value(row.get("posicao"))) if _clean_text_value(row.get("posicao")) in POSITION_OPTIONS else 0,
+                                key=f"edit_posicao_{row['atleta_id']}",
+                            )
+                            ativo = st.checkbox("Ativo", value=bool(row.get("ativo")), key=f"edit_ativo_{row['atleta_id']}")
+                    save_col, cancel_col = st.columns([1, 1])
+                    save_edit = save_col.form_submit_button("Guardar alteracoes", type="primary")
+                    cancel_edit = cancel_col.form_submit_button("Cancelar")
+
+                if cancel_edit:
+                    _close_athlete_editor()
+                    st.rerun()
+
+                if save_edit:
+                    if not _clean_text_value(nome):
+                        st.error("O campo Nome e obrigatorio.")
+                    else:
+                        photo_source = nova_foto_upload if nova_foto_upload is not None else nova_foto
+                        updated_photo_path = _clean_text_value(row.get("foto_path"))
+                        if photo_source is not None:
+                            if updated_photo_path:
+                                delete_photo(updated_photo_path)
+                            updated_photo_path = save_photo(_clean_text_value(row.get("atleta_id")), photo_source)
+                        upsert_athlete(
+                            {
+                                "atleta_id": _clean_text_value(row.get("atleta_id")),
+                                "nome": _clean_text_value(nome),
+                                "data_nascimento": _clean_date(data_nascimento),
+                                "genero": _clean_text_value(genero),
+                                "selecao": _clean_text_value(selecao),
+                                "posicao": _clean_text_value(posicao),
+                                "foto_path": updated_photo_path,
+                                "ativo": bool(ativo),
+                                "created_at": row.get("created_at"),
+                            }
+                        )
+                        _close_athlete_editor()
+                        st.success("Atleta atualizada com sucesso.")
+                        st.rerun()
+            else:
+                head_col1, head_col2 = st.columns([0.8, 2.2], gap="large")
+                with head_col1:
+                    photo_path = _clean_text_value(row.get("foto_path"))
+                    if photo_path:
+                        st.image(photo_path, width=140)
+                    else:
+                        st.caption("Sem foto registada.")
+                with head_col2:
+                    info_col1, info_col2 = st.columns(2, gap="large")
+                    with info_col1:
+                        st.markdown(f"**ID:** {_clean_text_value(row.get('atleta_id'))}")
+                        st.markdown(f"**Nome:** {_clean_text_value(row.get('nome')) or '-'}")
+                        st.markdown(f"**Data nascimento:** {_format_date(row.get('data_nascimento'))}")
+                        st.markdown(f"**Idade:** {_calculate_age(row.get('data_nascimento')) or '-'}")
+                    with info_col2:
+                        st.markdown(f"**Genero:** {_clean_text_value(row.get('genero')) or '-'}")
+                        st.markdown(f"**Escalao:** {_clean_text_value(row.get('escalao')) or '-'}")
+                        st.markdown(f"**Selecao:** {_clean_text_value(row.get('selecao')) or '-'}")
+                        st.markdown(f"**Posicao:** {_clean_text_value(row.get('posicao')) or '-'}")
 
             _render_profile_score_strip(row)
 
@@ -1778,16 +1897,52 @@ def _render_athlete_registry(
                 st.caption(f"Data: {_format_date(row.get('tec_data_avaliacao'))}")
                 if _clean_text_value(row.get("posicao")) == "GR":
                     technical_metrics = [
+                        {"label": "Reposição pé", "row_key": "tec_reposicao_pe_score", "metric_key": "reposicao_pe_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Reposição mão", "row_key": "tec_reposicao_mao_score", "metric_key": "reposicao_mao_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Tomada decisão", "row_key": "tec_tomada_decisao_score", "metric_key": "tomada_decisao_score", "suffix": "/7", "decimals": 1},
+                        {"label": "Comunicação", "row_key": "tec_comunicacao_score", "metric_key": "comunicacao_score", "suffix": "/7", "decimals": 1},
                         {"label": "Posicionamento", "row_key": "tec_posicionamento_prontidao_score", "metric_key": "posicionamento_prontidao_score", "suffix": "/7", "decimals": 1},
                         {"label": "Defesa MS", "row_key": "tec_defesa_membros_superiores_score", "metric_key": "defesa_membros_superiores_score", "suffix": "/7", "decimals": 1},
                         {"label": "Defesa MI", "row_key": "tec_defesa_membros_inferiores_score", "metric_key": "defesa_membros_inferiores_score", "suffix": "/7", "decimals": 1},
                         {"label": "Defesa 6m", "row_key": "tec_defesa_6m_ocupa_espaco_score", "metric_key": "defesa_6m_ocupa_espaco_score", "suffix": "/7", "decimals": 1},
                         {"label": "Leitura", "row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score", "suffix": "/7", "decimals": 1},
                     ]
+                    technical_grouped_metrics = [
+                        (
+                            "Reposição",
+                            [
+                                {"row_key": "tec_reposicao_pe_score", "metric_key": "reposicao_pe_score"},
+                                {"row_key": "tec_reposicao_mao_score", "metric_key": "reposicao_mao_score"},
+                            ],
+                        ),
+                        (
+                            "Decisão | Comunicação",
+                            [
+                                {"row_key": "tec_tomada_decisao_score", "metric_key": "tomada_decisao_score"},
+                                {"row_key": "tec_comunicacao_score", "metric_key": "comunicacao_score"},
+                            ],
+                        ),
+                        (
+                            "Posicionamento",
+                            [{"row_key": "tec_posicionamento_prontidao_score", "metric_key": "posicionamento_prontidao_score"}],
+                        ),
+                        (
+                            "Defesa",
+                            [
+                                {"row_key": "tec_defesa_membros_superiores_score", "metric_key": "defesa_membros_superiores_score"},
+                                {"row_key": "tec_defesa_membros_inferiores_score", "metric_key": "defesa_membros_inferiores_score"},
+                                {"row_key": "tec_defesa_6m_ocupa_espaco_score", "metric_key": "defesa_6m_ocupa_espaco_score"},
+                            ],
+                        ),
+                        (
+                            "Leitura",
+                            [{"row_key": "tec_leitura_jogo_score", "metric_key": "leitura_jogo_score"}],
+                        ),
+                    ]
                     _render_spider_map(
                         "Spider de Enquadramento | Tecnico | Tatica GR",
-                        _build_context_radar_axes(row, technical_metrics, [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []]),
-                        "Mapa percentilico 0-100 do enquadramento da atleta face ao grupo comparavel.",
+                        _build_grouped_context_radar_axes(row, technical_grouped_metrics, [["genero", "selecao", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao", "posicao"], ["genero", "escalao_avaliacao"], []]),
+                        "Mapa percentilico 0-100 por bloco funcional de GR: reposição, decisão | comunicação, posicionamento, defesa e leitura.",
                         chart_key=f"radar_tech_gr_{_clean_text_value(row.get('atleta_id'))}",
                     )
                     _render_absolute_metric_grid(
@@ -1889,66 +2044,6 @@ def _render_athlete_registry(
                                 hide_index=True,
                             )
 
-            if st.session_state.get("open_athlete_editor_id", "") == _clean_text_value(row.get("atleta_id")):
-                st.divider()
-                title_col1, title_col2 = st.columns([3, 1])
-                title_col1.markdown("**Editar atleta**")
-                if title_col2.button("Fechar editor", key=f"close_edit_athlete_{row['atleta_id']}"):
-                    _close_athlete_editor()
-                    st.rerun()
-                with st.form(f"edit_athlete_form_{row['atleta_id']}"):
-                    edit_top_left, edit_top_right = st.columns([0.8, 2.2], gap="large")
-                    with edit_top_left:
-                        st.caption("Nova foto opcional")
-                        nova_foto = st.camera_input("Atualizar foto", key=f"edit_camera_{row['atleta_id']}", label_visibility="collapsed")
-                    with edit_top_right:
-                        e1, e2 = st.columns(2)
-                        nome = e1.text_input("Nome", value=_clean_text_value(row.get("nome")), key=f"edit_nome_{row['atleta_id']}")
-                        data_nascimento = e2.date_input(
-                            "Data de nascimento",
-                            value=_clean_date(row.get("data_nascimento")),
-                            min_value=ATHLETE_BIRTHDATE_MIN,
-                            max_value=ATHLETE_BIRTHDATE_MAX,
-                            format="DD/MM/YYYY",
-                            key=f"edit_birth_{row['atleta_id']}",
-                        )
-                        e3, e4, e5, e6 = st.columns(4)
-                        idade_preview = _calculate_age(data_nascimento)
-                        e3.text_input("Idade", value="" if idade_preview is None else str(idade_preview), disabled=True, key=f"edit_age_{row['atleta_id']}")
-                        genero = e4.selectbox("Genero", options=GENDER_OPTIONS, index=GENDER_OPTIONS.index(_clean_text_value(row.get("genero"))) if _clean_text_value(row.get("genero")) in GENDER_OPTIONS else 0, key=f"edit_genero_{row['atleta_id']}")
-                        escalao_preview = _derive_escalao_from_age(idade_preview)
-                        e5.text_input("Escalao", value=escalao_preview, disabled=True, key=f"edit_scale_{row['atleta_id']}")
-                        selecao = e6.selectbox("Selecao", options=SELECTION_OPTIONS, index=SELECTION_OPTIONS.index(_clean_text_value(row.get("selecao"))) if _clean_text_value(row.get("selecao")) in SELECTION_OPTIONS else 0, key=f"edit_selecao_{row['atleta_id']}")
-                        e7, e8 = st.columns(2)
-                        posicao = e7.selectbox("Posicao", options=POSITION_OPTIONS, index=POSITION_OPTIONS.index(_clean_text_value(row.get("posicao"))) if _clean_text_value(row.get("posicao")) in POSITION_OPTIONS else 0, key=f"edit_posicao_{row['atleta_id']}")
-                        ativo = e8.checkbox("Ativo", value=bool(row.get("ativo")), key=f"edit_ativo_{row['atleta_id']}")
-                    save_edit = st.form_submit_button("Guardar alteracoes", type="primary")
-
-                if save_edit:
-                    if not _clean_text_value(nome):
-                        st.error("O campo Nome e obrigatorio.")
-                    else:
-                        updated_photo_path = _clean_text_value(row.get("foto_path"))
-                        if nova_foto is not None:
-                            if updated_photo_path:
-                                delete_photo(updated_photo_path)
-                            updated_photo_path = save_photo(_clean_text_value(row.get("atleta_id")), nova_foto)
-                        upsert_athlete(
-                            {
-                                "atleta_id": _clean_text_value(row.get("atleta_id")),
-                                "nome": _clean_text_value(nome),
-                                "data_nascimento": _clean_date(data_nascimento),
-                                "genero": _clean_text_value(genero),
-                                "selecao": _clean_text_value(selecao),
-                                "posicao": _clean_text_value(posicao),
-                                "foto_path": updated_photo_path,
-                                "ativo": bool(ativo),
-                                "created_at": row.get("created_at"),
-                            }
-                        )
-                        _close_athlete_editor()
-                        st.success("Atleta atualizada com sucesso.")
-                        st.rerun()
 
 
 def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
@@ -1959,7 +2054,13 @@ def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
         top_left, top_right = st.columns([0.8, 2.2], gap="large")
         with top_left:
             st.markdown("**Foto do atleta**")
-            st.caption("Captura tipo passe.")
+            st.caption("Adicionar por upload ou capturar tipo passe.")
+            foto_upload = st.file_uploader(
+                "Carregar foto",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="futsal_master_photo_upload",
+                label_visibility="collapsed",
+            )
             foto = st.camera_input("Tirar foto", key="futsal_master_camera", label_visibility="collapsed")
         with top_right:
             line1_col1, line1_col2 = st.columns([1.1, 0.9])
@@ -1984,9 +2085,10 @@ def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
         if not _clean_text_value(nome):
             st.error("O campo Nome e obrigatorio.")
             return
+        photo_source = foto_upload if foto_upload is not None else foto
         photo_path = ""
-        if foto is not None:
-            photo_path = save_photo(athlete_id, foto)
+        if photo_source is not None:
+            photo_path = save_photo(athlete_id, photo_source)
         upsert_athlete(
             {
                 "atleta_id": athlete_id,
