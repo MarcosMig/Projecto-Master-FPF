@@ -41,6 +41,59 @@ POSITION_OPTIONS = ["", "GR", "Fixo", "Ala", "Pivot", "Universal"]
 SELECTION_OPTIONS = ["", "S12", "S13", "S14", "S15", "S16", "S17"]
 STATE_OPTIONS = ["", "Observado", "Referenciado", "Processo Seleção", "Seleção Distrital", "Estágio Seleção Nacional", "Internacional"]
 
+ANTHROPOMETRY_PHYSICAL_COLUMNS = [
+    "peso_kg",
+    "altura_cm",
+    "envergadura_cm",
+    "comprimento_perna_cm",
+    "altura_sentada_cm",
+    "salto_maturacional",
+    "estado_maturacional",
+]
+
+PHYSICAL_TEST_COLUMNS = [
+    "sprint_10m_s",
+    "sprint_20m_s",
+    "teste_505_esq_s",
+    "teste_505_dir_s",
+    "sj_altura_cm",
+    "cmj_altura_cm",
+    "dj_caixa_m",
+    "dj_altura_cm",
+    "dj_rsi",
+    "dj_rsi_mod_mps",
+    "dj_contacto_ms",
+    "jump_1_cm",
+    "jump_2_cm",
+    "jump_3_cm",
+    "jump_4_cm",
+    "jump_5_cm",
+    "jump_6_cm",
+    "jump_7_cm",
+    "jump_8_cm",
+    "jump_9_cm",
+    "jump_10_cm",
+    "contact_1_ms",
+    "contact_2_ms",
+    "contact_3_ms",
+    "contact_4_ms",
+    "contact_5_ms",
+    "contact_6_ms",
+    "contact_7_ms",
+    "contact_8_ms",
+    "contact_9_ms",
+    "contact_10_ms",
+    "j10_rsi_10_5",
+    "j10_cmj_cm",
+    "j10_media_saltos_cm",
+    "j10_maximo_cm",
+    "j10_minimo_cm",
+    "indice_fadiga_10j_pct",
+]
+
+ANTHROPOMETRY_SOURCE_TYPES = {"manual_anthropometry", "selection_anthropometry_excel"}
+PHYSICAL_TEST_SOURCE_TYPES = {"manual_physical_tests", "selection_physical_tests_excel", "selection_excel", "team_report", "upload"}
+
 def _season_label(start_year: int) -> str:
     return f"{start_year}/{str((start_year + 1) % 100).zfill(2)}"
 
@@ -1004,7 +1057,9 @@ def _athlete_history_rows(
         physical_rows["tipo"] = physical_rows["source_type"].map(
             {
                 "manual_anthropometry": "Ficha Antropometrica",
+                "selection_anthropometry_excel": "Ficha Antropometrica",
                 "manual_physical_tests": "Testes Fisicos",
+                "selection_physical_tests_excel": "Testes Fisicos",
                 "upload": "Testes Fisicos",
                 "team_report": "Testes Fisicos",
             }
@@ -1424,10 +1479,9 @@ def _athletes_with_latest(
     work_df["idade"] = work_df["data_nascimento"].map(_calculate_age)
     work_df["escalao"] = work_df["idade"].map(_derive_escalao_from_age)
 
-    latest_physical = latest_records_by_athlete(physical_df)
     latest_technical = latest_records_by_athlete(technical_df)
+    latest_physical = _build_latest_physical_merge_df(physical_df, work_df["atleta_id"].astype(str).tolist())
     if not latest_physical.empty:
-        latest_physical = latest_physical.add_prefix("fis_").rename(columns={"fis_atleta_id": "atleta_id"})
         work_df = work_df.merge(latest_physical, on="atleta_id", how="left")
     if not latest_technical.empty:
         latest_technical = latest_technical.add_prefix("tec_").rename(columns={"tec_atleta_id": "atleta_id"})
@@ -1464,12 +1518,65 @@ def _athletes_with_latest(
     return work_df
 
 
-def _latest_physical_snapshot(physical_df: pd.DataFrame, atleta_id: str) -> dict:
+def _latest_physical_snapshot(
+    physical_df: pd.DataFrame,
+    atleta_id: str,
+    columns: list[str] | None = None,
+    source_types: set[str] | None = None,
+) -> dict:
     if physical_df is None or physical_df.empty:
         return {}
-    latest_df = latest_records_by_athlete(physical_df)
-    row = latest_df[latest_df["atleta_id"].astype(str) == str(atleta_id)].head(1)
-    return {} if row.empty else row.iloc[0].to_dict()
+    work_df = physical_df[physical_df["atleta_id"].astype(str) == str(atleta_id)].copy()
+    if work_df.empty:
+        return {}
+    if source_types is not None and "source_type" in work_df.columns:
+        work_df = work_df[work_df["source_type"].astype(str).isin(source_types)].copy()
+    if work_df.empty:
+        return {}
+    work_df["data_avaliacao"] = pd.to_datetime(work_df["data_avaliacao"], errors="coerce")
+    work_df["inserted_at"] = pd.to_datetime(work_df["inserted_at"], errors="coerce")
+    work_df = work_df.sort_values(["data_avaliacao", "inserted_at"], ascending=[False, False], na_position="last")
+    target_columns = columns or PHYSICAL_COLUMNS
+    snapshot: dict[str, object] = {"atleta_id": atleta_id}
+    snapshot["data_avaliacao"] = work_df.iloc[0].get("data_avaliacao")
+    for col in target_columns:
+        if col not in work_df.columns:
+            continue
+        series = work_df[col]
+        valid_mask = series.notna()
+        if series.dtype == "object":
+            valid_mask = valid_mask & series.astype(str).str.strip().ne("")
+        valid_rows = work_df[valid_mask]
+        snapshot[col] = None if valid_rows.empty else valid_rows.iloc[0].get(col)
+    return snapshot
+
+
+def _build_latest_physical_merge_df(physical_df: pd.DataFrame, athlete_ids: list[str]) -> pd.DataFrame:
+    rows: list[dict] = []
+    for atleta_id in athlete_ids:
+        anth_snapshot = _latest_physical_snapshot(
+            physical_df,
+            atleta_id,
+            columns=ANTHROPOMETRY_PHYSICAL_COLUMNS,
+            source_types=ANTHROPOMETRY_SOURCE_TYPES,
+        )
+        tests_snapshot = _latest_physical_snapshot(
+            physical_df,
+            atleta_id,
+            columns=PHYSICAL_TEST_COLUMNS,
+            source_types=PHYSICAL_TEST_SOURCE_TYPES,
+        )
+        row = {
+            "atleta_id": atleta_id,
+            "fis_anth_data_avaliacao": anth_snapshot.get("data_avaliacao"),
+            "fis_tests_data_avaliacao": tests_snapshot.get("data_avaliacao"),
+        }
+        for col in ANTHROPOMETRY_PHYSICAL_COLUMNS:
+            row[f"fis_{col}"] = anth_snapshot.get(col)
+        for col in PHYSICAL_TEST_COLUMNS:
+            row[f"fis_{col}"] = tests_snapshot.get(col)
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _build_physical_record(physical_df: pd.DataFrame, atleta_id: str, data_avaliacao, updates: dict) -> pd.DataFrame:
@@ -2372,7 +2479,7 @@ def _render_athlete_registry(
 
             with tab_anth:
                 _render_inline_anthropometry_insert(row, physical_df)
-                st.caption(f"Data: {_format_date(row.get('fis_data_avaliacao'))}")
+                st.caption(f"Data: {_format_date(row.get('fis_anth_data_avaliacao'))}")
                 anthropometry_metrics = [
                     {"label": "Peso", "row_key": "fis_peso_kg", "metric_key": "peso_kg", "suffix": " kg", "decimals": 1},
                     {"label": "Altura", "row_key": "fis_altura_cm", "metric_key": "altura_cm", "suffix": " cm", "decimals": 1},
@@ -2397,7 +2504,7 @@ def _render_athlete_registry(
 
             with tab_phys:
                 _render_inline_physical_insert(row, physical_df)
-                st.caption(f"Data: {_format_date(row.get('fis_data_avaliacao'))}")
+                st.caption(f"Data: {_format_date(row.get('fis_tests_data_avaliacao'))}")
                 physical_metrics = [
                     {"label": "Sprint 10m", "row_key": "fis_sprint_10m_s", "metric_key": "sprint_10m_s", "suffix": " s", "decimals": 2},
                     {"label": "Sprint 20m", "row_key": "fis_sprint_20m_s", "metric_key": "sprint_20m_s", "suffix": " s", "decimals": 2},

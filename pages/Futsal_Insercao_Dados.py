@@ -96,7 +96,18 @@ REPORT_TTP_COLUMN_MAP = {
     "Atenção": "atencao_concentracao_score",
 }
 
-PHYSICAL_MODEL_COLUMNS = [
+PHYSICAL_ANTHROPOMETRY_MODEL_COLUMNS = [
+    "ID",
+    "Nome",
+    "PosiÃ§Ã£o",
+    "Peso(kg)",
+    "Altura (cm)",
+    "Altura Sentada (cm)",
+    "Envergadura (cm)",
+    "Comprimento Perna (cm)",
+]
+
+PHYSICAL_TEST_MODEL_COLUMNS = [
     "ID",
     "Nome",
     "Posição",
@@ -143,6 +154,8 @@ PHYSICAL_MODEL_COLUMNS = [
     "10J mínimo (cm)",
     "Índice fadiga 10J (%)",
 ]
+
+PHYSICAL_MODEL_COLUMNS = PHYSICAL_TEST_MODEL_COLUMNS
 
 TTP_MODEL_COLUMNS = [
     "ID",
@@ -199,6 +212,8 @@ TTP_SCORE_COLUMNS = [
 ]
 
 PHYSICAL_TEMPLATE_HINT_COLUMNS = set(REPORT_PHYSICAL_COLUMN_MAP.keys()) | {"ID", "Nome", "Posição", "Posicao"}
+PHYSICAL_ANTHRO_HINT_COLUMNS = {"ID", "Nome", "Posição", "PosiÃ§Ã£o", "Posicao", "Peso(kg)", "Peso corporal (kg)", "Altura (cm)", "Altura Sentada (cm)", "Altura sentada (cm)", "Envergadura (cm)", "Comprimento Perna (cm)"}
+PHYSICAL_TEST_HINT_COLUMNS = {"ID", "Nome", "Posição", "PosiÃ§Ã£o", "Posicao", "Sprint 10m(s)", "Sprint 20m (s)", "Teste 5-0-5 (esq)", "Teste 5-0-5 (dir)", "SJ altura (cm)", "CMJ altura (cm)", "DJ caixa (m)", "DJ altura (cm)", "DJ RSI", "DJ RSI mod (m/s)", "DJ contacto (ms)", "Jump 1 (cm)", "Jump 10 (cm)", "Contact 1 (ms)", "Contact 10 (ms)", "10J RSI 10-5", "10J CMJ (cm)", "10J mÃ©dia saltos (cm)", "10J mÃ¡ximo (cm)", "10J mÃ­nimo (cm)", "Ãndice fadiga 10J (%)"}
 TTP_TEMPLATE_HINT_COLUMNS = set(REPORT_TTP_COLUMN_MAP.keys()) | {"ID", "NOME JOGADOR"}
 
 
@@ -401,6 +416,8 @@ def _validate_ttp_scale(df_upload: pd.DataFrame, score_columns: list[str]) -> No
 def _validate_template_family(upload_columns: list[str], expected_kind: str) -> None:
     cleaned_columns = {str(col).strip() for col in upload_columns}
     physical_hits = len(cleaned_columns & PHYSICAL_TEMPLATE_HINT_COLUMNS)
+    anthropometry_hits = len(cleaned_columns & PHYSICAL_ANTHRO_HINT_COLUMNS)
+    physical_test_hits = len(cleaned_columns & PHYSICAL_TEST_HINT_COLUMNS)
     ttp_hits = len(cleaned_columns & TTP_TEMPLATE_HINT_COLUMNS)
 
     if expected_kind == "physical":
@@ -425,16 +442,48 @@ def _validate_template_family(upload_columns: list[str], expected_kind: str) -> 
                 "O ficheiro carregado parece pertencer a Dados Fisicos, nao a Tecnico | Tatica | Psicologico. "
                 "Carrega este ficheiro na tab correta."
             )
+    elif expected_kind == "anthropometry":
+        if anthropometry_hits < 4:
+            raise RuntimeError(
+                "O ficheiro carregado nao parece ser um modelo antropometrico valido. "
+                "Confirma se selecionaste a subtab correta e se o ficheiro corresponde ao modelo antropometrico."
+            )
+        if physical_test_hits >= 5 and physical_test_hits > anthropometry_hits:
+            raise RuntimeError(
+                "O ficheiro carregado parece pertencer a Testes Fisicos, nao a Dados Antropometricos. "
+                "Carrega este ficheiro na subtab correta."
+            )
+        if ttp_hits >= 5 and ttp_hits > anthropometry_hits:
+            raise RuntimeError(
+                "O ficheiro carregado parece pertencer a Tecnico | Tatica | Psicologico, nao a Dados Antropometricos. "
+                "Carrega este ficheiro na tab correta."
+            )
+    elif expected_kind == "physical_tests":
+        if physical_test_hits < 4:
+            raise RuntimeError(
+                "O ficheiro carregado nao parece ser um modelo de testes fisicos valido. "
+                "Confirma se selecionaste a subtab correta e se o ficheiro corresponde ao modelo de testes."
+            )
+        if anthropometry_hits >= 5 and anthropometry_hits > physical_test_hits:
+            raise RuntimeError(
+                "O ficheiro carregado parece pertencer a Dados Antropometricos, nao a Testes Fisicos. "
+                "Carrega este ficheiro na subtab correta."
+            )
+        if ttp_hits >= 5 and ttp_hits > physical_test_hits:
+            raise RuntimeError(
+                "O ficheiro carregado parece pertencer a Tecnico | Tatica | Psicologico, nao a Testes Fisicos. "
+                "Carrega este ficheiro na tab correta."
+            )
 
 
-def _prepare_bulk_physical_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, data_avaliacao) -> pd.DataFrame:
+def _prepare_bulk_anthropometry_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, data_avaliacao) -> pd.DataFrame:
     if df_upload is None or df_upload.empty:
         raise RuntimeError("O ficheiro nao contem linhas.")
     work_df = df_upload.copy()
     work_df.columns = [str(col).strip() for col in work_df.columns]
-    _validate_template_family(work_df.columns.tolist(), "physical")
+    _validate_template_family(work_df.columns.tolist(), "anthropometry")
     if "ID" not in work_df.columns:
-        raise RuntimeError("O modelo fisico tem de incluir a coluna 'ID'.")
+        raise RuntimeError("O modelo antropometrico tem de incluir a coluna 'ID'.")
     work_df["atleta_id"] = work_df["ID"].fillna("").astype(str).str.strip()
     work_df = work_df[work_df["atleta_id"].ne("")].copy()
     if work_df.empty:
@@ -442,10 +491,19 @@ def _prepare_bulk_physical_records(df_upload: pd.DataFrame, athletes_df: pd.Data
     rename_map = {source: target for source, target in REPORT_PHYSICAL_COLUMN_MAP.items() if source in work_df.columns}
     work_df = work_df.rename(columns=rename_map)
     work_df["data_avaliacao"] = pd.to_datetime(data_avaliacao).date()
+    target_columns = [
+        "peso_kg",
+        "altura_cm",
+        "altura_sentada_cm",
+        "envergadura_cm",
+        "comprimento_perna_cm",
+        "salto_maturacional",
+        "estado_maturacional",
+    ]
     for col in PHYSICAL_COLUMNS:
         if col not in work_df.columns:
             work_df[col] = pd.NA
-    for col in PHYSICAL_COLUMNS:
+    for col in target_columns:
         work_df[col] = pd.to_numeric(work_df[col], errors="coerce")
     for col in ["altura_cm", "altura_sentada_cm", "envergadura_cm", "comprimento_perna_cm"]:
         if col in work_df.columns:
@@ -467,6 +525,35 @@ def _prepare_bulk_physical_records(df_upload: pd.DataFrame, athletes_df: pd.Data
     )
     work_df["estado_maturacional"] = work_df["salto_maturacional"].map(_classify_maturity_offset)
     return work_df[["atleta_id", "data_avaliacao"] + PHYSICAL_COLUMNS].copy()
+
+
+def _prepare_bulk_physical_test_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, data_avaliacao) -> pd.DataFrame:
+    if df_upload is None or df_upload.empty:
+        raise RuntimeError("O ficheiro nao contem linhas.")
+    work_df = df_upload.copy()
+    work_df.columns = [str(col).strip() for col in work_df.columns]
+    _validate_template_family(work_df.columns.tolist(), "physical_tests")
+    if "ID" not in work_df.columns:
+        raise RuntimeError("O modelo de testes fisicos tem de incluir a coluna 'ID'.")
+    work_df["atleta_id"] = work_df["ID"].fillna("").astype(str).str.strip()
+    work_df = work_df[work_df["atleta_id"].ne("")].copy()
+    if work_df.empty:
+        raise RuntimeError("Nenhuma linha valida foi encontrada no modelo.")
+    rename_map = {source: target for source, target in REPORT_PHYSICAL_COLUMN_MAP.items() if source in work_df.columns}
+    work_df = work_df.rename(columns=rename_map)
+    work_df["data_avaliacao"] = pd.to_datetime(data_avaliacao).date()
+    for col in PHYSICAL_COLUMNS:
+        if col not in work_df.columns:
+            work_df[col] = pd.NA
+    for col in PHYSICAL_TEST_COLUMNS:
+        work_df[col] = pd.to_numeric(work_df[col], errors="coerce")
+    _validate_athlete_ids(work_df[["atleta_id"]].copy(), athletes_df)
+    _validate_athlete_name_match(work_df, athletes_df, "Nome")
+    return work_df[["atleta_id", "data_avaliacao"] + PHYSICAL_COLUMNS].copy()
+
+
+def _prepare_bulk_physical_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, data_avaliacao) -> pd.DataFrame:
+    return _prepare_bulk_physical_test_records(df_upload, athletes_df, data_avaliacao)
 
 
 def _prepare_bulk_ttp_records(df_upload: pd.DataFrame, athletes_df: pd.DataFrame, data_avaliacao) -> pd.DataFrame:
@@ -514,9 +601,6 @@ def _build_model_csv(columns: list[str]) -> bytes:
     return pd.DataFrame(columns=columns).to_csv(index=False).encode("utf-8-sig")
 
 
-st.title("Inserção de Dados")
-st.caption("Importação em lote para uma seleção inteira, usando o ID existente na base de dados.")
-
 success_message = st.session_state.pop("futsal_bulk_insert_success", "")
 if success_message:
     st.success(success_message)
@@ -526,30 +610,84 @@ if athletes_df.empty:
     st.info("Ainda nao existem atletas registadas.")
     st.stop()
 
-tab_physical, tab_ttp = st.tabs(["Dados Fisicos", "Dados Tecnico | Tatica | Psicologico"])
+tab_anthropometry, tab_physical, tab_ttp = st.tabs(
+    ["Avaliacoes Antropometricas", "Testes Fisicos", "Avaliacoes Tecnico | Tatica | Psicologico"]
+)
+
+with tab_anthropometry:
+    try:
+        excel_model_anth = _build_model_excel(PHYSICAL_ANTHROPOMETRY_MODEL_COLUMNS, "Antropometria")
+    except RuntimeError as exc:
+        st.warning(str(exc))
+        st.download_button(
+            "Descarregar modelo antropometrico em CSV",
+            data=_build_model_csv(PHYSICAL_ANTHROPOMETRY_MODEL_COLUMNS),
+            file_name="modelo_insercao_dados_antropometricos_futsal.csv",
+            mime="text/csv",
+        )
+    else:
+        st.download_button(
+            "Descarregar modelo antropometrico em Excel",
+            data=excel_model_anth,
+            file_name="modelo_insercao_dados_antropometricos_futsal.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+    anth_date_col, _ = st.columns([1.2, 3.8])
+    data_avaliacao_anth = anth_date_col.date_input("Data da avaliacao do lote antropometrico", value=date.today(), format="DD/MM/YYYY", key="bulk_date_anthropometry")
+    anth_upload_col, _ = st.columns([2.2, 2.8])
+    uploaded_anth_file = anth_upload_col.file_uploader(
+        "Carregar modelo Excel antropometrico da seleÃ§Ã£o",
+        type=["xlsx", "xls", "csv"],
+        key="futsal_bulk_selection_upload_anthropometry",
+    )
+
+    if uploaded_anth_file is not None:
+        try:
+            raw_anth_df = _read_table_upload(uploaded_anth_file)
+            prepared_anth_df = _prepare_bulk_anthropometry_records(raw_anth_df, athletes_df, data_avaliacao_anth)
+        except Exception as exc:
+            st.error(str(exc))
+        else:
+            preview_anth_df = prepared_anth_df.merge(
+                athletes_df[["atleta_id", "nome", "posicao"]],
+                on="atleta_id",
+                how="left",
+            )
+            st.markdown("**PrÃ©-visualizaÃ§Ã£o antropomÃ©trica**")
+            anth_preview_columns = ["atleta_id", "nome", "posicao", "data_avaliacao", "peso_kg", "altura_cm", "altura_sentada_cm", "envergadura_cm", "comprimento_perna_cm", "salto_maturacional", "estado_maturacional"]
+            st.dataframe(preview_anth_df[anth_preview_columns], use_container_width=True, hide_index=True)
+            st.caption(f"Linhas prontas a importar: {len(prepared_anth_df)}")
+            if st.button("Importar dados antropometricos da seleÃ§Ã£o", type="primary", key="import_bulk_anthropometry_button"):
+                result = append_records("physical", prepared_anth_df, source_type="selection_anthropometry_excel", source_file=uploaded_anth_file.name)
+                st.session_state["futsal_bulk_insert_success"] = (
+                    f"OperaÃ§Ã£o concluÃ­da. Lote antropometrico importado com sucesso. Batch: {result['batch_id']} | Linhas: {result['inserted']}"
+                )
+                st.rerun()
 
 with tab_physical:
-    st.markdown("**Importação física da seleção**")
     try:
-        excel_model = _build_model_excel(PHYSICAL_MODEL_COLUMNS, "Dados_Atletas")
+        excel_model = _build_model_excel(PHYSICAL_TEST_MODEL_COLUMNS, "Testes_Fisicos")
     except RuntimeError as exc:
         st.warning(str(exc))
         st.download_button(
             "Descarregar modelo fisico em CSV",
-            data=_build_model_csv(PHYSICAL_MODEL_COLUMNS),
-            file_name="modelo_insercao_dados_fisicos_futsal.csv",
+            data=_build_model_csv(PHYSICAL_TEST_MODEL_COLUMNS),
+            file_name="modelo_insercao_testes_fisicos_futsal.csv",
             mime="text/csv",
         )
     else:
         st.download_button(
             "Descarregar modelo fisico em Excel",
             data=excel_model,
-            file_name="modelo_insercao_dados_fisicos_futsal.xlsx",
+            file_name="modelo_insercao_testes_fisicos_futsal.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    data_avaliacao_fisica = st.date_input("Data da avaliacao do lote fisico", value=date.today(), format="DD/MM/YYYY", key="bulk_date_physical")
-    uploaded_physical_file = st.file_uploader(
+    physical_date_col, _ = st.columns([1.2, 3.8])
+    data_avaliacao_fisica = physical_date_col.date_input("Data da avaliacao do lote de testes", value=date.today(), format="DD/MM/YYYY", key="bulk_date_physical")
+    physical_upload_col, _ = st.columns([2.2, 2.8])
+    uploaded_physical_file = physical_upload_col.file_uploader(
         "Carregar modelo Excel fisico da seleção",
         type=["xlsx", "xls", "csv"],
         key="futsal_bulk_selection_upload_physical",
@@ -558,7 +696,7 @@ with tab_physical:
     if uploaded_physical_file is not None:
         try:
             raw_df = _read_table_upload(uploaded_physical_file)
-            prepared_df = _prepare_bulk_physical_records(raw_df, athletes_df, data_avaliacao_fisica)
+            prepared_df = _prepare_bulk_physical_test_records(raw_df, athletes_df, data_avaliacao_fisica)
         except Exception as exc:
             st.error(str(exc))
         else:
@@ -568,29 +706,23 @@ with tab_physical:
                 how="left",
             )
             st.markdown("**Pré-visualização**")
-            preview_columns = ["atleta_id", "nome", "posicao", "data_avaliacao"] + PHYSICAL_COLUMNS
+            preview_columns = ["atleta_id", "nome", "posicao", "data_avaliacao"] + PHYSICAL_TEST_COLUMNS
             st.dataframe(preview_df[preview_columns], use_container_width=True, hide_index=True)
             st.caption(f"Linhas prontas a importar: {len(prepared_df)}")
             if st.button("Importar dados fisicos da seleção", type="primary", key="import_bulk_selection_button"):
-                result = append_records("physical", prepared_df, source_type="selection_excel", source_file=uploaded_physical_file.name)
+                result = append_records("physical", prepared_df, source_type="selection_physical_tests_excel", source_file=uploaded_physical_file.name)
                 st.session_state["futsal_bulk_insert_success"] = (
                     f"Operação concluída. Lote físico importado com sucesso. Batch: {result['batch_id']} | Linhas: {result['inserted']}"
                 )
                 st.rerun()
 
 with tab_ttp:
-    st.markdown("**Importação técnico | tática | psicológica da seleção**")
-    st.caption("Modelos orientados para jogadoras de campo e guarda-redes, com ligação por ID da atleta.")
-    st.info(
-        "Escala TTP: 1-2 Mau | 3 Dificuldades | 4 Medio (Neutro) | 5 Positivo | 6 Muito bom | 7 Top. "
-        "A importação valida automaticamente esta escala para manter os referenciais equilibrados."
-    )
     try:
         excel_model_ttp = _build_model_excel(TTP_MODEL_COLUMNS, "Avaliacao_TTP")
         excel_model_ttp_gr = _build_model_excel(TTP_GR_MODEL_COLUMNS, "Avaliacao_TTP_GR")
     except RuntimeError as exc:
         st.warning(str(exc))
-        dl1, dl2 = st.columns(2)
+        dl1, dl2, _ = st.columns([1.25, 1, 2.35])
         dl1.download_button(
             "Descarregar modelo TTP campo em CSV",
             data=_build_model_csv(TTP_MODEL_COLUMNS),
@@ -604,7 +736,7 @@ with tab_ttp:
             mime="text/csv",
         )
     else:
-        dl1, dl2 = st.columns(2)
+        dl1, dl2, _ = st.columns([1.25, 1, 2.35])
         dl1.download_button(
             "Descarregar modelo TTP campo em Excel",
             data=excel_model_ttp,
@@ -618,8 +750,10 @@ with tab_ttp:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
-    data_avaliacao_ttp = st.date_input("Data da avaliacao do lote TTP", value=date.today(), format="DD/MM/YYYY", key="bulk_date_ttp")
-    uploaded_ttp_file = st.file_uploader(
+    ttp_date_col, _ = st.columns([1.2, 3.8])
+    data_avaliacao_ttp = ttp_date_col.date_input("Data da avaliacao do lote TTP", value=date.today(), format="DD/MM/YYYY", key="bulk_date_ttp")
+    ttp_upload_col, _ = st.columns([2.2, 2.8])
+    uploaded_ttp_file = ttp_upload_col.file_uploader(
         "Carregar modelo Excel tecnico | tatica | psicologico",
         type=["xlsx", "xls", "csv"],
         key="futsal_bulk_selection_upload_ttp",

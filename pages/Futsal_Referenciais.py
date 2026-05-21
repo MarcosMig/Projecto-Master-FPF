@@ -91,7 +91,7 @@ def _render_summary_strip(summary: dict) -> None:
         ("Registos metricos", summary["n_registos_metricos"]),
         ("Anos historicos", summary["n_anos"]),
         ("Selecoes", summary["n_selecoes"]),
-        ("Testes ativos", summary["n_testes"]),
+        ("Metricas", summary["n_testes"]),
     ]
     _render_stat_strip(items, "ref-summary")
 
