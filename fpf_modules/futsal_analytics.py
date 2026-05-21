@@ -6,6 +6,7 @@ import pandas as pd
 
 from .futsal_parquet_store import (
     latest_records_by_athlete,
+    read_athlete_pathway,
     read_athletes,
     read_physical_records,
     read_technical_records,
@@ -391,6 +392,42 @@ def build_latest_athlete_profiles() -> pd.DataFrame:
     if not latest_technical.empty:
         latest_technical = latest_technical.add_prefix("tec_").rename(columns={"tec_atleta_id": "atleta_id"})
         athletes_df = athletes_df.merge(latest_technical, on="atleta_id", how="left")
+    pathway_df = read_athlete_pathway()
+    if not pathway_df.empty:
+        latest_pathway = pathway_df.copy()
+        latest_pathway["ano"] = pd.to_numeric(latest_pathway["ano"], errors="coerce")
+        latest_pathway["data_referencia"] = pd.to_datetime(latest_pathway["data_referencia"], errors="coerce", dayfirst=True)
+        latest_pathway["inserted_at"] = pd.to_datetime(latest_pathway["inserted_at"], errors="coerce")
+        latest_pathway = latest_pathway.sort_values(
+            ["atleta_id", "ano", "data_referencia", "inserted_at"],
+            ascending=[True, False, False, False],
+            na_position="last",
+        ).drop_duplicates(subset=["atleta_id"], keep="first")
+        latest_pathway = latest_pathway.rename(
+            columns={
+                "selecao": "selecao_atual",
+                "escalao": "escalao_atual",
+                "estado": "estado_atual",
+                "data_referencia": "data_referencia_atual",
+            }
+        )
+        athletes_df = athletes_df.merge(
+            latest_pathway[["atleta_id", "selecao_atual", "escalao_atual", "estado_atual", "data_referencia_atual"]],
+            on="atleta_id",
+            how="left",
+        )
+        athletes_df["selecao"] = athletes_df["selecao_atual"].where(
+            athletes_df["selecao_atual"].notna() & (athletes_df["selecao_atual"].astype(str) != ""),
+            athletes_df["selecao"],
+        )
+        athletes_df["escalao"] = athletes_df["escalao_atual"].where(
+            athletes_df["escalao_atual"].notna() & (athletes_df["escalao_atual"].astype(str) != ""),
+            athletes_df["escalao"],
+        )
+    else:
+        athletes_df["estado_atual"] = ""
+        athletes_df["selecao_atual"] = athletes_df["selecao"]
+        athletes_df["escalao_atual"] = athletes_df["escalao"]
     return athletes_df
 
 

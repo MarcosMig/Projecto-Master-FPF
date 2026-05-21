@@ -263,6 +263,61 @@ def _build_radar(selected_df: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def _reference_row(group_df: pd.DataFrame, label: str) -> dict | None:
+    if group_df is None or group_df.empty:
+        return None
+    row = {
+        "atleta_id": f"REF-{label}",
+        "nome": label,
+        "genero": "",
+        "selecao": "",
+        "escalao": "",
+        "posicao": "",
+        "idade": None,
+        "fis_estado_maturacional": "",
+        "ANT": group_df["ANT"].dropna().median() if "ANT" in group_df.columns else None,
+        "FIS": group_df["FIS"].dropna().median() if "FIS" in group_df.columns else None,
+        "TEC": group_df["TEC"].dropna().median() if "TEC" in group_df.columns else None,
+        "TAT": group_df["TAT"].dropna().median() if "TAT" in group_df.columns else None,
+        "PSI": group_df["PSI"].dropna().median() if "PSI" in group_df.columns else None,
+        "n_referencia": int(len(group_df)),
+        "estado_atual": "",
+    }
+    return row
+
+
+def _build_reference_profiles(base_row: pd.Series, candidates_df: pd.DataFrame, selected_reference_keys: list[str]) -> pd.DataFrame:
+    rows: list[dict] = []
+    base_gender = _clean_text(base_row.get("genero"))
+    base_position = _clean_text(base_row.get("posicao"))
+    base_scale = _clean_text(base_row.get("escalao"))
+    base_selection = _clean_text(base_row.get("selecao"))
+    candidate_pool = candidates_df.copy()
+    if base_gender:
+        candidate_pool = candidate_pool[candidate_pool["genero"].astype(str) == base_gender].copy()
+
+    reference_definitions = [
+        ("Mesma posicao", candidate_pool[candidate_pool["posicao"].astype(str) == base_position].copy() if base_position else pd.DataFrame()),
+        ("Mesmo escalao", candidate_pool[candidate_pool["escalao"].astype(str) == base_scale].copy() if base_scale else pd.DataFrame()),
+        ("Mesma selecao", candidate_pool[candidate_pool["selecao"].astype(str) == base_selection].copy() if base_selection else pd.DataFrame()),
+        ("Internacionais", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Internacional"].copy()),
+        ("Selecao Distrital", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Seleção Distrital"].copy()),
+        ("Processo Selecao", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Processo Seleção"].copy()),
+        ("Referenciadas", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Referenciado"].copy()),
+        ("Observadas", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Observado"].copy()),
+    ]
+
+    for label, group_df in reference_definitions:
+        if label not in selected_reference_keys:
+            continue
+        group_df = group_df[group_df["atleta_id"].astype(str) != _clean_text(base_row.get("atleta_id"))].copy()
+        ref_row = _reference_row(group_df, label)
+        if ref_row is not None and ref_row["n_referencia"] > 0:
+            rows.append(ref_row)
+
+    return pd.DataFrame(rows)
+
+
 profiles_df = _load_profiles()
 if profiles_df.empty:
     st.info("Ainda nao existem atletas suficientes para comparar perfis.")
@@ -303,94 +358,173 @@ working_df = working_df.sort_values(["nome", "atleta_id"], na_position="last").r
 
 st.caption(f"Atletas disponiveis para comparacao: {len(working_df)}")
 
+comparison_mode = st.radio(
+    "Modo de comparacao",
+    options=["Perfil vs Perfil", "Perfil vs Referencial"],
+    horizontal=True,
+)
+
 label_to_id = {row["label"]: row["atleta_id"] for _, row in working_df.iterrows()}
-default_labels = list(label_to_id.keys())[: min(2, len(label_to_id))]
-selected_labels = st.multiselect(
-    "Selecionar atletas para comparar",
-    options=list(label_to_id.keys()),
-    default=default_labels,
-    max_selections=4,
-    placeholder="Escolha entre 2 e 4 atletas",
-)
+if comparison_mode == "Perfil vs Perfil":
+    st.caption("Modo direto para comparar 2 a 4 atletas entre si e encontrar perfis semelhantes.")
+    with st.container(border=True):
+        default_labels = list(label_to_id.keys())[: min(2, len(label_to_id))]
+        selected_labels = st.multiselect(
+            "Selecionar atletas para comparar",
+            options=list(label_to_id.keys()),
+            default=default_labels,
+            max_selections=4,
+            placeholder="Escolha entre 2 e 4 atletas",
+        )
 
-selected_ids = [label_to_id[label] for label in selected_labels if label in label_to_id]
-selected_df = working_df[working_df["atleta_id"].astype(str).isin(selected_ids)].copy()
-selected_df["_selection_order"] = selected_df["atleta_id"].astype(str).map({atleta_id: idx for idx, atleta_id in enumerate(selected_ids)})
-selected_df = selected_df.sort_values("_selection_order").drop(columns="_selection_order")
+        selected_ids = [label_to_id[label] for label in selected_labels if label in label_to_id]
+        selected_df = working_df[working_df["atleta_id"].astype(str).isin(selected_ids)].copy()
+        selected_df["_selection_order"] = selected_df["atleta_id"].astype(str).map({atleta_id: idx for idx, atleta_id in enumerate(selected_ids)})
+        selected_df = selected_df.sort_values("_selection_order").drop(columns="_selection_order")
 
-if len(selected_df) < 2:
-    st.info("Selecione pelo menos 2 atletas para abrir a comparacao de perfis.")
-    st.stop()
-
-header_cols = st.columns(len(selected_df))
-for idx, (_, row) in enumerate(selected_df.iterrows()):
-    with header_cols[idx]:
-        _render_athlete_card(row)
-
-st.markdown("---")
-st.markdown("**Radar Comparativo de Perfil**")
-st.caption("Os 5 eixos representam o enquadramento relativo da atleta em ANT, FIS, TEC, TAT e PSI.")
-st.plotly_chart(
-    _build_radar(selected_df),
-    use_container_width=True,
-    config={"displayModeBar": False},
-    key="profile_comparison_radar",
-)
-
-st.markdown("**Tabela Comparativa**")
-table_df = selected_df[
-    [
-        "atleta_id",
-        "nome",
-        "genero",
-        "selecao",
-        "escalao",
-        "posicao",
-        "idade",
-        "fis_estado_maturacional",
-        "ANT",
-        "FIS",
-        "TEC",
-        "TAT",
-        "PSI",
-    ]
-].rename(
-    columns={
-        "atleta_id": "ID",
-        "nome": "Nome",
-        "genero": "Genero",
-        "selecao": "Selecao",
-        "escalao": "Escalao",
-        "posicao": "Posicao",
-        "idade": "Idade",
-        "fis_estado_maturacional": "Estado maturacional",
-    }
-)
-for score_col in ["ANT", "FIS", "TEC", "TAT", "PSI"]:
-    table_df[score_col] = table_df[score_col].map(lambda value: None if pd.isna(value) else int(round(float(value))))
-st.dataframe(table_df, use_container_width=True, hide_index=True)
-
-st.markdown("---")
-st.markdown("**Perfis Semelhantes**")
-st.caption("A app procura atletas com perfil mais proximo, usando ANT | FIS | TEC | TAT | PSI e privilegiando genero, posicao e escalao.")
-
-similarity_cols = st.columns([2.2, 0.8])
-with similarity_cols[0]:
-    base_profile_label = st.selectbox(
-        "Atleta base",
-        options=list(label_to_id.keys()),
-        index=0 if selected_labels else None,
-        placeholder="Escolha a atleta-base",
-    )
-with similarity_cols[1]:
-    top_n = st.selectbox("N resultados", options=[3, 5, 8], index=1)
-
-if base_profile_label:
-    base_profile_id = label_to_id[base_profile_label]
-    base_row = working_df[working_df["atleta_id"].astype(str) == str(base_profile_id)].head(1)
-    if not base_row.empty:
-        similar_df = _find_similar_profiles(base_row.iloc[0], working_df, top_n=top_n)
-        if similar_df.empty:
-            st.info("Ainda nao existem dados suficientes para encontrar perfis semelhantes com seguranca.")
+        if len(selected_df) < 2:
+            st.info("Selecione pelo menos 2 atletas para abrir a comparacao de perfis.")
         else:
-            st.dataframe(similar_df, use_container_width=True, hide_index=True)
+            st.caption(f"Perfis selecionados: {len(selected_df)}")
+            header_cols = st.columns(len(selected_df))
+            for idx, (_, row) in enumerate(selected_df.iterrows()):
+                with header_cols[idx]:
+                    _render_athlete_card(row)
+
+            st.markdown("---")
+            st.markdown("**Radar Comparativo de Perfil**")
+            st.caption("Os 5 eixos representam o enquadramento relativo da atleta em ANT, FIS, TEC, TAT e PSI.")
+            st.plotly_chart(
+                _build_radar(selected_df),
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key="profile_comparison_radar",
+            )
+
+            st.markdown("**Tabela Comparativa**")
+            table_df = selected_df[
+                [
+                    "atleta_id",
+                    "nome",
+                    "genero",
+                    "selecao",
+                    "escalao",
+                    "posicao",
+                    "idade",
+                    "fis_estado_maturacional",
+                    "ANT",
+                    "FIS",
+                    "TEC",
+                    "TAT",
+                    "PSI",
+                ]
+            ].rename(
+                columns={
+                    "atleta_id": "ID",
+                    "nome": "Nome",
+                    "genero": "Genero",
+                    "selecao": "Selecao",
+                    "escalao": "Escalao",
+                    "posicao": "Posicao",
+                    "idade": "Idade",
+                    "fis_estado_maturacional": "Estado maturacional",
+                }
+            )
+            for score_col in ["ANT", "FIS", "TEC", "TAT", "PSI"]:
+                table_df[score_col] = table_df[score_col].map(lambda value: None if pd.isna(value) else int(round(float(value))))
+            st.dataframe(table_df, use_container_width=True, hide_index=True)
+
+            st.markdown("---")
+            st.markdown("**Perfis Semelhantes**")
+            st.caption("A app procura atletas com perfil mais proximo, usando ANT | FIS | TEC | TAT | PSI e privilegiando genero, posicao e escalao.")
+
+            similarity_cols = st.columns([2.2, 0.8])
+            with similarity_cols[0]:
+                base_profile_label = st.selectbox(
+                    "Atleta base",
+                    options=list(label_to_id.keys()),
+                    index=0 if selected_labels else None,
+                    placeholder="Escolha a atleta-base",
+                )
+            with similarity_cols[1]:
+                top_n = st.selectbox("N resultados", options=[3, 5, 8], index=1)
+
+            if base_profile_label:
+                base_profile_id = label_to_id[base_profile_label]
+                base_row = working_df[working_df["atleta_id"].astype(str) == str(base_profile_id)].head(1)
+                if not base_row.empty:
+                    similar_df = _find_similar_profiles(base_row.iloc[0], working_df, top_n=top_n)
+                    if similar_df.empty:
+                        st.info("Ainda nao existem dados suficientes para encontrar perfis semelhantes com seguranca.")
+                    else:
+                        st.dataframe(similar_df, use_container_width=True, hide_index=True)
+else:
+    st.caption("Modo de enquadramento para comparar uma atleta com a mediana de grupos de referencia.")
+    with st.container(border=True):
+        st.markdown("**Comparacao com Referenciais**")
+        reference_cols = st.columns([2.0, 2.4])
+        with reference_cols[0]:
+            base_reference_label = st.selectbox(
+                "Atleta base para referenciais",
+                options=list(label_to_id.keys()),
+                index=0 if label_to_id else None,
+                placeholder="Escolha a atleta-base",
+                key="reference_base_athlete",
+            )
+        with reference_cols[1]:
+            selected_reference_key = st.selectbox(
+                "Grupo de referencia",
+                options=[
+                    "Mesma posicao",
+                    "Mesmo escalao",
+                    "Mesma selecao",
+                    "Internacionais",
+                    "Selecao Distrital",
+                    "Processo Selecao",
+                    "Referenciadas",
+                    "Observadas",
+                ],
+                index=1,
+                key="reference_group_select",
+            )
+
+        if base_reference_label and selected_reference_key:
+            base_reference_id = label_to_id[base_reference_label]
+            base_reference_row = working_df[working_df["atleta_id"].astype(str) == str(base_reference_id)].head(1)
+            if not base_reference_row.empty:
+                preview_cols = st.columns([1.4, 2.2])
+                with preview_cols[0]:
+                    _render_athlete_card(base_reference_row.iloc[0])
+                with preview_cols[1]:
+                    st.markdown("**Grupo selecionado**")
+                    st.caption("O referencial usa a mediana do grupo para ANT, FIS, TEC, TAT e PSI, dentro do mesmo genero.")
+                    st.write(selected_reference_key)
+
+                reference_df = _build_reference_profiles(base_reference_row.iloc[0], working_df, [selected_reference_key])
+                if reference_df.empty:
+                    st.info("Nao existem dados suficientes para montar o grupo de referencia selecionado.")
+                else:
+                    comparison_reference_df = pd.concat(
+                        [base_reference_row.copy(), reference_df],
+                        ignore_index=True,
+                        sort=False,
+                    )
+                    st.plotly_chart(
+                        _build_radar(comparison_reference_df),
+                        use_container_width=True,
+                        config={"displayModeBar": False},
+                        key="reference_comparison_radar",
+                    )
+                    reference_table = comparison_reference_df[
+                        ["nome", "ANT", "FIS", "TEC", "TAT", "PSI", "n_referencia"]
+                    ].rename(
+                        columns={
+                            "nome": "Perfil",
+                            "n_referencia": "N referencia",
+                        }
+                    )
+                    for score_col in ["ANT", "FIS", "TEC", "TAT", "PSI"]:
+                        reference_table[score_col] = reference_table[score_col].map(
+                            lambda value: None if pd.isna(value) else int(round(float(value)))
+                        )
+                    st.dataframe(reference_table, use_container_width=True, hide_index=True)
