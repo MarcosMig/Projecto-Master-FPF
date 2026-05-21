@@ -301,6 +301,7 @@ def _build_reference_profiles(base_row: pd.Series, candidates_df: pd.DataFrame, 
         ("Mesmo escalao", candidate_pool[candidate_pool["escalao"].astype(str) == base_scale].copy() if base_scale else pd.DataFrame()),
         ("Mesma selecao", candidate_pool[candidate_pool["selecao"].astype(str) == base_selection].copy() if base_selection else pd.DataFrame()),
         ("Internacionais", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Internacional"].copy()),
+        ("Estagio Selecao Nacional", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Estágio Seleção Nacional"].copy()),
         ("Selecao Distrital", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Seleção Distrital"].copy()),
         ("Processo Selecao", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Processo Seleção"].copy()),
         ("Referenciadas", candidate_pool[candidate_pool["estado_atual"].astype(str) == "Referenciado"].copy()),
@@ -472,21 +473,37 @@ else:
                 key="reference_base_athlete",
             )
         with reference_cols[1]:
-            selected_reference_key = st.selectbox(
-                "Grupo de referencia",
-                options=[
-                    "Mesma posicao",
-                    "Mesmo escalao",
-                    "Mesma selecao",
-                    "Internacionais",
-                    "Selecao Distrital",
-                    "Processo Selecao",
-                    "Referenciadas",
-                    "Observadas",
-                ],
-                index=1,
-                key="reference_group_select",
+            reference_mode = st.selectbox(
+                "Tipo de referencial",
+                options=["Contexto da atleta", "Estado competitivo"],
+                index=0,
+                key="reference_mode_select",
             )
+            if reference_mode == "Contexto da atleta":
+                selected_reference_key = st.selectbox(
+                    "Grupo de referencia",
+                    options=[
+                        "Mesma posicao",
+                        "Mesmo escalao",
+                        "Mesma selecao",
+                    ],
+                    index=1,
+                    key="reference_group_select_context",
+                )
+            else:
+                selected_reference_key = st.selectbox(
+                    "Grupo de referencia",
+                    options=[
+                        "Internacionais",
+                        "Estagio Selecao Nacional",
+                        "Selecao Distrital",
+                        "Processo Selecao",
+                        "Referenciadas",
+                        "Observadas",
+                    ],
+                    index=2,
+                    key="reference_group_select_status",
+                )
 
         if base_reference_label and selected_reference_key:
             base_reference_id = label_to_id[base_reference_label]
@@ -497,7 +514,8 @@ else:
                     _render_athlete_card(base_reference_row.iloc[0])
                 with preview_cols[1]:
                     st.markdown("**Grupo selecionado**")
-                    st.caption("O referencial usa a mediana do grupo para ANT, FIS, TEC, TAT e PSI, dentro do mesmo genero.")
+                    st.caption("O referencial usa a mediana do grupo para ANT, FIS, TEC, TAT e PSI, sempre dentro do mesmo genero.")
+                    st.caption(f"Tipo: {reference_mode}")
                     st.write(selected_reference_key)
 
                 reference_df = _build_reference_profiles(base_reference_row.iloc[0], working_df, [selected_reference_key])

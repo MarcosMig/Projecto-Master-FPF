@@ -52,6 +52,7 @@ ATHLETE_PATHWAY_COLUMNS = [
     "atleta_id",
     "ano",
     "selecao",
+    "epoca",
     "escalao",
     "estado",
     "data_referencia",

@@ -7,7 +7,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from fpf_modules.futsal_parquet_store import generate_athlete_id, read_athletes, save_photo, upsert_athlete
+from fpf_modules.futsal_parquet_store import append_athlete_pathway_entry, generate_athlete_id, read_athletes, save_photo, upsert_athlete
 
 
 ATHLETE_BIRTHDATE_MIN = date(1980, 1, 1)
@@ -15,6 +15,7 @@ ATHLETE_BIRTHDATE_MAX = date.today()
 GENDER_OPTIONS = ["Masculino", "Feminino"]
 POSITION_OPTIONS = ["", "GR", "Fixo", "Ala", "Pivot", "Universal"]
 SELECTION_OPTIONS = ["", "S12", "S13", "S14", "S15", "S16", "S17"]
+STATE_OPTIONS = ["", "Observado", "Referenciado", "Processo Seleção", "Seleção Distrital", "Estágio Seleção Nacional", "Internacional"]
 
 
 def _clean_text_value(value) -> str:
@@ -55,6 +56,19 @@ def _derive_escalao_from_age(age: int | None) -> str:
     if age <= 23:
         return "Sub-23"
     return "Seniores"
+
+
+def _season_label(start_year: int) -> str:
+    return f"{start_year}/{str((start_year + 1) % 100).zfill(2)}"
+
+
+def _season_options(selected: str = "") -> list[str]:
+    current_year = date.today().year
+    options = [""] + [_season_label(year) for year in range(current_year - 3, current_year + 5)]
+    selected_value = _clean_text_value(selected)
+    if selected_value and selected_value not in options:
+        options.append(selected_value)
+    return options
 
 
 def _extract_convocatoria_athletes(uploaded_file) -> list[str]:
@@ -191,17 +205,22 @@ def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
             line2_col2.text_input("Idade", value="" if idade_preview is None else str(idade_preview), disabled=True)
             genero = line2_col3.selectbox("Genero", options=GENDER_OPTIONS)
 
-            line3_col1, line3_col2, line3_col3 = st.columns(3)
+            line3_col1, line3_col2, line3_col3, line3_col4 = st.columns(4)
             escalao_preview = _derive_escalao_from_age(idade_preview)
             line3_col1.text_input("Escalao", value=escalao_preview, disabled=True)
-            selecao = line3_col2.selectbox("Selecao", options=SELECTION_OPTIONS)
-            posicao = line3_col3.selectbox("Posicao", options=POSITION_OPTIONS)
+            selecao = line3_col2.selectbox("Selecao base", options=SELECTION_OPTIONS)
+            epoca = line3_col3.selectbox("Epoca", options=_season_options())
+            posicao = line3_col4.selectbox("Posicao", options=POSITION_OPTIONS)
+            estado = st.selectbox("Estado", options=STATE_OPTIONS, index=0)
         ativo = st.checkbox("Ativo", value=True)
         submitted = st.form_submit_button("Criar atleta", type="primary")
 
     if submitted:
         if not _clean_text_value(nome):
             st.error("O campo Nome e obrigatorio.")
+            return
+        if bool(_clean_text_value(selecao)) != bool(_clean_text_value(epoca)):
+            st.error("Selecao base e Epoca devem ser preenchidas em conjunto.")
             return
         photo_source = foto_upload if foto_upload is not None else foto
         photo_path = ""
@@ -219,6 +238,19 @@ def _render_create_athlete_form(athletes_df: pd.DataFrame) -> None:
                 "ativo": bool(ativo),
             }
         )
+        if _clean_text_value(selecao) or _clean_text_value(estado):
+            append_athlete_pathway_entry(
+                {
+                    "atleta_id": athlete_id,
+                    "ano": date.today().year,
+                    "selecao": _clean_text_value(selecao),
+                    "epoca": _clean_text_value(epoca),
+                    "escalao": _clean_text_value(escalao_preview),
+                    "estado": _clean_text_value(estado),
+                    "data_referencia": date.today(),
+                    "observacoes": "",
+                }
+            )
         st.success("Atleta criado com sucesso.")
         st.rerun()
 

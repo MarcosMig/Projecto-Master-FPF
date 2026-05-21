@@ -406,13 +406,12 @@ def build_latest_athlete_profiles() -> pd.DataFrame:
         latest_pathway = latest_pathway.rename(
             columns={
                 "selecao": "selecao_atual",
-                "escalao": "escalao_atual",
                 "estado": "estado_atual",
                 "data_referencia": "data_referencia_atual",
             }
         )
         athletes_df = athletes_df.merge(
-            latest_pathway[["atleta_id", "selecao_atual", "escalao_atual", "estado_atual", "data_referencia_atual"]],
+            latest_pathway[["atleta_id", "selecao_atual", "estado_atual", "data_referencia_atual"]],
             on="atleta_id",
             how="left",
         )
@@ -420,14 +419,10 @@ def build_latest_athlete_profiles() -> pd.DataFrame:
             athletes_df["selecao_atual"].notna() & (athletes_df["selecao_atual"].astype(str) != ""),
             athletes_df["selecao"],
         )
-        athletes_df["escalao"] = athletes_df["escalao_atual"].where(
-            athletes_df["escalao_atual"].notna() & (athletes_df["escalao_atual"].astype(str) != ""),
-            athletes_df["escalao"],
-        )
     else:
         athletes_df["estado_atual"] = ""
         athletes_df["selecao_atual"] = athletes_df["selecao"]
-        athletes_df["escalao_atual"] = athletes_df["escalao"]
+    athletes_df["escalao_atual"] = athletes_df["escalao"]
     return athletes_df
 
 
