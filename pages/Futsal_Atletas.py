@@ -973,6 +973,52 @@ def _athlete_history_rows(
 ) -> pd.DataFrame:
     atleta_id = _clean_text_value(athlete_row.get("atleta_id"))
     history_frames: list[pd.DataFrame] = []
+    athlete_pathway_source = pathway_df[pathway_df["atleta_id"].astype(str) == atleta_id].copy() if not pathway_df.empty else pd.DataFrame()
+
+    def _resolve_pathway_context(reference_date=None, momento=None) -> dict[str, str]:
+        fallback_base = _clean_text_value(athlete_row.get("selecao"))
+        fallback_epoca = _clean_text_value(athlete_row.get("epoca_atual"))
+        fallback_estado = _clean_text_value(athlete_row.get("estado_atual"))
+        fallback = {
+            "selecao_base": fallback_base,
+            "epoca": fallback_epoca,
+            "estado": fallback_estado,
+            "selecao": _selection_display(fallback_base, fallback_epoca),
+        }
+        if athlete_pathway_source.empty:
+            return fallback
+
+        work_df = athlete_pathway_source.copy()
+        work_df["contexto_data"] = pd.to_datetime(work_df.get("data_referencia"), errors="coerce")
+        inserted_series = pd.to_datetime(work_df.get("inserted_at"), errors="coerce", utc=True)
+        if hasattr(inserted_series.dt, "tz_localize"):
+            inserted_series = inserted_series.dt.tz_localize(None)
+        work_df["contexto_data"] = work_df["contexto_data"].fillna(inserted_series)
+        compare_dt = pd.to_datetime(reference_date, errors="coerce")
+        if pd.isna(compare_dt):
+            compare_dt = pd.to_datetime(momento, errors="coerce", utc=True)
+            if not pd.isna(compare_dt) and getattr(compare_dt, "tzinfo", None) is not None:
+                compare_dt = compare_dt.tz_localize(None)
+
+        if not pd.isna(compare_dt):
+            eligible_df = work_df[work_df["contexto_data"].notna() & (work_df["contexto_data"] <= compare_dt)].copy()
+            if not eligible_df.empty:
+                work_df = eligible_df
+
+        work_df = work_df.sort_values(["contexto_data"], ascending=[False], na_position="last")
+        if work_df.empty:
+            return fallback
+
+        context_row = work_df.iloc[0]
+        selecao_base = _clean_text_value(context_row.get("selecao")) or fallback_base
+        epoca = _clean_text_value(context_row.get("epoca")) or fallback_epoca
+        estado = _clean_text_value(context_row.get("estado")) or fallback_estado
+        return {
+            "selecao_base": selecao_base,
+            "epoca": epoca,
+            "estado": estado,
+            "selecao": _selection_display(selecao_base, epoca),
+        }
 
     athlete_events = athlete_history_df[athlete_history_df["atleta_id"].astype(str) == atleta_id].copy() if not athlete_history_df.empty else pd.DataFrame()
     if athlete_events.empty:
@@ -1023,8 +1069,15 @@ def _athlete_history_rows(
         athlete_events["detalhe"] = athlete_events["descricao"].fillna("")
         athlete_events["selecao_base"] = athlete_events["selecao"].map(_clean_text_value)
         athlete_events["epoca"] = ""
-        athlete_events["selecao"] = athlete_events["selecao_base"]
         athlete_events["estado"] = ""
+        athlete_context = athlete_events.apply(
+            lambda row: _resolve_pathway_context(row.get("data_nascimento"), row.get("momento")),
+            axis=1,
+        )
+        athlete_events["selecao_base"] = athlete_context.map(lambda ctx: _clean_text_value(ctx.get("selecao_base")) or "")
+        athlete_events["epoca"] = athlete_context.map(lambda ctx: _clean_text_value(ctx.get("epoca")) or "")
+        athlete_events["selecao"] = athlete_context.map(lambda ctx: _clean_text_value(ctx.get("selecao")) or "")
+        athlete_events["estado"] = athlete_context.map(lambda ctx: _clean_text_value(ctx.get("estado")) or "")
         athlete_events["ano"] = None
         athlete_events["escalao"] = ""
         athlete_events["data_referencia"] = None
@@ -1037,7 +1090,7 @@ def _athlete_history_rows(
         athlete_events["source_type"] = "athlete_event"
     history_frames.append(athlete_events)
 
-    pathway_rows = pathway_df[pathway_df["atleta_id"].astype(str) == atleta_id].copy() if not pathway_df.empty else pd.DataFrame()
+    pathway_rows = athlete_pathway_source.copy()
     if not pathway_rows.empty:
         pathway_rows["momento"] = pathway_rows["inserted_at"]
         pathway_rows["tipo"] = "Atualizacao percurso"
@@ -1082,10 +1135,14 @@ def _athlete_history_rows(
             ).strip(", "),
             axis=1,
         )
-        physical_rows["selecao"] = ""
-        physical_rows["selecao_base"] = ""
-        physical_rows["epoca"] = ""
-        physical_rows["estado"] = ""
+        physical_context = physical_rows.apply(
+            lambda row: _resolve_pathway_context(row.get("data_avaliacao"), row.get("momento")),
+            axis=1,
+        )
+        physical_rows["selecao"] = physical_context.map(lambda ctx: _clean_text_value(ctx.get("selecao")) or "")
+        physical_rows["selecao_base"] = physical_context.map(lambda ctx: _clean_text_value(ctx.get("selecao_base")) or "")
+        physical_rows["epoca"] = physical_context.map(lambda ctx: _clean_text_value(ctx.get("epoca")) or "")
+        physical_rows["estado"] = physical_context.map(lambda ctx: _clean_text_value(ctx.get("estado")) or "")
         physical_rows["ano"] = None
         physical_rows["escalao"] = ""
         physical_rows["data_referencia"] = None
@@ -1128,10 +1185,14 @@ def _athlete_history_rows(
             ).strip(", "),
             axis=1,
         )
-        technical_rows["selecao"] = ""
-        technical_rows["selecao_base"] = ""
-        technical_rows["epoca"] = ""
-        technical_rows["estado"] = ""
+        technical_context = technical_rows.apply(
+            lambda row: _resolve_pathway_context(row.get("data_avaliacao"), row.get("momento")),
+            axis=1,
+        )
+        technical_rows["selecao"] = technical_context.map(lambda ctx: _clean_text_value(ctx.get("selecao")) or "")
+        technical_rows["selecao_base"] = technical_context.map(lambda ctx: _clean_text_value(ctx.get("selecao_base")) or "")
+        technical_rows["epoca"] = technical_context.map(lambda ctx: _clean_text_value(ctx.get("epoca")) or "")
+        technical_rows["estado"] = technical_context.map(lambda ctx: _clean_text_value(ctx.get("estado")) or "")
         technical_rows["ano"] = None
         technical_rows["escalao"] = ""
         technical_rows["data_referencia"] = None
@@ -1947,7 +2008,7 @@ def _render_pathway_history_actions(athlete_row: pd.Series, pathway_history: pd.
         return
 
     atleta_id = _clean_text_value(athlete_row.get("atleta_id"))
-    entry_id = _clean_text_value(selected_row.get("entry_id"))
+    entry_id = _clean_text_value(selected_row.get("entry_id")) or _clean_text_value(selected_row.get("record_id"))
 
     action_col1, action_col2 = st.columns(2)
     if action_col1.button("Editar registo", key=f"edit_pathway_row_{atleta_id}_{entry_id}"):
