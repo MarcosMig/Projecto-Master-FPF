@@ -65,6 +65,7 @@ elif st.session_state.selected_modality == "futsal":
             st.Page("pages/Futsal_Atletas.py", title="Atletas", url_path="futsal-atletas"),
             st.Page("pages/Futsal_Criar_Atleta.py", title="Criar Atleta", url_path="futsal-criar-atleta"),
             st.Page("pages/Futsal_Insercao_Dados.py", title="Inserção de Dados", url_path="futsal-insercao-dados"),
+            st.Page("pages/Futsal_Exercicios.py", title="Exercicios", url_path="futsal-exercicios"),
             st.Page("pages/Futsal_Referenciais.py", title="Referenciais", url_path="futsal-referenciais"),
             st.Page("pages/Futsal_Comparacao_Perfis.py", title="Comparacao de Perfis", url_path="futsal-comparacao-perfis"),
         ],
