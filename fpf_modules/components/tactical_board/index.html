@@ -1,0 +1,367 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        font-family: Arial, sans-serif;
+        background: transparent;
+        overflow: hidden;
+      }
+      .app {
+        display: grid;
+        grid-template-columns: 92px 1fr;
+        gap: 14px;
+        align-items: start;
+      }
+      .palette {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .tool {
+        height: 56px;
+        border-radius: 14px;
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: grab;
+        user-select: none;
+        font-size: 30px;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+      }
+      .tool:active {
+        cursor: grabbing;
+      }
+      .board-wrap {
+        position: relative;
+        width: 100%;
+      }
+      .board {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 900 / 560;
+        border-radius: 14px;
+        overflow: hidden;
+        background: #d4d4d8;
+        border: 1px solid #cbd5e1;
+      }
+      .board img.field {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        pointer-events: none;
+        user-select: none;
+      }
+      .layer {
+        position: absolute;
+        inset: 0;
+      }
+      .piece {
+        position: absolute;
+        transform: translate(-50%, -50%);
+        cursor: grab;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #111827;
+        font-weight: 700;
+        user-select: none;
+      }
+      .piece.selected {
+        outline: 3px solid #22c55e;
+        outline-offset: 2px;
+      }
+      .piece.jogador, .piece.jogadorb, .piece.bola {
+        border-radius: 999px;
+      }
+      .piece.bola {
+        background: #fff !important;
+        border: 2px solid #111827;
+      }
+      .piece.cone {
+        clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
+      }
+      .piece.sinalizador {
+        transform: translate(-50%, -50%) rotate(45deg);
+      }
+      .piece.baliza {
+        background: rgba(255,255,255,0.05) !important;
+        border: 3px solid currentColor;
+        border-radius: 4px;
+      }
+      .piece .label {
+        position: absolute;
+        top: 100%;
+        margin-top: 4px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #111827;
+        white-space: nowrap;
+        text-shadow: 0 1px 2px rgba(255,255,255,0.8);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <div class="palette" id="palette"></div>
+      <div class="board-wrap">
+        <div class="board" id="board">
+          <img class="field" id="field" alt="field" />
+          <div class="layer" id="layer"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const Streamlit = {
+        RENDER_EVENT: "streamlit:render",
+        _renderHandler: null,
+        setComponentReady() {
+          window.parent.postMessage(
+            { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+            "*"
+          );
+        },
+        setFrameHeight(height) {
+          window.parent.postMessage(
+            { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height || document.body.scrollHeight },
+            "*"
+          );
+        },
+        setComponentValue(value) {
+          window.parent.postMessage(
+            { isStreamlitMessage: true, type: "streamlit:setComponentValue", value, dataType: "json" },
+            "*"
+          );
+        },
+        events: {
+          addEventListener(type, handler) {
+            if (type === "streamlit:render") {
+              Streamlit._renderHandler = handler;
+            }
+          },
+        },
+      };
+
+      const paletteItems = [
+        { type: "Jogador", symbol: "●", className: "jogador", color: "#ef4444" },
+        { type: "Jogador B", symbol: "●", className: "jogadorb", color: "#2563eb" },
+        { type: "Bola", symbol: "◌", className: "bola", color: "#111827" },
+        { type: "Cone", symbol: "▲", className: "cone", color: "#f97316" },
+        { type: "Sinalizador", symbol: "◆", className: "sinalizador", color: "#eab308" },
+        { type: "Baliza", symbol: "▭", className: "baliza", color: "#ffffff" },
+      ];
+
+      let state = {
+        objects: [],
+        selected_id: null,
+        activeColor: "#ef4444",
+        activeSize: 18,
+        activeLabel: "",
+      };
+
+      const paletteEl = document.getElementById("palette");
+      const boardEl = document.getElementById("board");
+      const fieldEl = document.getElementById("field");
+      const layerEl = document.getElementById("layer");
+
+      function uid() {
+        return Math.random().toString(16).slice(2) + Date.now().toString(16);
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function emit() {
+        Streamlit.setComponentValue({
+          objects: state.objects,
+          selected_id: state.selected_id,
+        });
+      }
+
+      function pieceClass(type) {
+        return type.toLowerCase().replace(/\s+/g, "");
+      }
+
+      function defaultColorFor(type) {
+        const found = paletteItems.find((item) => item.type === type);
+        return found ? found.color : "#ef4444";
+      }
+
+      function renderPalette() {
+        paletteEl.innerHTML = "";
+        paletteItems.forEach((item) => {
+          const node = document.createElement("div");
+          node.className = "tool";
+          node.textContent = item.symbol;
+          node.title = item.type;
+          node.draggable = true;
+          node.dataset.type = item.type;
+          node.addEventListener("dragstart", (event) => {
+            event.dataTransfer.setData("text/plain", item.type);
+          });
+          paletteEl.appendChild(node);
+        });
+      }
+
+      function renderObjects() {
+        layerEl.innerHTML = "";
+        state.objects.forEach((obj) => {
+          const node = document.createElement("div");
+          node.className = `piece ${pieceClass(obj.type)}${state.selected_id === obj.id ? " selected" : ""}`;
+          node.dataset.id = obj.id;
+          const size = Number(obj.size || 18);
+          let width = size * 2;
+          let height = size * 2;
+          if (obj.type === "Baliza") {
+            width = size * 3;
+            height = size * 1.5;
+          } else if (obj.type === "Cone") {
+            width = size * 2;
+            height = size * 2;
+          } else if (obj.type === "Sinalizador") {
+            width = size * 1.7;
+            height = size * 1.7;
+          } else if (obj.type === "Bola") {
+            width = size * 1.35;
+            height = size * 1.35;
+          }
+          node.style.left = `${obj.x_pct}%`;
+          node.style.top = `${obj.y_pct}%`;
+          node.style.width = `${width}px`;
+          node.style.height = `${height}px`;
+          node.style.color = obj.color || defaultColorFor(obj.type);
+          if (obj.type !== "Baliza") {
+            node.style.background = obj.color || defaultColorFor(obj.type);
+          }
+          if (obj.type === "Bola") {
+            node.style.background = "#ffffff";
+          }
+          node.addEventListener("pointerdown", startMove);
+          node.addEventListener("click", (event) => {
+            event.stopPropagation();
+            state.selected_id = obj.id;
+            renderObjects();
+            emit();
+          });
+          if (obj.label) {
+            const label = document.createElement("div");
+            label.className = "label";
+            label.textContent = obj.label;
+            node.appendChild(label);
+          }
+          layerEl.appendChild(node);
+        });
+      }
+
+      function boardPositionFromEvent(event) {
+        const rect = boardEl.getBoundingClientRect();
+        const x = clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100);
+        const y = clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100);
+        return { x_pct: Number(x.toFixed(2)), y_pct: Number(y.toFixed(2)) };
+      }
+
+      function startMove(event) {
+        event.preventDefault();
+        event.stopPropagation();
+        const node = event.currentTarget;
+        const id = node.dataset.id;
+        state.selected_id = id;
+        renderObjects();
+        emit();
+
+        function onMove(moveEvent) {
+          const pos = boardPositionFromEvent(moveEvent);
+          state.objects = state.objects.map((obj) => obj.id === id ? { ...obj, ...pos } : obj);
+          renderObjects();
+        }
+
+        function onUp() {
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("pointerup", onUp);
+          emit();
+        }
+
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp);
+      }
+
+      boardEl.addEventListener("dragover", (event) => {
+        event.preventDefault();
+      });
+
+      boardEl.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const type = event.dataTransfer.getData("text/plain");
+        if (!type) return;
+        const pos = boardPositionFromEvent(event);
+        const created = {
+          id: uid(),
+          type,
+          color: state.activeColor || defaultColorFor(type),
+          size: Number(state.activeSize || 18),
+          label: state.activeLabel || "",
+          ...pos,
+        };
+        state.objects = [...state.objects, created];
+        state.selected_id = created.id;
+        renderObjects();
+        emit();
+      });
+
+      boardEl.addEventListener("click", () => {
+        state.selected_id = null;
+        renderObjects();
+        emit();
+      });
+
+      function syncFromArgs(args) {
+        state.activeColor = args.activeColor || "#ef4444";
+        state.activeSize = Number(args.activeSize || 18);
+        state.activeLabel = args.activeLabel || "";
+        fieldEl.src = args.fieldImageUrl || "";
+        const incoming = Array.isArray(args.objects) ? args.objects : [];
+        state.objects = incoming.map((obj) => ({
+          id: obj.id || obj.object_id || uid(),
+          type: obj.type || obj.tipo || "Jogador",
+          color: obj.color || obj.cor || defaultColorFor(obj.type || obj.tipo || "Jogador"),
+          size: Number(obj.size || obj.tamanho || 18),
+          label: obj.label || obj.rotulo || "",
+          x_pct: Number(obj.x_pct ?? 50),
+          y_pct: Number(obj.y_pct ?? 50),
+        }));
+        if (!state.objects.some((obj) => obj.id === state.selected_id)) {
+          state.selected_id = null;
+        }
+        renderObjects();
+      }
+
+      function onRender(event) {
+        const args = event.detail.args || {};
+        syncFromArgs(args);
+        const height = Number(args.height || 620);
+        Streamlit.setFrameHeight(height);
+      }
+
+      window.addEventListener("message", (event) => {
+        if (!event.data || event.data.type !== "streamlit:render") return;
+        if (Streamlit._renderHandler) {
+          Streamlit._renderHandler({ detail: event.data });
+        }
+      });
+
+      Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+      Streamlit.setComponentReady();
+      renderPalette();
+      renderObjects();
+    </script>
+  </body>
+</html>
