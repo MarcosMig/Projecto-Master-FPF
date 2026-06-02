@@ -32,8 +32,44 @@ CATEGORY_OPTIONS = [
     "Competicao",
 ]
 
+COLOR_SWATCH_OPTIONS = [
+    ("#ef4444", "🟥"),
+    ("#2563eb", "🟦"),
+    ("#eab308", "🟨"),
+    ("#22c55e", "🟩"),
+    ("#111827", "⬛"),
+    ("#ffffff", "⬜"),
+]
+
+
+def _swatch_symbol(color_value: str) -> str:
+    normalized = _clean_text(color_value).lower() or "#ef4444"
+    for color, symbol in COLOR_SWATCH_OPTIONS:
+        if color.lower() == normalized:
+            return symbol
+    return "⬛"
+
+
+def _set_swatch_button_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stButton"] button[kind="secondary"] {
+            min-height: 56px;
+            border-radius: 14px;
+        }
+        div[data-testid="stButton"][data-testid*="exercise_color_toggle"],
+        div[data-testid="stButton"][data-testid*="selected_color_toggle"] {
+            width: 64px;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 CANVAS_WIDTH = 900
 CANVAS_HEIGHT = 560
+DEFAULT_OBJECT_SIZE = 22
 FIELD_IMAGE_PATH = Path(__file__).resolve().parents[1] / "assets" / "futsal" / "FtsField.png"
 
 def _clean_text(value: Any) -> str:
@@ -108,6 +144,12 @@ def _rows_to_component_objects(objects_df: pd.DataFrame) -> list[dict[str, Any]]
     return objects
 
 
+def _next_object_id() -> str:
+    import uuid
+
+    return uuid.uuid4().hex
+
+
 def _load_exercise_state(selected_exercise_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     exercises_df = read_exercises()
     exercise_row = exercises_df[exercises_df["exercise_id"].astype(str) == str(selected_exercise_id)].head(1)
@@ -137,6 +179,7 @@ def _render_saved_exercises() -> None:
 
 st.title("Exercicios")
 st.caption("Campo base fixo com elementos desenhados por cima.")
+_set_swatch_button_styles()
 
 exercises_df = read_exercises()
 exercise_options = [("", "Novo exercicio")]
@@ -157,9 +200,11 @@ if loaded_marker != selected_exercise_id:
     st.session_state["exercise_loaded_id"] = selected_exercise_id
     st.session_state["exercise_form_data"] = loaded_data
     st.session_state["exercise_board_objects"] = loaded_canvas
+    st.session_state["exercise_board_revision"] = int(st.session_state.get("exercise_board_revision", 0)) + 1
 
 exercise_data = st.session_state.get("exercise_form_data", {})
 board_objects = st.session_state.get("exercise_board_objects", [])
+board_revision = int(st.session_state.get("exercise_board_revision", 0))
 
 meta_cols = st.columns([1.4, 1.1, 1.1], gap="small")
 with meta_cols[0]:
@@ -180,34 +225,128 @@ with desc_cols[0]:
 with desc_cols[1]:
     observacoes = st.text_area("Observacoes", value=_clean_text(exercise_data.get("observacoes")), height=90, key=f"exercise_obs_{selected_exercise_id or 'new'}")
 
-control_cols = st.columns([0.8, 0.8, 2.2], gap="small")
-element_color = control_cols[0].color_picker("Cor", value="#ef4444", key=f"exercise_color_{selected_exercise_id or 'new'}")
-element_size = control_cols[1].number_input("Tamanho", min_value=8, max_value=48, value=18, step=1, key=f"exercise_size_{selected_exercise_id or 'new'}")
-element_label = control_cols[2].text_input("Rotulo", value="", key=f"exercise_label_{selected_exercise_id or 'new'}")
+palette_mode = st.radio(
+    "Separador",
+    options=["Objetos", "Formas"],
+    horizontal=True,
+    key=f"exercise_palette_mode_{selected_exercise_id or 'new'}",
+)
+
+default_color = st.session_state.get(f"exercise_color_value_{selected_exercise_id or 'new'}", "#ef4444")
+
+control_cols = st.columns([0.22, 0.55, 3.23], gap="small")
+with control_cols[0]:
+    st.caption("Cor")
+    color_palette_state_key = f"exercise_color_palette_open_{selected_exercise_id or 'new'}"
+    if st.button(_swatch_symbol(default_color), key=f"exercise_color_toggle_{selected_exercise_id or 'new'}", use_container_width=False):
+        st.session_state[color_palette_state_key] = not st.session_state.get(color_palette_state_key, False)
+        st.rerun()
+    if st.session_state.get(color_palette_state_key, False):
+        color_pick_cols = st.columns(len(COLOR_SWATCH_OPTIONS), gap="small")
+        for idx, (color_value, color_symbol) in enumerate(COLOR_SWATCH_OPTIONS):
+            if color_pick_cols[idx].button(color_symbol, key=f"exercise_color_pick_{selected_exercise_id or 'new'}_{idx}", use_container_width=True):
+                st.session_state[f"exercise_color_value_{selected_exercise_id or 'new'}"] = color_value
+                st.session_state[color_palette_state_key] = False
+                st.rerun()
+element_color = st.session_state.get(f"exercise_color_value_{selected_exercise_id or 'new'}", "#ef4444")
+element_label = control_cols[1].text_input("Rotulo", value="", key=f"exercise_label_{selected_exercise_id or 'new'}")
 st.caption("Arrasta o objeto da lateral para o campo. Depois podes arrastar os objetos dentro do proprio campo.")
 
 board_state = tactical_board(
     field_image_url=_field_image_url(),
     objects=board_objects,
     active_color=element_color,
-    active_size=int(element_size),
+    active_size=DEFAULT_OBJECT_SIZE,
     active_label=_clean_text(element_label),
+    exercise_id=selected_exercise_id or "new",
+    objects_revision=board_revision,
+    palette_mode="shapes" if palette_mode == "Formas" else "objects",
     height=650,
     key=f"tactical_board_{selected_exercise_id or 'new'}",
 )
 if board_state and isinstance(board_state, dict):
     st.session_state["exercise_board_objects"] = board_state.get("objects", board_objects)
     board_objects = st.session_state["exercise_board_objects"]
+    st.session_state["exercise_selected_object_id"] = board_state.get("selected_id")
 
-action_cols = st.columns([1.1, 1.1, 1.1, 3.7], gap="small")
+selected_object_id = _clean_text(st.session_state.get("exercise_selected_object_id"))
+selected_object = next((obj for obj in board_objects if _clean_text(obj.get("id")) == selected_object_id), None)
+
+if selected_object:
+    st.markdown("### Objeto selecionado")
+    selected_cols = st.columns([1.15, 0.55, 0.22], gap="small")
+    selected_cols[0].text_input(
+        "Tipo",
+        value=_clean_text(selected_object.get("type")),
+        disabled=True,
+        key=f"selected_type_{selected_exercise_id or 'new'}",
+    )
+    selected_label = selected_cols[1].text_input(
+        "Rotulo",
+        value=_clean_text(selected_object.get("label")),
+        key=f"selected_label_{selected_exercise_id or 'new'}",
+    )
+    selected_color_key = f"selected_color_value_{selected_exercise_id or 'new'}"
+    current_selected_color = _clean_text(selected_object.get("color")) or "#ef4444"
+    if st.session_state.get(selected_color_key) != current_selected_color:
+        st.session_state[selected_color_key] = current_selected_color
+    with selected_cols[2]:
+        st.caption("Cor")
+        selected_palette_state_key = f"selected_color_palette_open_{selected_exercise_id or 'new'}"
+        if st.button(_swatch_symbol(st.session_state[selected_color_key]), key=f"selected_color_toggle_{selected_exercise_id or 'new'}", use_container_width=False):
+            st.session_state[selected_palette_state_key] = not st.session_state.get(selected_palette_state_key, False)
+            st.rerun()
+        if st.session_state.get(selected_palette_state_key, False):
+            selected_pick_cols = st.columns(len(COLOR_SWATCH_OPTIONS), gap="small")
+            for idx, (color_value, color_symbol) in enumerate(COLOR_SWATCH_OPTIONS):
+                if selected_pick_cols[idx].button(color_symbol, key=f"selected_color_pick_{selected_exercise_id or 'new'}_{idx}", use_container_width=True):
+                    st.session_state[selected_color_key] = color_value
+                    st.session_state[selected_palette_state_key] = False
+                    st.rerun()
+    selected_color = st.session_state[selected_color_key]
+    if st.button("Atualizar objeto selecionado", use_container_width=False, key=f"update_selected_{selected_exercise_id or 'new'}"):
+        updated_objects = []
+        for obj in board_objects:
+            if _clean_text(obj.get("id")) == selected_object_id:
+                updated = dict(obj)
+                updated["label"] = _clean_text(selected_label)
+                updated["color"] = selected_color
+                updated_objects.append(updated)
+            else:
+                updated_objects.append(obj)
+        st.session_state["exercise_board_objects"] = updated_objects
+        st.session_state["exercise_board_revision"] = int(st.session_state.get("exercise_board_revision", 0)) + 1
+        st.rerun()
+
+action_cols = st.columns([1.05, 1.05, 1.05, 1.05, 1.05, 2.75], gap="small")
 if action_cols[0].button("Desfazer ultimo", use_container_width=True):
     work = list(st.session_state.get("exercise_board_objects", []))
     st.session_state["exercise_board_objects"] = work[:-1]
+    st.session_state["exercise_board_revision"] = int(st.session_state.get("exercise_board_revision", 0)) + 1
     st.rerun()
 if action_cols[1].button("Limpar campo", use_container_width=True):
     st.session_state["exercise_board_objects"] = []
+    st.session_state["exercise_board_revision"] = int(st.session_state.get("exercise_board_revision", 0)) + 1
     st.rerun()
-if action_cols[2].button("Gravar exercicio", type="primary", use_container_width=True):
+if action_cols[2].button("Apagar selecionado", use_container_width=True, disabled=not selected_object_id):
+    current_objects = list(st.session_state.get("exercise_board_objects", []))
+    st.session_state["exercise_board_objects"] = [obj for obj in current_objects if _clean_text(obj.get("id")) != selected_object_id]
+    st.session_state["exercise_selected_object_id"] = ""
+    st.session_state["exercise_board_revision"] = int(st.session_state.get("exercise_board_revision", 0)) + 1
+    st.rerun()
+if action_cols[3].button("Duplicar selecionado", use_container_width=True, disabled=not selected_object_id):
+    current_objects = list(st.session_state.get("exercise_board_objects", []))
+    duplicate_source = next((obj for obj in current_objects if _clean_text(obj.get("id")) == selected_object_id), None)
+    if duplicate_source:
+        duplicated = dict(duplicate_source)
+        duplicated["id"] = _next_object_id()
+        duplicated["x_pct"] = min(98.0, float(duplicated.get("x_pct", 50)) + 4.0)
+        duplicated["y_pct"] = min(98.0, float(duplicated.get("y_pct", 50)) + 4.0)
+        st.session_state["exercise_board_objects"] = [*current_objects, duplicated]
+        st.session_state["exercise_selected_object_id"] = duplicated["id"]
+        st.session_state["exercise_board_revision"] = int(st.session_state.get("exercise_board_revision", 0)) + 1
+        st.rerun()
+if action_cols[4].button("Gravar exercicio", type="primary", use_container_width=True):
     try:
         if not _clean_text(titulo):
             raise RuntimeError("O titulo do exercicio e obrigatorio.")
@@ -233,11 +372,12 @@ if action_cols[2].button("Gravar exercicio", type="primary", use_container_width
         st.session_state["exercise_editor_success"] = f"Exercicio gravado com sucesso. ID: {exercise_id}"
         st.session_state["exercise_loaded_id"] = None
         st.rerun()
-if selected_exercise_id and action_cols[3].button("Eliminar exercicio", use_container_width=True):
+if selected_exercise_id and action_cols[5].button("Eliminar exercicio", use_container_width=True):
     delete_exercise(selected_exercise_id)
     st.session_state["exercise_board_objects"] = []
     st.session_state["exercise_loaded_id"] = None
     st.session_state["exercise_form_data"] = {}
+    st.session_state["exercise_board_revision"] = int(st.session_state.get("exercise_board_revision", 0)) + 1
     st.session_state["exercise_editor_success"] = "Exercicio eliminado com sucesso."
     st.rerun()
 
