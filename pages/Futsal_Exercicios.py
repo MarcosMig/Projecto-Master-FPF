@@ -32,13 +32,65 @@ CATEGORY_OPTIONS = [
     "Competicao",
 ]
 
+ESPACO_OPTIONS = [
+    "",
+    "Campo Inteiro",
+    "Meio Campo",
+    "3/4 Campo",
+    "Campo reduzido",
+    "Fora de Campo",
+]
+
+FORMA_OPTIONS = [
+    "",
+    "Fundamental",
+    "Condicionada",
+    "Competitiva",
+    "Analitica",
+    "Integrada",
+]
+
+CAPACIDADE_MOTORA_OPTIONS = [
+    "",
+    "Forca",
+    "Forca Resistente",
+    "Velocidade",
+    "Resistencia",
+    "Resistencia Especifica",
+    "Coordenacao",
+    "Mobilidade",
+]
+
+INTENSIDADE_OPTIONS = [
+    "",
+    "Baixa",
+    "Media",
+    "Alta",
+    "Maxima",
+]
+
+RECUPERACAO_OPTIONS = [
+    "",
+    "Completa",
+    "Incompleta",
+    "Ativa",
+    "Passiva",
+]
+
+VOLUME_OPTIONS = [
+    "",
+    "Baixo",
+    "Medio",
+    "Alto",
+]
+
 COLOR_SWATCH_OPTIONS = [
     ("#ef4444", "🟥"),
     ("#2563eb", "🟦"),
     ("#eab308", "🟨"),
+    ("#f97316", "🟧"),
     ("#22c55e", "🟩"),
-    ("#111827", "⬛"),
-    ("#ffffff", "⬜"),
+    ("#ff2d2d", "🟥"),
 ]
 
 
@@ -58,9 +110,11 @@ def _set_swatch_button_styles() -> None:
             min-height: 56px;
             border-radius: 14px;
         }
-        div[data-testid="stButton"][data-testid*="exercise_color_toggle"],
-        div[data-testid="stButton"][data-testid*="selected_color_toggle"] {
-            width: 64px;
+        div[data-testid="stButton"] button[kind="secondary"][id*="exercise_color_toggle"],
+        div[data-testid="stButton"] button[kind="secondary"][id*="selected_color_toggle"] {
+            width: 84px;
+            min-width: 84px;
+            max-width: 84px;
         }
         </style>
         """,
@@ -161,23 +215,12 @@ def _load_exercise_state(selected_exercise_id: str) -> tuple[dict[str, Any], lis
     return exercise_data, _rows_to_component_objects(exercise_objects)
 
 
-def _render_saved_exercises() -> None:
-    exercises_df = read_exercises()
-    if exercises_df.empty:
-        st.info("Ainda nao existem exercicios guardados.")
-        return
-    objects_df = read_exercise_objects()
-    work_df = exercises_df.copy()
-    work_df["Titulo"] = work_df["titulo"].map(_clean_text)
-    work_df["Categoria"] = work_df["categoria"].map(_clean_text)
-    work_df["Objetivo"] = work_df["objetivo"].map(_clean_text)
-    work_df["Elementos"] = work_df["exercise_id"].map(
-        lambda exercise_id: int((objects_df["exercise_id"].astype(str) == str(exercise_id)).sum()) if not objects_df.empty else 0
-    )
-    st.dataframe(work_df[["Titulo", "Categoria", "Objetivo", "Elementos"]], use_container_width=True, hide_index=True, key="exercise_saved_list")
+def _option_index(options: list[str], value: Any) -> int:
+    cleaned = _clean_text(value)
+    return options.index(cleaned) if cleaned in options else 0
 
 
-st.title("Exercicios")
+st.title("Criar Exercicio")
 st.caption("Campo base fixo com elementos desenhados por cima.")
 _set_swatch_button_styles()
 
@@ -206,51 +249,122 @@ exercise_data = st.session_state.get("exercise_form_data", {})
 board_objects = st.session_state.get("exercise_board_objects", [])
 board_revision = int(st.session_state.get("exercise_board_revision", 0))
 
-meta_cols = st.columns([1.4, 1.1, 1.1], gap="small")
-with meta_cols[0]:
-    titulo = st.text_input("Titulo", value=_clean_text(exercise_data.get("titulo")), key=f"exercise_title_{selected_exercise_id or 'new'}")
-with meta_cols[1]:
+head_row_1 = st.columns([1.25, 1], gap="small")
+with head_row_1[0]:
+    titulo = st.text_input("Titulo do Exercicio", value=_clean_text(exercise_data.get("titulo")), key=f"exercise_title_{selected_exercise_id or 'new'}")
+with head_row_1[1]:
+    objetivo = st.text_input("Objetivo", value=_clean_text(exercise_data.get("objetivo")), key=f"exercise_goal_{selected_exercise_id or 'new'}")
+
+head_row_2 = st.columns([1, 1], gap="small")
+with head_row_2[0]:
+    contexto = st.text_input("Contexto", value=_clean_text(exercise_data.get("contexto")), key=f"exercise_context_{selected_exercise_id or 'new'}")
+with head_row_2[1]:
+    estrutura_funcional = st.text_input(
+        "Estrutura Funcional",
+        value=_clean_text(exercise_data.get("estrutura_funcional")),
+        key=f"exercise_structure_{selected_exercise_id or 'new'}",
+    )
+
+head_row_3 = st.columns([1, 0.8, 0.9, 1], gap="small")
+with head_row_3[0]:
+    espaco = st.selectbox(
+        "Espaco",
+        options=ESPACO_OPTIONS,
+        index=_option_index(ESPACO_OPTIONS, exercise_data.get("espaco")),
+        key=f"exercise_space_{selected_exercise_id or 'new'}",
+    )
+with head_row_3[1]:
+    numero_jogadores = st.text_input(
+        "Numero de Jogadores",
+        value=_clean_text(exercise_data.get("numero_jogadores")),
+        key=f"exercise_players_{selected_exercise_id or 'new'}",
+    )
+with head_row_3[2]:
+    forma = st.selectbox(
+        "Forma",
+        options=FORMA_OPTIONS,
+        index=_option_index(FORMA_OPTIONS, exercise_data.get("forma")),
+        key=f"exercise_shape_{selected_exercise_id or 'new'}",
+    )
+with head_row_3[3]:
     categoria = st.selectbox(
         "Categoria",
         options=CATEGORY_OPTIONS,
-        index=CATEGORY_OPTIONS.index(_clean_text(exercise_data.get("categoria"))) if _clean_text(exercise_data.get("categoria")) in CATEGORY_OPTIONS else 0,
+        index=_option_index(CATEGORY_OPTIONS, exercise_data.get("categoria")),
         key=f"exercise_category_{selected_exercise_id or 'new'}",
     )
-with meta_cols[2]:
-    objetivo = st.text_input("Objetivo", value=_clean_text(exercise_data.get("objetivo")), key=f"exercise_goal_{selected_exercise_id or 'new'}")
 
-desc_cols = st.columns([1.3, 1], gap="small")
+head_row_4 = st.columns([1, 0.8, 0.8], gap="small")
+with head_row_4[0]:
+    capacidade_motora = st.selectbox(
+        "Capacidade Motora",
+        options=CAPACIDADE_MOTORA_OPTIONS,
+        index=_option_index(CAPACIDADE_MOTORA_OPTIONS, exercise_data.get("capacidade_motora")),
+        key=f"exercise_motor_{selected_exercise_id or 'new'}",
+    )
+with head_row_4[1]:
+    duracao = st.text_input("Duracao", value=_clean_text(exercise_data.get("duracao")), key=f"exercise_duration_{selected_exercise_id or 'new'}")
+with head_row_4[2]:
+    intensidade = st.selectbox(
+        "Intensidade",
+        options=INTENSIDADE_OPTIONS,
+        index=_option_index(INTENSIDADE_OPTIONS, exercise_data.get("intensidade")),
+        key=f"exercise_intensity_{selected_exercise_id or 'new'}",
+    )
+
+pedagogic_cols = st.columns(3, gap="small")
+with pedagogic_cols[0]:
+    condicionantes = st.text_area(
+        "Condicionantes",
+        value=_clean_text(exercise_data.get("condicionantes")),
+        height=90,
+        key=f"exercise_constraints_{selected_exercise_id or 'new'}",
+    )
+with pedagogic_cols[1]:
+    comportamentos_ofensivos = st.text_area(
+        "Comportamentos Ofensivos",
+        value=_clean_text(exercise_data.get("comportamentos_ofensivos")),
+        height=90,
+        key=f"exercise_offensive_{selected_exercise_id or 'new'}",
+    )
+with pedagogic_cols[2]:
+    comportamentos_defensivos = st.text_area(
+        "Comportamentos Defensivos",
+        value=_clean_text(exercise_data.get("comportamentos_defensivos")),
+        height=90,
+        key=f"exercise_defensive_{selected_exercise_id or 'new'}",
+    )
+
+load_cols = st.columns(4, gap="small")
+with load_cols[0]:
+    frequencia = st.text_input("Frequencia", value=_clean_text(exercise_data.get("frequencia")), key=f"exercise_frequency_{selected_exercise_id or 'new'}")
+with load_cols[1]:
+    recuperacao = st.selectbox(
+        "Recuperacao",
+        options=RECUPERACAO_OPTIONS,
+        index=_option_index(RECUPERACAO_OPTIONS, exercise_data.get("recuperacao")),
+        key=f"exercise_recovery_{selected_exercise_id or 'new'}",
+    )
+with load_cols[2]:
+    densidade = st.text_input("Densidade", value=_clean_text(exercise_data.get("densidade")), key=f"exercise_density_{selected_exercise_id or 'new'}")
+with load_cols[3]:
+    volume = st.selectbox(
+        "Volume",
+        options=VOLUME_OPTIONS,
+        index=_option_index(VOLUME_OPTIONS, exercise_data.get("volume")),
+        key=f"exercise_volume_{selected_exercise_id or 'new'}",
+    )
+
+desc_cols = st.columns([1.4, 1], gap="small")
 with desc_cols[0]:
-    descricao = st.text_area("Descricao", value=_clean_text(exercise_data.get("descricao")), height=90, key=f"exercise_desc_{selected_exercise_id or 'new'}")
+    descricao = st.text_area("Descricao do Exercicio", value=_clean_text(exercise_data.get("descricao")), height=100, key=f"exercise_desc_{selected_exercise_id or 'new'}")
 with desc_cols[1]:
-    observacoes = st.text_area("Observacoes", value=_clean_text(exercise_data.get("observacoes")), height=90, key=f"exercise_obs_{selected_exercise_id or 'new'}")
+    observacoes = st.text_area("Observacoes", value=_clean_text(exercise_data.get("observacoes")), height=100, key=f"exercise_obs_{selected_exercise_id or 'new'}")
 
-palette_mode = st.radio(
-    "Separador",
-    options=["Objetos", "Formas"],
-    horizontal=True,
-    key=f"exercise_palette_mode_{selected_exercise_id or 'new'}",
-)
-
-default_color = st.session_state.get(f"exercise_color_value_{selected_exercise_id or 'new'}", "#ef4444")
-
-control_cols = st.columns([0.22, 0.55, 3.23], gap="small")
-with control_cols[0]:
-    st.caption("Cor")
-    color_palette_state_key = f"exercise_color_palette_open_{selected_exercise_id or 'new'}"
-    if st.button(_swatch_symbol(default_color), key=f"exercise_color_toggle_{selected_exercise_id or 'new'}", use_container_width=False):
-        st.session_state[color_palette_state_key] = not st.session_state.get(color_palette_state_key, False)
-        st.rerun()
-    if st.session_state.get(color_palette_state_key, False):
-        color_pick_cols = st.columns(len(COLOR_SWATCH_OPTIONS), gap="small")
-        for idx, (color_value, color_symbol) in enumerate(COLOR_SWATCH_OPTIONS):
-            if color_pick_cols[idx].button(color_symbol, key=f"exercise_color_pick_{selected_exercise_id or 'new'}_{idx}", use_container_width=True):
-                st.session_state[f"exercise_color_value_{selected_exercise_id or 'new'}"] = color_value
-                st.session_state[color_palette_state_key] = False
-                st.rerun()
-element_color = st.session_state.get(f"exercise_color_value_{selected_exercise_id or 'new'}", "#ef4444")
-element_label = control_cols[1].text_input("Rotulo", value="", key=f"exercise_label_{selected_exercise_id or 'new'}")
 st.caption("Arrasta o objeto da lateral para o campo. Depois podes arrastar os objetos dentro do proprio campo.")
+
+element_label = ""
+element_color = "#ef4444"
 
 board_state = tactical_board(
     field_image_url=_field_image_url(),
@@ -260,7 +374,6 @@ board_state = tactical_board(
     active_label=_clean_text(element_label),
     exercise_id=selected_exercise_id or "new",
     objects_revision=board_revision,
-    palette_mode="shapes" if palette_mode == "Formas" else "objects",
     height=650,
     key=f"tactical_board_{selected_exercise_id or 'new'}",
 )
@@ -271,52 +384,6 @@ if board_state and isinstance(board_state, dict):
 
 selected_object_id = _clean_text(st.session_state.get("exercise_selected_object_id"))
 selected_object = next((obj for obj in board_objects if _clean_text(obj.get("id")) == selected_object_id), None)
-
-if selected_object:
-    st.markdown("### Objeto selecionado")
-    selected_cols = st.columns([1.15, 0.55, 0.22], gap="small")
-    selected_cols[0].text_input(
-        "Tipo",
-        value=_clean_text(selected_object.get("type")),
-        disabled=True,
-        key=f"selected_type_{selected_exercise_id or 'new'}",
-    )
-    selected_label = selected_cols[1].text_input(
-        "Rotulo",
-        value=_clean_text(selected_object.get("label")),
-        key=f"selected_label_{selected_exercise_id or 'new'}",
-    )
-    selected_color_key = f"selected_color_value_{selected_exercise_id or 'new'}"
-    current_selected_color = _clean_text(selected_object.get("color")) or "#ef4444"
-    if st.session_state.get(selected_color_key) != current_selected_color:
-        st.session_state[selected_color_key] = current_selected_color
-    with selected_cols[2]:
-        st.caption("Cor")
-        selected_palette_state_key = f"selected_color_palette_open_{selected_exercise_id or 'new'}"
-        if st.button(_swatch_symbol(st.session_state[selected_color_key]), key=f"selected_color_toggle_{selected_exercise_id or 'new'}", use_container_width=False):
-            st.session_state[selected_palette_state_key] = not st.session_state.get(selected_palette_state_key, False)
-            st.rerun()
-        if st.session_state.get(selected_palette_state_key, False):
-            selected_pick_cols = st.columns(len(COLOR_SWATCH_OPTIONS), gap="small")
-            for idx, (color_value, color_symbol) in enumerate(COLOR_SWATCH_OPTIONS):
-                if selected_pick_cols[idx].button(color_symbol, key=f"selected_color_pick_{selected_exercise_id or 'new'}_{idx}", use_container_width=True):
-                    st.session_state[selected_color_key] = color_value
-                    st.session_state[selected_palette_state_key] = False
-                    st.rerun()
-    selected_color = st.session_state[selected_color_key]
-    if st.button("Atualizar objeto selecionado", use_container_width=False, key=f"update_selected_{selected_exercise_id or 'new'}"):
-        updated_objects = []
-        for obj in board_objects:
-            if _clean_text(obj.get("id")) == selected_object_id:
-                updated = dict(obj)
-                updated["label"] = _clean_text(selected_label)
-                updated["color"] = selected_color
-                updated_objects.append(updated)
-            else:
-                updated_objects.append(obj)
-        st.session_state["exercise_board_objects"] = updated_objects
-        st.session_state["exercise_board_revision"] = int(st.session_state.get("exercise_board_revision", 0)) + 1
-        st.rerun()
 
 action_cols = st.columns([1.05, 1.05, 1.05, 1.05, 1.05, 2.75], gap="small")
 if action_cols[0].button("Desfazer ultimo", use_container_width=True):
@@ -357,12 +424,27 @@ if action_cols[4].button("Gravar exercicio", type="primary", use_container_width
         exercise_id = upsert_exercise(
             {
                 "exercise_id": selected_exercise_id,
-                "titulo": _clean_text(titulo),
-                "categoria": _clean_text(categoria),
-                "objetivo": _clean_text(objetivo),
-                "descricao": _clean_text(descricao),
-                "observacoes": _clean_text(observacoes),
-                "canvas_json": json.dumps({"objects": current_objects}),
+                  "titulo": _clean_text(titulo),
+                  "categoria": _clean_text(categoria),
+                  "objetivo": _clean_text(objetivo),
+                  "contexto": _clean_text(contexto),
+                  "estrutura_funcional": _clean_text(estrutura_funcional),
+                  "espaco": _clean_text(espaco),
+                  "numero_jogadores": _clean_text(numero_jogadores),
+                  "forma": _clean_text(forma),
+                  "capacidade_motora": _clean_text(capacidade_motora),
+                  "duracao": _clean_text(duracao),
+                  "intensidade": _clean_text(intensidade),
+                  "condicionantes": _clean_text(condicionantes),
+                  "comportamentos_ofensivos": _clean_text(comportamentos_ofensivos),
+                  "comportamentos_defensivos": _clean_text(comportamentos_defensivos),
+                  "frequencia": _clean_text(frequencia),
+                  "recuperacao": _clean_text(recuperacao),
+                  "densidade": _clean_text(densidade),
+                  "volume": _clean_text(volume),
+                  "descricao": _clean_text(descricao),
+                  "observacoes": _clean_text(observacoes),
+                  "canvas_json": json.dumps({"objects": current_objects}),
             },
             objects_df,
         )
@@ -384,6 +466,3 @@ if selected_exercise_id and action_cols[5].button("Eliminar exercicio", use_cont
 success_message = st.session_state.pop("exercise_editor_success", "")
 if success_message:
     st.success(success_message)
-
-st.markdown("### Biblioteca de exercicios")
-_render_saved_exercises()

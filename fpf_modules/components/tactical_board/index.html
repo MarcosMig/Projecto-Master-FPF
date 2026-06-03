@@ -21,6 +21,26 @@
         flex-direction: column;
         gap: 10px;
       }
+      .color-picker-panel {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 6px;
+      }
+      .color-popover {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        width: 144px;
+      }
+      .color-popover input {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 8px 10px;
+        font-size: 13px;
+        outline: none;
+      }
       .tool {
         height: 56px;
         border-radius: 14px;
@@ -36,6 +56,18 @@
       }
       .tool:active {
         cursor: grabbing;
+      }
+      .swatch-tool {
+        height: 40px;
+        border-radius: 10px;
+        border: 1px solid #cbd5e1;
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        user-select: none;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
       }
       .board {
         position: relative;
@@ -88,8 +120,28 @@
       .piece.cone {
         clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
       }
+      .piece.triangulo {
+        background: transparent !important;
+      }
       .piece.sinalizador {
         transform: translate(-50%, -50%) rotate(45deg);
+      }
+      .piece.circunferencia {
+        background: transparent !important;
+        border: 3px solid currentColor;
+        border-radius: 999px;
+      }
+      .piece.quadrado {
+        border-radius: 6px;
+      }
+      .piece-shape {
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+      }
+      .triangle-shape {
+        background: currentColor;
+        clip-path: polygon(50% 0%, 0% 100%, 100% 100%);
       }
       .piece.baliza {
         background: rgba(255, 255, 255, 0.08) !important;
@@ -111,11 +163,24 @@
       .piece.seta {
         background: transparent !important;
       }
+      .piece.seta-continua {
+        background: transparent !important;
+      }
+      .piece.seta-tracejada {
+        background: transparent !important;
+      }
       .line-body {
         width: 100%;
         height: 4px;
         border-radius: 999px;
         background: currentColor;
+      }
+      .line-body.dashed {
+        background: repeating-linear-gradient(
+          to right,
+          currentColor 0 12px,
+          transparent 12px 20px
+        );
       }
       .arrow-wrap {
         position: relative;
@@ -131,6 +196,13 @@
         transform: translateY(-50%);
         border-radius: 999px;
         background: currentColor;
+      }
+      .arrow-shaft.dashed {
+        background: repeating-linear-gradient(
+          to right,
+          currentColor 0 12px,
+          transparent 12px 20px
+        );
       }
       .arrow-head {
         position: absolute;
@@ -195,18 +267,12 @@
         },
       };
 
-      const objectPaletteItems = [
-        { type: "Jogador", symbol: "&#9679;", color: "#ef4444" },
-        { type: "Jogador B", symbol: "&#9679;", color: "#2563eb" },
-        { type: "Bola", symbol: "&#9711;", color: "#111827" },
-        { type: "Cone", symbol: "&#9650;", color: "#f97316" },
-        { type: "Sinalizador", symbol: "&#9670;", color: "#eab308" },
-        { type: "Baliza", symbol: "&#9645;", color: "#ffffff" },
-        { type: "Texto", symbol: "T", color: "#111827" },
-      ];
-      const shapePaletteItems = [
-        { type: "Linha", symbol: "&#9473;", color: "#111827" },
-        { type: "Seta", symbol: "&#8594;", color: "#111827" },
+      const paletteItems = [
+        { type: "Triangulo", symbol: "&#9650;", color: "#ef4444" },
+        { type: "Circunferencia", symbol: "&#9711;", color: "#2563eb" },
+        { type: "Quadrado", symbol: "&#9632;", color: "#111827" },
+        { type: "Seta continua", symbol: "&rarr;", color: "#111827" },
+        { type: "Seta tracejada", symbol: "&middot;&middot;&middot;&rarr;", color: "#111827" },
       ];
 
       let state = {
@@ -217,7 +283,7 @@
         activeLabel: "",
         exerciseId: "",
         objectsRevision: 0,
-        paletteMode: "objects",
+        colorPickerOpen: false,
       };
 
       const paletteEl = document.getElementById("palette");
@@ -238,7 +304,7 @@
       }
 
       function defaultColorFor(type) {
-        const found = [...objectPaletteItems, ...shapePaletteItems].find((item) => item.type === type);
+        const found = paletteItems.find((item) => item.type === type);
         return found ? found.color : "#ef4444";
       }
 
@@ -296,6 +362,12 @@
         if (type === "Seta") {
           return { width: Math.max(baseSize * 4.4, 82), height: Math.max(baseSize * 1.1, 22) };
         }
+        if (type === "Seta continua" || type === "Seta tracejada") {
+          return { width: Math.max(baseSize * 4.4, 82), height: Math.max(baseSize * 1.1, 22) };
+        }
+        if (type === "Triangulo" || type === "Circunferencia" || type === "Quadrado") {
+          return { width: baseSize * 2, height: baseSize * 2 };
+        }
         return { width: baseSize * 2, height: baseSize * 2 };
       }
 
@@ -306,13 +378,55 @@
         return { x_pct: Number(x.toFixed(2)), y_pct: Number(y.toFixed(2)) };
       }
 
-      function getActivePalette() {
-        return state.paletteMode === "shapes" ? shapePaletteItems : objectPaletteItems;
-      }
-
       function renderPalette() {
         paletteEl.innerHTML = "";
-        getActivePalette().forEach((item) => {
+        const colorToggle = document.createElement("div");
+        colorToggle.className = "tool";
+        colorToggle.title = "Cor";
+        colorToggle.innerHTML = `<span style="display:inline-block;width:22px;height:22px;border-radius:4px;background:${state.activeColor};border:1px solid rgba(15,23,42,0.15)"></span>`;
+        colorToggle.addEventListener("click", () => {
+          state.colorPickerOpen = !state.colorPickerOpen;
+          renderPalette();
+        });
+        paletteEl.appendChild(colorToggle);
+
+        if (state.colorPickerOpen) {
+          const popover = document.createElement("div");
+          popover.className = "color-popover";
+          const panel = document.createElement("div");
+          panel.className = "color-picker-panel";
+          const colorChoices = ["#ef4444", "#2563eb", "#eab308", "#f97316", "#22c55e", "#ff2d2d"];
+          colorChoices.forEach((color) => {
+            const swatch = document.createElement("div");
+            swatch.className = "swatch-tool";
+            swatch.innerHTML = `<span style="display:inline-block;width:20px;height:20px;border-radius:4px;background:${color};border:1px solid rgba(15,23,42,0.15)"></span>`;
+            swatch.title = color;
+            swatch.addEventListener("click", () => {
+              state.activeColor = color;
+              state.colorPickerOpen = false;
+              renderPalette();
+            });
+            panel.appendChild(swatch);
+          });
+          popover.appendChild(panel);
+
+          const labelInput = document.createElement("input");
+          labelInput.type = "text";
+          labelInput.placeholder = "Rotulo";
+          labelInput.maxLength = 5;
+          labelInput.value = state.activeLabel || "";
+          labelInput.addEventListener("input", (event) => {
+            state.activeLabel = (event.target.value || "").slice(0, 5);
+            if (event.target.value !== state.activeLabel) {
+              event.target.value = state.activeLabel;
+            }
+          });
+          popover.appendChild(labelInput);
+
+          paletteEl.appendChild(popover);
+        }
+
+        paletteItems.forEach((item) => {
           const node = document.createElement("div");
           node.className = "tool";
           node.innerHTML = item.symbol;
@@ -343,6 +457,12 @@
           if (obj.type !== "Baliza") {
             node.style.background = obj.type === "Bola" ? "#ffffff" : (obj.color || defaultColorFor(obj.type));
           }
+          if (obj.type === "Triangulo") {
+            node.style.background = "transparent";
+            const triangleShape = document.createElement("div");
+            triangleShape.className = "piece-shape triangle-shape";
+            node.appendChild(triangleShape);
+          }
           if (obj.type === "Texto") {
             node.style.background = "transparent";
             node.textContent = obj.label || "T";
@@ -352,11 +472,14 @@
             lineBody.className = "line-body";
             node.appendChild(lineBody);
           }
-          if (obj.type === "Seta") {
+          if (obj.type === "Seta" || obj.type === "Seta continua" || obj.type === "Seta tracejada") {
             const arrowWrap = document.createElement("div");
             arrowWrap.className = "arrow-wrap";
             const shaft = document.createElement("div");
             shaft.className = "arrow-shaft";
+            if (obj.type === "Seta tracejada") {
+              shaft.classList.add("dashed");
+            }
             const head = document.createElement("div");
             head.className = "arrow-head";
             arrowWrap.appendChild(shaft);
@@ -440,18 +563,22 @@
       });
 
       function syncFromArgs(args) {
-        state.activeColor = args.activeColor || "#ef4444";
-        state.activeSize = Number(args.activeSize || 18);
-        state.activeLabel = args.activeLabel || "";
-        fieldEl.src = args.fieldImageUrl || "";
-        state.paletteMode = args.paletteMode === "shapes" ? "shapes" : "objects";
-
         const incomingExerciseId = args.exerciseId || "";
         const incomingRevision = Number(args.objectsRevision || 0);
         const incoming = Array.isArray(args.objects) ? args.objects.map(normalizeObject) : [];
         const boardChanged = incomingExerciseId !== state.exerciseId;
         const revisionChanged = incomingRevision !== state.objectsRevision;
 
+        if (boardChanged || !state.activeColor) {
+          state.activeColor = args.activeColor || "#ef4444";
+        }
+        state.activeSize = Number(args.activeSize || 18);
+        if (boardChanged) {
+          state.activeLabel = args.activeLabel || "";
+        } else if (args.activeLabel) {
+          state.activeLabel = args.activeLabel;
+        }
+        fieldEl.src = args.fieldImageUrl || "";
         state.exerciseId = incomingExerciseId;
         if (boardChanged || revisionChanged) {
           state.objectsRevision = incomingRevision;
